@@ -1,5 +1,4 @@
 
-Bot · PY
 """
 Bot de marcação via WhatsApp Cloud API — fluxo por botões/listas.
  
