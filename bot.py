@@ -92,7 +92,50 @@ def obter_bd():
     conn.execute(
         "CREATE TABLE IF NOT EXISTS sessoes (telefone TEXT PRIMARY KEY, dados TEXT NOT NULL)"
     )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS agendamentos ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "telefone TEXT NOT NULL, "
+        "nome TEXT, "
+        "servico TEXT NOT NULL, "
+        "data TEXT NOT NULL, "
+        "hora TEXT NOT NULL, "
+        "criado_em TEXT NOT NULL)"
+    )
     return conn
+
+
+def guardar_agendamento(telefone, sessao):
+    """Grava uma marcação confirmada, para aparecer no dashboard/agenda."""
+    from datetime import datetime
+    with obter_bd() as conn:
+        conn.execute(
+            "INSERT INTO agendamentos (telefone, nome, servico, data, hora, criado_em) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                telefone,
+                sessao.get("nome"),
+                sessao.get("servico"),
+                sessao.get("data"),
+                sessao.get("hora"),
+                datetime.utcnow().isoformat(),
+            ),
+        )
+
+
+def listar_agendamentos():
+    with obter_bd() as conn:
+        linhas = conn.execute(
+            "SELECT id, telefone, nome, servico, data, hora, criado_em "
+            "FROM agendamentos ORDER BY id DESC"
+        ).fetchall()
+    return [
+        {
+            "id": l[0], "telefone": l[1], "nome": l[2] or l[1],
+            "servico": l[3], "data": l[4], "hora": l[5], "criado_em": l[6],
+        }
+        for l in linhas
+    ]
 
 
 def carregar_sessao(telefone):
@@ -291,6 +334,125 @@ def montar_resumo(de, sessao):
 # ---------------------------------------------------------------------------
 # Webhook
 # ---------------------------------------------------------------------------
+@app.route("/api/agendamentos", methods=["GET"])
+def api_agendamentos():
+    """Devolve todas as marcações confirmadas, em JSON, para o dashboard."""
+    return jsonify(listar_agendamentos()), 200
+
+
+@app.route("/dashboard", methods=["GET"])
+def dashboard():
+    """Painel simples que mostra as marcações recebidas via WhatsApp."""
+    return DASHBOARD_HTML
+
+
+DASHBOARD_HTML = """
+<!doctype html>
+<html lang="pt">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Painel de Agendamentos</title>
+<style>
+  :root{
+    --bg:#0d0f12; --panel:#15181d; --panel2:#1b1f26; --border:#262b33;
+    --gold:#e8b923; --text:#f2f3f5; --muted:#9aa1ac; --green:#2ecc71;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;}
+  header{padding:24px 28px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;}
+  header h1{margin:0;font-size:20px;letter-spacing:.3px;}
+  header h1 span{color:var(--gold);}
+  header .sub{color:var(--muted);font-size:13px;margin-top:4px;}
+  .wrap{padding:24px 28px;max-width:1200px;margin:0 auto;}
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:22px;}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:16px 18px;}
+  .card .n{font-size:26px;font-weight:700;color:var(--gold);}
+  .card .l{color:var(--muted);font-size:12.5px;margin-top:4px;}
+  .lista{background:var(--panel);border:1px solid var(--border);border-radius:12px;overflow:hidden;}
+  .lista h2{font-size:15px;margin:0;padding:16px 18px;border-bottom:1px solid var(--border);color:var(--muted);font-weight:600;letter-spacing:.3px;text-transform:uppercase;}
+  table{width:100%;border-collapse:collapse;}
+  th,td{text-align:left;padding:12px 18px;font-size:14px;border-bottom:1px solid var(--border);}
+  th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.4px;}
+  tr:last-child td{border-bottom:none;}
+  tr:hover td{background:var(--panel2);}
+  .tag{display:inline-block;background:rgba(232,185,35,.15);color:var(--gold);padding:3px 9px;border-radius:20px;font-size:12px;font-weight:600;}
+  .vazio{padding:40px 18px;text-align:center;color:var(--muted);}
+  .refresh{color:var(--muted);font-size:12px;}
+  a.btn{background:var(--gold);color:#1a1400;padding:8px 14px;border-radius:8px;text-decoration:none;font-size:13px;font-weight:700;}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1><span>COVER</span>LAB — Painel de Agendamentos</h1>
+    <div class="sub">Marcações recebidas automaticamente via WhatsApp</div>
+  </div>
+  <a class="btn" href="javascript:location.reload()">🔄 Atualizar</a>
+</header>
+
+<div class="wrap">
+  <div class="stats">
+    <div class="card"><div class="n" id="st-total">0</div><div class="l">Total de agendamentos</div></div>
+    <div class="card"><div class="n" id="st-hoje">0</div><div class="l">Marcados hoje (por criação)</div></div>
+    <div class="card"><div class="n" id="st-clientes">0</div><div class="l">Clientes únicos</div></div>
+    <div class="card"><div class="n" id="st-servico">-</div><div class="l">Serviço mais pedido</div></div>
+  </div>
+
+  <div class="lista">
+    <h2>Próximos agendamentos</h2>
+    <div id="conteudo"><div class="vazio">A carregar…</div></div>
+  </div>
+  <div class="refresh" style="margin-top:10px;">Atualiza-se sozinho a cada 20 segundos.</div>
+</div>
+
+<script>
+async function carregar(){
+  const resp = await fetch('/api/agendamentos');
+  const dados = await resp.json();
+
+  document.getElementById('st-total').textContent = dados.length;
+
+  const hojeStr = new Date().toISOString().slice(0,10);
+  const hoje = dados.filter(d => (d.criado_em||'').slice(0,10) === hojeStr).length;
+  document.getElementById('st-hoje').textContent = hoje;
+
+  const clientes = new Set(dados.map(d => d.telefone));
+  document.getElementById('st-clientes').textContent = clientes.size;
+
+  const contagem = {};
+  dados.forEach(d => { contagem[d.servico] = (contagem[d.servico]||0) + 1; });
+  const topServico = Object.entries(contagem).sort((a,b)=>b[1]-a[1])[0];
+  document.getElementById('st-servico').textContent = topServico ? topServico[0] : '-';
+
+  const cont = document.getElementById('conteudo');
+  if(dados.length === 0){
+    cont.innerHTML = '<div class="vazio">Ainda não há marcações. Manda uma mensagem ao bot no WhatsApp para testar 👋</div>';
+    return;
+  }
+
+  let html = '<table><thead><tr><th>Cliente</th><th>Serviço</th><th>Data</th><th>Hora</th><th>Recebido em</th></tr></thead><tbody>';
+  dados.forEach(d => {
+    const criado = d.criado_em ? new Date(d.criado_em).toLocaleString('pt-PT') : '-';
+    html += `<tr>
+      <td>${d.nome || d.telefone}<br><span style="color:var(--muted);font-size:12px;">${d.telefone}</span></td>
+      <td><span class="tag">${d.servico}</span></td>
+      <td>${d.data}</td>
+      <td>${d.hora}</td>
+      <td style="color:var(--muted);">${criado}</td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+  cont.innerHTML = html;
+}
+carregar();
+setInterval(carregar, 20000);
+</script>
+</body>
+</html>
+"""
+
+
 @app.route("/versao", methods=["GET"])
 def versao():
     """Rota simples para confirmar qual versão do código está a correr no Render."""
@@ -353,6 +515,7 @@ def receber_mensagem():
                                  f"🆕📅 *Novo pedido de marcação através do bot:*\n\n{resumo}\n"
                                  f"💬 Cliente: wa.me/{de}")
 
+                guardar_agendamento(de, sessao)
                 apagar_sessao(de)
                 return jsonify(status="ok"), 200
 
