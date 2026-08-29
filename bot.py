@@ -1,12 +1,7 @@
 """
-Bot de marcação via WhatsApp Cloud API — fluxo por botões/listas.
-
-Fluxo:
-  Cliente escreve qualquer coisa -> bot mostra lista de serviços
-  Cliente escolhe serviço -> bot mostra lista de datas (próximos 5 dias)
-  Cliente escolhe data -> bot mostra lista de horários
-  Cliente escolhe horário -> bot confirma ao cliente E reencaminha o pedido
-  para o WhatsApp do prestador de serviço (via mensagem de texto normal).
+Bot de marcação via WhatsApp Cloud API — fluxo por botões/listas, tipo
+"mini-formulário": categoria (botões) -> serviço (lista) -> dia (lista) ->
+hora (lista) -> confirmação (botões Sim/Não) -> reencaminha ao prestador.
 
 Configuração necessária (variáveis de ambiente):
   WHATSAPP_TOKEN       - access token (temporário ou permanente) da Meta
@@ -18,11 +13,11 @@ Como correr:
   pip install flask requests
   export WHATSAPP_TOKEN=... PHONE_NUMBER_ID=... VERIFY_TOKEN=... PROVIDER_WHATSAPP=...
   python bot.py
-  # noutro terminal: ngrok http 5000
-  # usa o URL https do ngrok + "/webhook" como Callback URL na Meta, com o mesmo VERIFY_TOKEN
 """
 
 import os
+import json
+import sqlite3
 import requests
 from datetime import date, timedelta
 from flask import Flask, request, jsonify
@@ -77,11 +72,54 @@ NOME_CATEGORIA = {c["id"]: c["titulo"] for c in CATEGORIAS}
 
 HORARIOS = ["🕘 09:00", "🕥 10:30", "🕐 13:00", "🕝 14:30", "🕓 16:00"]
 
-# Estado simples em memória (por número de telefone). Para produção real,
-# trocar por uma base de dados — isto reinicia sempre que o processo reinicia.
-sessoes = {}
+DIAS_SEMANA_PT = ["seg", "ter", "qua", "qui", "sex", "sáb", "dom"]
+
+ID_VOLTAR = "voltar"
 
 
+# ---------------------------------------------------------------------------
+# Persistência das sessões em SQLite (em vez de um dicionário em memória).
+# Assim, se o processo reiniciar (deploy novo, ou o serviço "adormecer" e
+# acordar), as conversas em curso não se perdem. Nota: no plano gratuito do
+# Render o disco pode ser limpo quando fazes um deploy novo — para produção
+# a sério, o ideal é uma base de dados externa (Postgres, Redis, etc.).
+# ---------------------------------------------------------------------------
+DB_PATH = os.environ.get("SESSOES_DB", "sessoes.db")
+
+
+def obter_bd():
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS sessoes (telefone TEXT PRIMARY KEY, dados TEXT NOT NULL)"
+    )
+    return conn
+
+
+def carregar_sessao(telefone):
+    with obter_bd() as conn:
+        linha = conn.execute(
+            "SELECT dados FROM sessoes WHERE telefone = ?", (telefone,)
+        ).fetchone()
+    return json.loads(linha[0]) if linha else {}
+
+
+def guardar_sessao(telefone, sessao):
+    with obter_bd() as conn:
+        conn.execute(
+            "INSERT INTO sessoes (telefone, dados) VALUES (?, ?) "
+            "ON CONFLICT(telefone) DO UPDATE SET dados = excluded.dados",
+            (telefone, json.dumps(sessao)),
+        )
+
+
+def apagar_sessao(telefone):
+    with obter_bd() as conn:
+        conn.execute("DELETE FROM sessoes WHERE telefone = ?", (telefone,))
+
+
+# ---------------------------------------------------------------------------
+# Envio de mensagens
+# ---------------------------------------------------------------------------
 def enviar(payload):
     headers = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
     r = requests.post(GRAPH_URL, headers=headers, json=payload, timeout=10)
@@ -98,12 +136,13 @@ def enviar_texto(destinatario, texto):
     })
 
 
-def enviar_lista(destinatario, corpo, titulo_seccao, opcoes, botao="👉 Escolher"):
+def enviar_lista(destinatario, corpo, titulo_seccao, opcoes, botao="👉 Escolher", com_voltar=False):
     """Envia uma lista interativa (até 10 opções) — o equivalente aos botões do Telegram.
 
     `opcoes` pode ser uma lista de strings simples (ex.: horários) ou de
     dicionários {"emoji", "titulo", "descricao"} (ex.: serviços), para dar
-    um subtítulo a cada linha.
+    um subtítulo a cada linha. Com `com_voltar=True`, acrescenta uma última
+    linha "🔙 Voltar" para o cliente recuar um passo.
     """
     rows = []
     for i, opc in enumerate(opcoes):
@@ -113,6 +152,9 @@ def enviar_lista(destinatario, corpo, titulo_seccao, opcoes, botao="👉 Escolhe
         else:
             row = {"id": f"opt_{i}", "title": str(opc)[:24]}
         rows.append(row)
+
+    if com_voltar:
+        rows.append({"id": ID_VOLTAR, "title": "🔙 Voltar", "description": "Escolher outra vez o passo anterior"})
 
     enviar({
         "messaging_product": "whatsapp",
@@ -166,9 +208,6 @@ def titulo_escolhido(opcoes, id_escolhido, titulo_bruto):
     return titulo_bruto
 
 
-DIAS_SEMANA_PT = ["seg", "ter", "qua", "qui", "sex", "sáb", "dom"]
-
-
 def proximos_dias(n=5):
     hoje = date.today()
     dias = []
@@ -178,6 +217,80 @@ def proximos_dias(n=5):
     return dias
 
 
+def primeiro_nome(nome_completo):
+    if not nome_completo:
+        return None
+    return nome_completo.strip().split(" ")[0]
+
+
+# ---------------------------------------------------------------------------
+# Passos do formulário — cada função envia o menu de um passo específico
+# ---------------------------------------------------------------------------
+def passo_categoria(de, saudacao=True):
+    corpo = "Que tipo de serviço procura?"
+    if saudacao:
+        corpo = f"👋 Olá! Bem-vindo(a) à *{NOME_OFICINA}* 🚗✨\n\n{corpo}"
+    enviar_botoes(de, corpo, CATEGORIAS, rodape="Escolha uma categoria para continuar")
+
+
+def passo_servico(de, categoria_id):
+    enviar_lista(
+        de,
+        f"Categoria: *{NOME_CATEGORIA[categoria_id]}*\n\n🔧 Escolha o serviço:",
+        "Serviços",
+        SERVICOS_POR_CATEGORIA[categoria_id],
+        botao="🔧 Ver serviços",
+        com_voltar=True,
+    )
+
+
+def passo_data(de, servico):
+    enviar_lista(
+        de,
+        f"Ótima escolha! ✅ *{servico}*\n\n📅 Para que dia gostaria de marcar?",
+        "Datas disponíveis",
+        proximos_dias(),
+        botao="📅 Escolher dia",
+        com_voltar=True,
+    )
+
+
+def passo_hora(de, dia):
+    enviar_lista(
+        de,
+        f"Perfeito, dia *{dia}* 👍\n\n⏰ A que horas lhe convém?",
+        "Horários disponíveis",
+        HORARIOS,
+        botao="⏰ Escolher hora",
+        com_voltar=True,
+    )
+
+
+def passo_confirmacao(de, sessao):
+    nome = primeiro_nome(sessao.get("nome"))
+    saudacao = f"{nome}, confirma" if nome else "Confirma"
+    resumo = montar_resumo(de, sessao)
+    enviar_botoes(
+        de,
+        f"{saudacao} os dados da sua marcação? 🧐\n\n{resumo}",
+        [
+            {"id": "confirmar", "titulo": "✅ Confirmar"},
+            {"id": "alterar",   "titulo": "✏️ Alterar"},
+        ],
+        rodape="Toque num dos botões acima",
+    )
+
+
+def montar_resumo(de, sessao):
+    nome = sessao.get("nome")
+    quem = f"{nome} ({de})" if nome else de
+    return (f"👤 Contacto: {quem}\n🔧 Serviço: {sessao['servico']}\n"
+            f"📅 Data: {sessao['data']}\n⏰ Hora: {sessao['hora']}")
+
+
+# ---------------------------------------------------------------------------
+# Webhook
+# ---------------------------------------------------------------------------
 @app.route("/webhook", methods=["GET"])
 def verificar_webhook():
     """A Meta chama isto uma vez, para confirmar que o webhook é teu."""
@@ -196,56 +309,37 @@ def receber_mensagem():
 
         msg = entry["messages"][0]
         de = msg["from"]  # número do cliente
-        sessao = sessoes.setdefault(de, {})
+        sessao = carregar_sessao(de)
 
-        # Passo 1 do formulário: cliente tocou num botão de categoria
-        if msg.get("type") == "interactive" and msg["interactive"]["type"] == "button_reply":
-            id_categoria = msg["interactive"]["button_reply"]["id"]
+        # Nome do perfil de WhatsApp do cliente, quando disponível
+        try:
+            nome_perfil = entry["contacts"][0]["profile"]["name"]
+            if nome_perfil:
+                sessao["nome"] = nome_perfil
+        except (KeyError, IndexError):
+            pass
 
-            if id_categoria in SERVICOS_POR_CATEGORIA:
-                sessao["categoria"] = id_categoria
-                enviar_lista(
-                    de,
-                    f"Categoria: *{NOME_CATEGORIA[id_categoria]}*\n\n🔧 Escolha o serviço:",
-                    "Serviços",
-                    SERVICOS_POR_CATEGORIA[id_categoria],
-                    botao="🔧 Ver serviços",
-                )
+        tipo = msg.get("type")
 
-        # Cliente escolheu algo numa lista
-        elif msg.get("type") == "interactive" and msg["interactive"]["type"] == "list_reply":
-            id_escolhido = msg["interactive"]["list_reply"]["id"]
-            titulo_bruto = msg["interactive"]["list_reply"]["title"]
+        # --- Botões (categoria, ou confirmar/alterar no fim) ---------------
+        if tipo == "interactive" and msg["interactive"]["type"] == "button_reply":
+            id_botao = msg["interactive"]["button_reply"]["id"]
 
-            if "servico" not in sessao:
-                opcoes_categoria = SERVICOS_POR_CATEGORIA.get(sessao.get("categoria"), [])
-                servico = titulo_escolhido(opcoes_categoria, id_escolhido, titulo_bruto)
-                sessao["servico"] = servico
-                enviar_lista(
-                    de,
-                    f"Ótima escolha! ✅ *{servico}*\n\n📅 Para que dia gostaria de marcar?",
-                    "Datas disponíveis",
-                    proximos_dias(),
-                    botao="📅 Escolher dia",
-                )
+            if id_botao in SERVICOS_POR_CATEGORIA:
+                sessao["categoria"] = id_botao
+                sessao.pop("servico", None)
+                sessao.pop("data", None)
+                sessao.pop("hora", None)
+                guardar_sessao(de, sessao)
+                passo_servico(de, id_botao)
 
-            elif "data" not in sessao:
-                sessao["data"] = titulo_bruto
-                enviar_lista(
-                    de,
-                    f"Perfeito, dia *{titulo_bruto}* 👍\n\n⏰ A que horas lhe convém?",
-                    "Horários disponíveis",
-                    HORARIOS,
-                    botao="⏰ Escolher hora",
-                )
+            elif id_botao == "confirmar":
+                resumo = montar_resumo(de, sessao)
+                nome = primeiro_nome(sessao.get("nome"))
+                saudacao = f"Obrigado, {nome}!" if nome else "Obrigado!"
 
-            elif "hora" not in sessao:
-                sessao["hora"] = titulo_bruto
-                resumo = (f"👤 Contacto: {de}\n🔧 Serviço: {sessao['servico']}\n"
-                          f"📅 Data: {sessao['data']}\n⏰ Hora: {sessao['hora']}")
-
-                enviar_texto(de, f"🎉 Obrigado! O seu pedido de marcação:\n\n{resumo}\n\n"
-                                  f"✅ Vamos confirmar o mais depressa possível.\n"
+                enviar_texto(de, f"🎉 {saudacao} A sua marcação está confirmada:\n\n{resumo}\n\n"
+                                  f"✅ Vamos preparar tudo para o seu dia.\n"
                                   f"_{NOME_OFICINA} agradece a sua preferência!_ 🚗💨")
 
                 if PROVIDER_WHATSAPP:
@@ -253,17 +347,62 @@ def receber_mensagem():
                                  f"🆕📅 *Novo pedido de marcação através do bot:*\n\n{resumo}\n"
                                  f"💬 Cliente: wa.me/{de}")
 
-                sessoes.pop(de, None)  # limpa para a próxima marcação
+                apagar_sessao(de)
+                return jsonify(status="ok"), 200
 
-        # Qualquer mensagem de texto normal reinicia o fluxo (passo 1: categoria)
-        elif msg.get("type") == "text":
-            sessoes[de] = {}
-            enviar_botoes(
-                de,
-                f"👋 Olá! Bem-vindo(a) à *{NOME_OFICINA}* 🚗✨\n\nQue tipo de serviço procura?",
-                CATEGORIAS,
-                rodape="Escolha uma categoria para continuar",
-            )
+            elif id_botao == "alterar":
+                sessao.pop("servico", None)
+                sessao.pop("data", None)
+                sessao.pop("hora", None)
+                sessao.pop("categoria", None)
+                guardar_sessao(de, sessao)
+                passo_categoria(de, saudacao=False)
+                return jsonify(status="ok"), 200
+
+        # --- Listas (serviço, dia, hora, ou "voltar") -----------------------
+        elif tipo == "interactive" and msg["interactive"]["type"] == "list_reply":
+            id_escolhido = msg["interactive"]["list_reply"]["id"]
+            titulo_bruto = msg["interactive"]["list_reply"]["title"]
+
+            if id_escolhido == ID_VOLTAR:
+                if "data" in sessao:
+                    sessao.pop("data", None)
+                    guardar_sessao(de, sessao)
+                    passo_servico(de, sessao["categoria"])
+                elif "servico" in sessao:
+                    sessao.pop("servico", None)
+                    guardar_sessao(de, sessao)
+                    passo_categoria(de, saudacao=False)
+                else:
+                    sessao.pop("categoria", None)
+                    guardar_sessao(de, sessao)
+                    passo_categoria(de, saudacao=False)
+
+            elif "servico" not in sessao:
+                opcoes_categoria = SERVICOS_POR_CATEGORIA.get(sessao.get("categoria"), [])
+                sessao["servico"] = titulo_escolhido(opcoes_categoria, id_escolhido, titulo_bruto)
+                guardar_sessao(de, sessao)
+                passo_data(de, sessao["servico"])
+
+            elif "data" not in sessao:
+                sessao["data"] = titulo_bruto
+                guardar_sessao(de, sessao)
+                passo_hora(de, titulo_bruto)
+
+            elif "hora" not in sessao:
+                sessao["hora"] = titulo_bruto
+                guardar_sessao(de, sessao)
+                passo_confirmacao(de, sessao)
+
+        # --- Mensagem de texto normal reinicia o fluxo ----------------------
+        elif tipo == "text":
+            sessao = {"nome": sessao.get("nome")} if sessao.get("nome") else {}
+            guardar_sessao(de, sessao)
+            passo_categoria(de, saudacao=True)
+
+        # --- Qualquer outro tipo (áudio, imagem, sticker, etc.) -------------
+        else:
+            enviar_texto(de, "🤔 Não percebi essa mensagem. Escreva *\"olá\"* para começar uma marcação.")
 
     except (KeyError, IndexError):
         pass  # notificações de status (entregue/lido) chegam neste mesmo endpoint — ignora-as
