@@ -40,18 +40,23 @@ PROVIDER_WHATSAPP = os.environ.get("PROVIDER_WHATSAPP", "41795886305")
 
 GRAPH_URL = f"https://graph.facebook.com/v21.0/{PHONE_NUMBER_ID}/messages"
 
-# Nome da oficina fictícia, só para testes.
-NOME_OFICINA = "Oficina Wrap Teste"
+# Nome da oficina fictícia, só para testes. Serviços copiados do site real da
+# Spotless Car Detail (cardetailspotless.com) — usados aqui só para testar o
+# fluxo, a oficina em si é inventada.
+NOME_OFICINA = "Spotless Car Detail (TESTE)"
 
-# Serviços fictícios de uma oficina de Car-Wrap, só para testar o fluxo.
+# título, emoji e descrição curta de cada serviço (a descrição aparece
+# como subtítulo em cada linha da lista do WhatsApp)
 SERVICOS = [
-    "Revestimento total do carro",
-    "Revestimento parcial (capô, etc.)",
-    "Película no tejadilho",
-    "Escurecimento de faróis",
-    "Remoção de película",
+    {"emoji": "🎨", "titulo": "Car-Wrap",              "descricao": "Muda a cor do teu carro com película"},
+    {"emoji": "🛡️", "titulo": "PPF",                    "descricao": "Película de proteção de pintura"},
+    {"emoji": "💡", "titulo": "Polimento de faróis",    "descricao": "Recupera a transparência dos faróis"},
+    {"emoji": "🧼", "titulo": "Limpeza interior/exterior","descricao": "Higienização completa do veículo"},
+    {"emoji": "✨", "titulo": "Polimento",               "descricao": "Remove riscos e devolve o brilho"},
+    {"emoji": "🏷️", "titulo": "Stickers",               "descricao": "Autocolantes personalizados"},
+    {"emoji": "🖼️", "titulo": "Overlay",                "descricao": "Acabamento especial de destaque"},
 ]
-HORARIOS = ["09:00", "10:30", "13:00", "14:30", "16:00"]
+HORARIOS = ["🕘 09:00", "🕥 10:30", "🕐 13:00", "🕝 14:30", "🕓 16:00"]
 
 # Estado simples em memória (por número de telefone). Para produção real,
 # trocar por uma base de dados — isto reinicia sempre que o processo reinicia.
@@ -74,9 +79,22 @@ def enviar_texto(destinatario, texto):
     })
 
 
-def enviar_lista(destinatario, corpo, titulo_seccao, opcoes):
-    """Envia uma lista interativa (até 10 opções) — o equivalente aos botões do Telegram."""
-    rows = [{"id": f"opt_{i}", "title": opc[:24]} for i, opc in enumerate(opcoes)]
+def enviar_lista(destinatario, corpo, titulo_seccao, opcoes, botao="👉 Escolher"):
+    """Envia uma lista interativa (até 10 opções) — o equivalente aos botões do Telegram.
+
+    `opcoes` pode ser uma lista de strings simples (ex.: horários) ou de
+    dicionários {"emoji", "titulo", "descricao"} (ex.: serviços), para dar
+    um subtítulo a cada linha.
+    """
+    rows = []
+    for i, opc in enumerate(opcoes):
+        if isinstance(opc, dict):
+            titulo = f"{opc['emoji']} {opc['titulo']}"[:24]
+            row = {"id": f"opt_{i}", "title": titulo, "description": opc.get("descricao", "")[:72]}
+        else:
+            row = {"id": f"opt_{i}", "title": str(opc)[:24]}
+        rows.append(row)
+
     enviar({
         "messaging_product": "whatsapp",
         "to": destinatario,
@@ -85,11 +103,23 @@ def enviar_lista(destinatario, corpo, titulo_seccao, opcoes):
             "type": "list",
             "body": {"text": corpo},
             "action": {
-                "button": "Escolher",
+                "button": botao,
                 "sections": [{"title": titulo_seccao, "rows": rows}],
             },
         },
     })
+
+
+def titulo_escolhido(opcoes, id_escolhido, titulo_bruto):
+    """Recupera o título 'limpo' (sem emoji) de uma opção, a partir do id devolvido pelo WhatsApp."""
+    try:
+        indice = int(id_escolhido.replace("opt_", ""))
+        opc = opcoes[indice]
+        if isinstance(opc, dict):
+            return opc["titulo"]
+    except (ValueError, IndexError, KeyError):
+        pass
+    return titulo_bruto
 
 
 DIAS_SEMANA_PT = ["seg", "ter", "qua", "qui", "sex", "sáb", "dom"]
@@ -126,35 +156,56 @@ def receber_mensagem():
 
         # Cliente escolheu algo numa lista
         if msg.get("type") == "interactive" and msg["interactive"]["type"] == "list_reply":
-            escolha = msg["interactive"]["list_reply"]["title"]
+            id_escolhido = msg["interactive"]["list_reply"]["id"]
+            titulo_bruto = msg["interactive"]["list_reply"]["title"]
 
             if "servico" not in sessao:
-                sessao["servico"] = escolha
-                enviar_lista(de, f"Ótima escolha, «{escolha}». Para que dia gostaria de marcar?", "Datas disponíveis", proximos_dias())
+                servico = titulo_escolhido(SERVICOS, id_escolhido, titulo_bruto)
+                sessao["servico"] = servico
+                enviar_lista(
+                    de,
+                    f"Ótima escolha! ✅ *{servico}*\n\n📅 Para que dia gostaria de marcar?",
+                    "Datas disponíveis",
+                    proximos_dias(),
+                    botao="📅 Escolher dia",
+                )
 
             elif "data" not in sessao:
-                sessao["data"] = escolha
-                enviar_lista(de, f"Dia {escolha} — a que horas lhe convém?", "Horários", HORARIOS)
+                sessao["data"] = titulo_bruto
+                enviar_lista(
+                    de,
+                    f"Perfeito, dia *{titulo_bruto}* 👍\n\n⏰ A que horas lhe convém?",
+                    "Horários disponíveis",
+                    HORARIOS,
+                    botao="⏰ Escolher hora",
+                )
 
             elif "hora" not in sessao:
-                sessao["hora"] = escolha
-                resumo = (f"Contacto: {de}\nServiço: {sessao['servico']}\n"
-                          f"Data: {sessao['data']}\nHora: {sessao['hora']}")
+                sessao["hora"] = titulo_bruto
+                resumo = (f"👤 Contacto: {de}\n🔧 Serviço: {sessao['servico']}\n"
+                          f"📅 Data: {sessao['data']}\n⏰ Hora: {sessao['hora']}")
 
-                enviar_texto(de, f"Obrigado! O seu pedido de marcação:\n\n{resumo}\n\n"
-                                  f"Vamos confirmar o mais depressa possível.")
+                enviar_texto(de, f"🎉 Obrigado! O seu pedido de marcação:\n\n{resumo}\n\n"
+                                  f"✅ Vamos confirmar o mais depressa possível.\n"
+                                  f"_{NOME_OFICINA} agradece a sua preferência!_ 🚗💨")
 
                 if PROVIDER_WHATSAPP:
                     enviar_texto(PROVIDER_WHATSAPP,
-                                 f"📅 Novo pedido de marcação através do bot:\n\n{resumo}\n"
-                                 f"Cliente: wa.me/{de}")
+                                 f"🆕📅 *Novo pedido de marcação através do bot:*\n\n{resumo}\n"
+                                 f"💬 Cliente: wa.me/{de}")
 
                 sessoes.pop(de, None)  # limpa para a próxima marcação
 
         # Qualquer mensagem de texto normal reinicia o fluxo
         elif msg.get("type") == "text":
             sessoes[de] = {}
-            enviar_lista(de, f"Olá! Bem-vindo à {NOME_OFICINA} 🚗\nQual serviço gostaria de marcar?", "Serviços", SERVICOS)
+            enviar_lista(
+                de,
+                f"👋 Olá! Bem-vindo(a) à *{NOME_OFICINA}* 🚗✨\n\nQual serviço gostaria de marcar?",
+                "Os nossos serviços",
+                SERVICOS,
+                botao="🔧 Ver serviços",
+            )
 
     except (KeyError, IndexError):
         pass  # notificações de status (entregue/lido) chegam neste mesmo endpoint — ignora-as
