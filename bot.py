@@ -291,6 +291,12 @@ def montar_resumo(de, sessao):
 # ---------------------------------------------------------------------------
 # Webhook
 # ---------------------------------------------------------------------------
+@app.route("/versao", methods=["GET"])
+def versao():
+    """Rota simples para confirmar qual versão do código está a correr no Render."""
+    return jsonify(versao="v2-com-voltar-confirmacao-sqlite", tem_botao_voltar=True), 200
+
+
 @app.route("/webhook", methods=["GET"])
 def verificar_webhook():
     """A Meta chama isto uma vez, para confirmar que o webhook é teu."""
