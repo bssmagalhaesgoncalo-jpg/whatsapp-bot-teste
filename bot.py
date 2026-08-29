@@ -45,17 +45,36 @@ GRAPH_URL = f"https://graph.facebook.com/v21.0/{PHONE_NUMBER_ID}/messages"
 # fluxo, a oficina em si é inventada.
 NOME_OFICINA = "Spotless Car Detail (TESTE)"
 
-# título, emoji e descrição curta de cada serviço (a descrição aparece
-# como subtítulo em cada linha da lista do WhatsApp)
-SERVICOS = [
-    {"emoji": "🎨", "titulo": "Car-Wrap",              "descricao": "Muda a cor do teu carro com película"},
-    {"emoji": "🛡️", "titulo": "PPF",                    "descricao": "Película de proteção de pintura"},
-    {"emoji": "💡", "titulo": "Polimento de faróis",    "descricao": "Recupera a transparência dos faróis"},
-    {"emoji": "🧼", "titulo": "Limpeza interior/exterior","descricao": "Higienização completa do veículo"},
-    {"emoji": "✨", "titulo": "Polimento",               "descricao": "Remove riscos e devolve o brilho"},
-    {"emoji": "🏷️", "titulo": "Stickers",               "descricao": "Autocolantes personalizados"},
-    {"emoji": "🖼️", "titulo": "Overlay",                "descricao": "Acabamento especial de destaque"},
+# Passo 1 do "mini-formulário": categorias, mostradas como botões (máx. 3
+# botões por mensagem no WhatsApp — é o limite da própria API).
+CATEGORIAS = [
+    {"id": "cat_protecao", "titulo": "🎨 Proteção & Wrap"},
+    {"id": "cat_limpeza",  "titulo": "🧼 Limpeza"},
+    {"id": "cat_extra",    "titulo": "✨ Estética Extra"},
 ]
+
+# Passo 2: dentro de cada categoria, a lista de serviços específicos
+# (título, emoji e descrição curta — a descrição aparece como subtítulo em
+# cada linha da lista do WhatsApp). Serviços copiados do site real da
+# Spotless Car Detail, só para testar o fluxo.
+SERVICOS_POR_CATEGORIA = {
+    "cat_protecao": [
+        {"emoji": "🎨", "titulo": "Car-Wrap", "descricao": "Muda a cor do teu carro com película"},
+        {"emoji": "🛡️", "titulo": "PPF",       "descricao": "Película de proteção de pintura"},
+    ],
+    "cat_limpeza": [
+        {"emoji": "🧼", "titulo": "Limpeza interior/exterior", "descricao": "Higienização completa do veículo"},
+    ],
+    "cat_extra": [
+        {"emoji": "💡", "titulo": "Polimento de faróis", "descricao": "Recupera a transparência dos faróis"},
+        {"emoji": "✨", "titulo": "Polimento",             "descricao": "Remove riscos e devolve o brilho"},
+        {"emoji": "🏷️", "titulo": "Stickers",             "descricao": "Autocolantes personalizados"},
+        {"emoji": "🖼️", "titulo": "Overlay",              "descricao": "Acabamento especial de destaque"},
+    ],
+}
+
+NOME_CATEGORIA = {c["id"]: c["titulo"] for c in CATEGORIAS}
+
 HORARIOS = ["🕘 09:00", "🕥 10:30", "🕐 13:00", "🕝 14:30", "🕓 16:00"]
 
 # Estado simples em memória (por número de telefone). Para produção real,
@@ -110,6 +129,31 @@ def enviar_lista(destinatario, corpo, titulo_seccao, opcoes, botao="👉 Escolhe
     })
 
 
+def enviar_botoes(destinatario, corpo, botoes, rodape=None):
+    """Envia até 3 botões de resposta rápida — aparecem já na conversa,
+    sem precisar abrir uma lista (é o equivalente mais próximo de um
+    'campo' de formulário do WhatsApp)."""
+    interactive = {
+        "type": "button",
+        "body": {"text": corpo},
+        "action": {
+            "buttons": [
+                {"type": "reply", "reply": {"id": b["id"], "title": b["titulo"][:20]}}
+                for b in botoes[:3]
+            ]
+        },
+    }
+    if rodape:
+        interactive["footer"] = {"text": rodape}
+
+    enviar({
+        "messaging_product": "whatsapp",
+        "to": destinatario,
+        "type": "interactive",
+        "interactive": interactive,
+    })
+
+
 def titulo_escolhido(opcoes, id_escolhido, titulo_bruto):
     """Recupera o título 'limpo' (sem emoji) de uma opção, a partir do id devolvido pelo WhatsApp."""
     try:
@@ -154,13 +198,28 @@ def receber_mensagem():
         de = msg["from"]  # número do cliente
         sessao = sessoes.setdefault(de, {})
 
+        # Passo 1 do formulário: cliente tocou num botão de categoria
+        if msg.get("type") == "interactive" and msg["interactive"]["type"] == "button_reply":
+            id_categoria = msg["interactive"]["button_reply"]["id"]
+
+            if id_categoria in SERVICOS_POR_CATEGORIA:
+                sessao["categoria"] = id_categoria
+                enviar_lista(
+                    de,
+                    f"Categoria: *{NOME_CATEGORIA[id_categoria]}*\n\n🔧 Escolha o serviço:",
+                    "Serviços",
+                    SERVICOS_POR_CATEGORIA[id_categoria],
+                    botao="🔧 Ver serviços",
+                )
+
         # Cliente escolheu algo numa lista
-        if msg.get("type") == "interactive" and msg["interactive"]["type"] == "list_reply":
+        elif msg.get("type") == "interactive" and msg["interactive"]["type"] == "list_reply":
             id_escolhido = msg["interactive"]["list_reply"]["id"]
             titulo_bruto = msg["interactive"]["list_reply"]["title"]
 
             if "servico" not in sessao:
-                servico = titulo_escolhido(SERVICOS, id_escolhido, titulo_bruto)
+                opcoes_categoria = SERVICOS_POR_CATEGORIA.get(sessao.get("categoria"), [])
+                servico = titulo_escolhido(opcoes_categoria, id_escolhido, titulo_bruto)
                 sessao["servico"] = servico
                 enviar_lista(
                     de,
@@ -196,15 +255,14 @@ def receber_mensagem():
 
                 sessoes.pop(de, None)  # limpa para a próxima marcação
 
-        # Qualquer mensagem de texto normal reinicia o fluxo
+        # Qualquer mensagem de texto normal reinicia o fluxo (passo 1: categoria)
         elif msg.get("type") == "text":
             sessoes[de] = {}
-            enviar_lista(
+            enviar_botoes(
                 de,
-                f"👋 Olá! Bem-vindo(a) à *{NOME_OFICINA}* 🚗✨\n\nQual serviço gostaria de marcar?",
-                "Os nossos serviços",
-                SERVICOS,
-                botao="🔧 Ver serviços",
+                f"👋 Olá! Bem-vindo(a) à *{NOME_OFICINA}* 🚗✨\n\nQue tipo de serviço procura?",
+                CATEGORIAS,
+                rodape="Escolha uma categoria para continuar",
             )
 
     except (KeyError, IndexError):
