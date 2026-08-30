@@ -256,11 +256,9 @@ TEXTOS = {
     "confirmado_instrucao": {"pt": "Por favor, retire os seus objetos pessoais do veículo antes da entrega.",
                               "de": "Bitte entfernen Sie Ihre persönlichen Gegenstände vor der Abgabe aus dem Fahrzeug.",
                               "en": "Please remove your personal belongings from the vehicle before drop-off."},
-    # Já não faz parte do texto de confirmação (ver botão "🗓️ Gerir marcação"
-    # enviado logo a seguir) — mantida por compatibilidade, não é mais usada.
-    "confirmado_rodape": {"pt": "Escreva MENU para nova marcação, ou GERIR para consultar/alterar esta.",
-                           "de": "Schreiben Sie MENU für eine neue Buchung oder GERIR, um diese anzusehen/zu ändern.",
-                           "en": "Type MENU for a new booking, or GERIR to view/change this one."},
+    # (o antigo "confirmado_rodape", que mandava escrever MENU/GERIR, foi
+    # removido — essas ações são agora os botões enviados logo a seguir à
+    # confirmação: "🗓️ Gerir marcação" e "🏠 Menu principal".)
 
     # --- Wrap & Proteção: escolha do modo (entrada do fluxo) -----------------
     "wrap_modo_corpo": {"pt": "🎨 *Wrap & Proteção*\n\nComo prefere avançar?",
@@ -519,9 +517,9 @@ TEXTOS = {
                             "en": "🗑️ Cart emptied. Let's start again."},
     "carrinho_botao_ver": {"pt": "🛒 Carrinho", "de": "🛒 Warenkorb", "en": "🛒 Cart"},
 
-    "nao_entendi": {"pt": "Desculpe, não consegui perceber 😅\n\nEscolha uma opção ou escreva MENU para recomeçar.",
-                     "de": "Entschuldigung, das habe ich nicht verstanden 😅\n\nWählen Sie eine Option oder schreiben Sie MENU, um neu zu beginnen.",
-                     "en": "Sorry, I didn't understand that 😅\n\nChoose an option or type MENU to start again."},
+    "nao_entendi": {"pt": "Desculpe, não consegui perceber 😅\n\nEscolha uma das opções abaixo.",
+                     "de": "Entschuldigung, das habe ich nicht verstanden 😅\n\nWählen Sie eine der Optionen unten.",
+                     "en": "Sorry, I didn't understand that 😅\n\nPlease choose one of the options below."},
     "processo_cancelado": {"pt": "❌ Processo cancelado.",
                             "de": "❌ Vorgang abgebrochen.",
                             "en": "❌ Process cancelled."},
@@ -677,6 +675,15 @@ TEXTOS = {
     "carrinho_marcacao_nao_encontrada": {"pt": "Não encontrei essa marcação confirmada.",
                                           "de": "Diese bestätigte Buchung wurde nicht gefunden.",
                                           "en": "I couldn't find that confirmed booking."},
+
+    # --- Marcação cancelada pela equipa: aviso ao cliente --------------------
+    "marcacao_cancelada_equipa_cliente": {
+        "pt": "❌ A sua marcação #{id} foi cancelada. Lamentamos o incómodo — estamos à disposição "
+              "para marcar uma nova data quando quiser.",
+        "de": "❌ Ihre Buchung #{id} wurde storniert. Wir bedauern die Unannehmlichkeiten — gerne "
+              "vereinbaren wir jederzeit einen neuen Termin.",
+        "en": "❌ Your booking #{id} has been cancelled. We're sorry for the inconvenience — we're "
+              "happy to arrange a new date whenever you'd like."},
 }
 
 # Nomes traduzidos dos estados de um pedido de orçamento, para apresentação
@@ -2381,14 +2388,193 @@ def mensagem_notificacao_provider(de, sessao, id_agendamento):
     linhas.append("Discriminação:")
     linhas.extend(linhas_discriminacao(sessao, "pt"))
     linhas.append(f"💰 Total: {formatar_centimos(carrinho_total_centimos(sessao), 'pt')}")
-    linhas.append("")
-    # Contactar o cliente: ligação direta (ver wa_me_link) em vez de um
-    # comando de texto. REAGENDAR/CANCELAR/CONCLUIDO ficam como comandos —
-    # são ações de calendário, fora do âmbito desta alteração.
-    linhas.append(f"💬 {wa_me_link(de)}")
-    linhas.append("Para reagendar, cancelar ou concluir, responda com: REAGENDAR, CANCELAR ou CONCLUIDO "
-                  "seguido do número da marcação.")
+    # Sem instruções escritas: as ações da equipa são a lista interativa que
+    # acompanha esta mensagem (ver enviar_notificacao_interna_marcacao).
     return "\n".join(linhas)
+
+
+# ---------------------------------------------------------------------------
+# Ações internas da equipa sobre uma MARCAÇÃO confirmada
+# ---------------------------------------------------------------------------
+# Apresentadas como lista interativa na notificação interna, em vez de
+# comandos escritos. Os IDs levam sempre o id da marcação embutido e SÓ são
+# aceites quando quem carregou é o PROVIDER_WHATSAPP (ver
+# numero_e_da_equipa/processar_acao_equipa_marcacao) — um cliente nunca
+# consegue executá-las, mesmo que envie o ID à mão. São processadas à entrada
+# de receber_mensagem, antes de qualquer tratamento de sessão, para a equipa
+# nunca receber o menu normal do bot ao carregar numa ação.
+# ---------------------------------------------------------------------------
+PREFIXOS_ACAO_EQUIPA = (
+    "equipa_ag_contactar_", "equipa_ag_reagendar_", "equipa_ag_cancelar_", "equipa_ag_concluir_",
+    "equipa_ag_cancelar_sim_", "equipa_ag_cancelar_nao_",
+    "equipa_ag_concluir_sim_", "equipa_ag_concluir_nao_",
+)
+
+
+def _so_digitos(numero):
+    return "".join(c for c in str(numero or "") if c.isdigit())
+
+
+def numero_e_da_equipa(numero):
+    """Só o número configurado em PROVIDER_WHATSAPP é a equipa. Compara
+    apenas os dígitos, para "+41 79..." e "4179..." serem o mesmo número.
+    Sem PROVIDER_WHATSAPP configurado, ninguém é equipa (falha fechado)."""
+    if not PROVIDER_WHATSAPP:
+        return False
+    return _so_digitos(numero) == _so_digitos(PROVIDER_WHATSAPP)
+
+
+def opcoes_acoes_equipa_marcacao(id_agendamento):
+    return [
+        {"id": f"equipa_ag_contactar_{id_agendamento}", "titulo": "💬 Contactar cliente"},
+        {"id": f"equipa_ag_reagendar_{id_agendamento}", "titulo": "📅 Reagendar"},
+        {"id": f"equipa_ag_cancelar_{id_agendamento}", "titulo": "❌ Cancelar marcação"},
+        {"id": f"equipa_ag_concluir_{id_agendamento}", "titulo": "✅ Marcar concluído"},
+    ]
+
+
+def enviar_notificacao_interna_marcacao(id_agendamento, texto_provider):
+    """Notificação interna de uma marcação confirmada: o texto (sempre em
+    português) mais a lista interativa com as quatro ações da equipa."""
+    if not PROVIDER_WHATSAPP or not id_agendamento:
+        return
+    enviar_lista(PROVIDER_WHATSAPP, texto_provider, "Ações da marcação",
+                 opcoes_acoes_equipa_marcacao(id_agendamento), "pt", botao="⚙️ Ações")
+
+
+def _responder_equipa(texto):
+    if PROVIDER_WHATSAPP:
+        enviar_texto(PROVIDER_WHATSAPP, texto)
+
+
+def _avisar_cliente_marcacao_cancelada(agendamento):
+    telefone = agendamento["telefone"]
+    sessao_cliente = carregar_sessao(telefone)
+    idioma = sessao_cliente.get("idioma") if sessao_cliente.get("idioma") in IDIOMAS_VALIDOS else "pt"
+    enviar_botoes(telefone, t("marcacao_cancelada_equipa_cliente", idioma, id=agendamento["id"]), [
+        {"id": ACAO_NOVA_MARCACAO, "titulo": t("botao_nova_marcacao", idioma)},
+        {"id": ACAO_MENU, "titulo": t("botao_menu_principal", idioma)},
+        {"id": ACAO_HUMANO, "titulo": t("botao_falar_equipa", idioma)},
+    ], idioma)
+
+
+def processar_acao_equipa_marcacao(de, id_botao):
+    """Trata as ações internas sobre uma marcação. Devolve True quando a ação
+    foi reconhecida e tratada (para receber_mensagem terminar já ali).
+
+    Autorização: só o PROVIDER_WHATSAPP. Se um cliente enviar um destes IDs à
+    mão, a ação é simplesmente ignorada — nem é executada, nem lhe é revelado
+    que existe (o fluxo normal do cliente segue como se fosse uma opção
+    desconhecida).
+
+    "Contactar cliente" e "Reagendar" NUNCA alteram o estado da marcação:
+    devolvem só a ligação wa.me para a equipa combinar com o cliente
+    ("Reagendar" é um atalho seguro enquanto o reagendamento avançado não
+    existir — a marcação original continua confirmada). "Cancelar marcação" e
+    "Marcar concluído" pedem sempre confirmação antes de mudar o estado."""
+    if not id_botao.startswith(PREFIXOS_ACAO_EQUIPA):
+        return False
+    if not numero_e_da_equipa(de):
+        return False
+
+    # Os sufixos de confirmação (_sim_/_nao_) são verificados primeiro: os
+    # prefixos genéricos "equipa_ag_cancelar_"/"equipa_ag_concluir_" também
+    # lhes servem de prefixo.
+    for prefixo, acao in (
+        ("equipa_ag_cancelar_sim_", "cancelar_sim"), ("equipa_ag_cancelar_nao_", "cancelar_nao"),
+        ("equipa_ag_concluir_sim_", "concluir_sim"), ("equipa_ag_concluir_nao_", "concluir_nao"),
+        ("equipa_ag_contactar_", "contactar"), ("equipa_ag_reagendar_", "reagendar"),
+        ("equipa_ag_cancelar_", "cancelar"), ("equipa_ag_concluir_", "concluir"),
+    ):
+        if id_botao.startswith(prefixo):
+            id_txt = id_botao[len(prefixo):]
+            break
+    else:
+        return False
+
+    try:
+        id_agendamento = int(id_txt)
+    except ValueError:
+        return True
+
+    ag = obter_agendamento(id_agendamento)
+    if not ag:
+        _responder_equipa(f"⚠️ Marcação #{id_agendamento} não encontrada.")
+        return True
+
+    resumo = (f"#{ag['id']} — {ag.get('nome') or 'sem nome'} · {ag.get('servico') or '-'} · "
+              f"{ag.get('data') or '-'} {ag.get('hora') or ''}".strip())
+
+    if acao == "contactar":
+        _responder_equipa(f"💬 Contacto direto com o cliente da marcação {resumo}\n\n{wa_me_link(ag['telefone'])}")
+        return True
+
+    if acao == "reagendar":
+        # Deliberadamente NÃO muda o estado: a marcação original continua
+        # confirmada até a equipa combinar a nova data com o cliente.
+        _responder_equipa(f"📅 Reagendamento da marcação {resumo}\n\nA marcação continua *confirmada*. "
+                          f"Combine a nova data diretamente com o cliente:\n{wa_me_link(ag['telefone'])}")
+        return True
+
+    if acao == "cancelar":
+        if ag["estado"] != "confirmado":
+            _responder_equipa(f"ℹ️ A marcação #{id_agendamento} já não está confirmada "
+                              f"(estado atual: {ag['estado']}).")
+            return True
+        # "✅ Confirmar cancelamento" tem 24 caracteres e a API do WhatsApp
+        # corta os títulos de botão aos 20 (MAX_TITULO_BOTAO) — ficaria
+        # "✅ Confirmar cancelam". O corpo da mensagem, logo acima, é que diz
+        # exatamente o que está a ser confirmado.
+        enviar_botoes(PROVIDER_WHATSAPP, f"Confirma o CANCELAMENTO da marcação {resumo}?", [
+            {"id": f"equipa_ag_cancelar_sim_{id_agendamento}", "titulo": "✅ Confirmar"},
+            {"id": f"equipa_ag_cancelar_nao_{id_agendamento}", "titulo": "↩️ Manter marcação"},
+        ], "pt")
+        return True
+
+    if acao == "cancelar_nao":
+        _responder_equipa(f"↩️ A marcação {resumo} foi mantida — nada foi alterado.")
+        return True
+
+    if acao == "cancelar_sim":
+        if ag["estado"] != "confirmado":
+            _responder_equipa(f"ℹ️ A marcação #{id_agendamento} já não está confirmada "
+                              f"(estado atual: {ag['estado']}).")
+            return True
+        atualizar_estado_agendamento(id_agendamento, "cancelado")
+        _avisar_cliente_marcacao_cancelada(ag)
+        _responder_equipa(f"❌ Marcação {resumo} cancelada — cliente avisado.")
+        return True
+
+    if acao == "concluir":
+        if ag["estado"] != "confirmado":
+            _responder_equipa(f"ℹ️ A marcação #{id_agendamento} já não está confirmada "
+                              f"(estado atual: {ag['estado']}).")
+            return True
+        # Mesma razão do cancelamento: "✅ Confirmar conclusão" tem 21
+        # caracteres e seria cortado pela API aos 20.
+        enviar_botoes(PROVIDER_WHATSAPP, f"Confirma que a marcação {resumo} foi CONCLUÍDA?", [
+            {"id": f"equipa_ag_concluir_sim_{id_agendamento}", "titulo": "✅ Confirmar"},
+            {"id": f"equipa_ag_concluir_nao_{id_agendamento}", "titulo": "↩️ Voltar"},
+        ], "pt")
+        return True
+
+    if acao == "concluir_nao":
+        _responder_equipa(f"↩️ Nada foi alterado na marcação {resumo}.")
+        return True
+
+    if acao == "concluir_sim":
+        if ag["estado"] != "confirmado":
+            _responder_equipa(f"ℹ️ A marcação #{id_agendamento} já não está confirmada "
+                              f"(estado atual: {ag['estado']}).")
+            return True
+        # "concluído" não é um estado confirmado, por isso a marcação sai
+        # automaticamente do carrinho persistente do cliente (ver
+        # agendamentos_confirmados_por_telefone).
+        atualizar_estado_agendamento(id_agendamento, "concluído")
+        _responder_equipa(f"✅ Marcação {resumo} marcada como concluída.")
+        return True
+
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -3658,7 +3844,11 @@ def dashboard():
     return DASHBOARD_HTML
 
 
-DASHBOARD_HTML = """
+# String RAW (r"""), para o Python não tentar interpretar sequências de escape
+# que pertencem ao JavaScript — ex.: o \d da expressão regular que abre
+# automaticamente #pedido-<id> (ver abrirPedidoPeloHash, no fim do script).
+# Sem o r, o Python emite "SyntaxWarning: invalid escape sequence '\d'".
+DASHBOARD_HTML = r"""
 <!doctype html>
 <html lang="pt">
 <head>
@@ -4114,7 +4304,7 @@ abrirPedidoPeloHash();
 
 @app.route("/versao", methods=["GET"])
 def versao():
-    return jsonify(versao="v5.1-carrinho-persistente", fluxos=["limpeza", "estetica", "wrap"],
+    return jsonify(versao="v5.2-acoes-equipa", fluxos=["limpeza", "estetica", "wrap"],
                    idiomas=list(IDIOMAS_VALIDOS)), 200
 
 
@@ -4296,14 +4486,27 @@ def receber_mensagem():
         msg = entry["messages"][0]
         de = msg["from"]
 
-        # --- Resposta da equipa a uma notificação interna de pedido rápido -
-        # Processada antes de qualquer carregamento/tratamento de sessão,
-        # para nunca ser interpretada como uma mensagem de cliente (ver
-        # processar_resposta_interna_pedido).
-        if msg.get("type") == "interactive" and msg.get("interactive", {}).get("type") == "button_reply":
-            id_botao_resposta = msg["interactive"]["button_reply"]["id"]
-            if id_botao_resposta.startswith(("pedido_analisar_", "pedido_contactar_", "pedido_recusar_")):
-                processar_resposta_interna_pedido(id_botao_resposta)
+        # --- Ações INTERNAS da equipa ---------------------------------------
+        # Processadas antes de qualquer carregamento/tratamento de sessão,
+        # para a equipa nunca receber o menu normal do bot ao carregar numa
+        # ação, e para a resposta dela nunca ser lida como mensagem de
+        # cliente. Só são aceites vindas de PROVIDER_WHATSAPP: um cliente que
+        # envie um destes IDs à mão não executa nada (as funções abaixo
+        # verificam sempre numero_e_da_equipa e devolvem sem agir).
+        id_interativo = None
+        if msg.get("type") == "interactive":
+            tipo_interativo = msg.get("interactive", {}).get("type")
+            if tipo_interativo == "button_reply":
+                id_interativo = msg["interactive"]["button_reply"]["id"]
+            elif tipo_interativo == "list_reply":
+                id_interativo = msg["interactive"]["list_reply"]["id"]
+
+        if id_interativo:
+            if processar_acao_equipa_marcacao(de, id_interativo):
+                return jsonify(status="ok"), 200
+            if id_interativo.startswith(("pedido_analisar_", "pedido_contactar_", "pedido_recusar_")) \
+                    and numero_e_da_equipa(de):
+                processar_resposta_interna_pedido(id_interativo)
                 return jsonify(status="ok"), 200
 
         sessao = carregar_sessao(de)
@@ -4607,13 +4810,12 @@ def receber_mensagem():
             if id_botao == "confirmar":
                 id_ag = guardar_agendamento(de, sessao)
                 enviar_texto(de, mensagem_confirmacao_final(sessao, idioma))
-                # Em vez de "Escreva MENU/GERIR" no próprio texto: dois botões.
+                # Em vez de mandar escrever comandos no próprio texto: botões.
                 enviar_botoes(de, t("e_agora_pergunta", idioma), [
                     {"id": ACAO_GERIR, "titulo": t("botao_gerir_marcacao", idioma)},
                     {"id": ACAO_MENU, "titulo": t("botao_menu_principal", idioma)},
                 ], idioma)
-                if PROVIDER_WHATSAPP:
-                    enviar_texto(PROVIDER_WHATSAPP, mensagem_notificacao_provider(de, sessao, id_ag))
+                enviar_notificacao_interna_marcacao(id_ag, mensagem_notificacao_provider(de, sessao, id_ag))
                 reiniciar_sessao(de)
                 return jsonify(status="ok"), 200
 
