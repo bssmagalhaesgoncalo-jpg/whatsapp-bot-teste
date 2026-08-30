@@ -26,11 +26,13 @@ negócio. No alemão usa-se sempre "ss", nunca "ß".
 """
 
 import os
+import re
 import json
 import sqlite3
 import requests
+from functools import wraps
 from datetime import date, timedelta, datetime
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory, Response
 
 app = Flask(__name__)
 
@@ -38,6 +40,15 @@ TOKEN = os.environ.get("WHATSAPP_TOKEN", "")
 PHONE_NUMBER_ID = os.environ.get("PHONE_NUMBER_ID", "1052227394639217")
 VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN", "teste123")
 PROVIDER_WHATSAPP = os.environ.get("PROVIDER_WHATSAPP", "41795886305")
+
+# Pasta (local, configurável) onde as fotografias dos pedidos de orçamento
+# são guardadas em disco — nunca dentro do SQLite. Ver guardar_media_local().
+MEDIA_DIR = os.environ.get("MEDIA_DIR", "media_pedidos")
+
+# Credenciais de autenticação HTTP Basic do painel/API (falha fechado: sem
+# ambas definidas, o acesso é sempre recusado). Ver requer_autenticacao().
+DASHBOARD_USER = os.environ.get("DASHBOARD_USER", "")
+DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "")
 
 GRAPH_URL = f"https://graph.facebook.com/v21.0/{PHONE_NUMBER_ID}/messages"
 
@@ -202,18 +213,33 @@ TEXTOS = {
     "wrap_passo3": {"pt": "Passo 3 de 4 — Que cor/acabamento pretende? (ex: \"Preto fosco\", \"Verde metalizado\")",
                     "de": "Schritt 3 von 4 — Welche Farbe/welches Finish wünschen Sie? (z.B. \"Mattschwarz\", \"Metallic-Grün\")",
                     "en": "Step 3 of 4 — What colour/finish would you like? (e.g. \"Matte black\", \"Metallic green\")"},
-    "wrap_passo4": {"pt": "Passo 4 de 4 — Por favor envie 2 a 3 fotografias do veículo (frente, lado e traseira) "
-                          "diretamente aqui na conversa. Assim que recebermos, a equipa prepara o seu orçamento.\n\n"
-                          "Se preferir avançar sem fotos agora, escreva CONTINUAR.",
-                    "de": "Schritt 4 von 4 — Bitte senden Sie 2 bis 3 Fotos des Fahrzeugs (Front, Seite und Heck) "
-                          "direkt hier im Chat. Sobald wir sie erhalten, erstellt unser Team Ihren Kostenvoranschlag.\n\n"
-                          "Wenn Sie jetzt ohne Fotos fortfahren möchten, schreiben Sie CONTINUAR.",
-                    "en": "Step 4 of 4 — Please send 2 to 3 photos of the vehicle (front, side and rear) "
-                          "directly here in the chat. Once we receive them, our team will prepare your quote.\n\n"
-                          "If you'd rather continue without photos now, type CONTINUAR."},
-    "wrap_foto_recebida": {"pt": "📸 Fotografia recebida, obrigado! Pode enviar mais, ou escreva CONTINUAR para terminarmos o pedido.",
-                            "de": "📸 Foto erhalten, danke! Sie können weitere senden oder CONTINUAR schreiben, um die Anfrage abzuschliessen.",
-                            "en": "📸 Photo received, thank you! You can send more, or type CONTINUAR to finish the request."},
+    "wrap_fotos_pergunta_corpo": {"pt": "Passo 4 de 4 — Deseja enviar fotografias do veículo (até 5) para "
+                                        "ajudar a equipa a preparar o orçamento?",
+                                   "de": "Schritt 4 von 4 — Möchten Sie Fotos des Fahrzeugs (bis zu 5) senden, "
+                                        "damit unser Team den Kostenvoranschlag vorbereiten kann?",
+                                   "en": "Step 4 of 4 — Would you like to send photos of the vehicle (up to 5) "
+                                        "to help our team prepare the quote?"},
+    "wrap_fotos_sim_botao": {"pt": "📸 Sim, enviar fotos", "de": "📸 Ja, Fotos senden", "en": "📸 Yes, send photos"},
+    "wrap_fotos_nao_botao": {"pt": "➡️ Sem fotos", "de": "➡️ Ohne Fotos", "en": "➡️ No photos"},
+    "wrap_fotos_pedir": {"pt": "Pode enviar agora até 5 fotografias do veículo, uma de cada vez, diretamente aqui na conversa.",
+                          "de": "Sie können jetzt bis zu 5 Fotos des Fahrzeugs senden, eines nach dem anderen, direkt hier im Chat.",
+                          "en": "You can now send up to 5 photos of the vehicle, one at a time, directly here in the chat."},
+    "wrap_foto_recebida_contagem": {"pt": "📸 Fotografia {atual} de {total} recebida.",
+                                     "de": "📸 Foto {atual} von {total} erhalten.",
+                                     "en": "📸 Photo {atual} of {total} received."},
+    "wrap_fotos_mais_ou_concluir": {"pt": "Pode enviar mais fotografias ou tocar em \"Concluir pedido\" para terminarmos.",
+                                     "de": "Sie können weitere Fotos senden oder auf \"Anfrage abschliessen\" tippen, um fortzufahren.",
+                                     "en": "You can send more photos or tap \"Finish request\" to continue."},
+    "wrap_fotos_concluir_botao": {"pt": "✅ Concluir pedido", "de": "✅ Anfrage beenden", "en": "✅ Finish request"},
+    "wrap_foto_formato_invalido": {"pt": "Só conseguimos aceitar fotografias (imagens). Por favor envie uma fotografia, "
+                                          "ou toque em \"Concluir pedido\".",
+                                    "de": "Wir können nur Fotos (Bilder) akzeptieren. Bitte senden Sie ein Foto, "
+                                          "oder tippen Sie auf \"Anfrage abschliessen\".",
+                                    "en": "We can only accept photographs (images). Please send a photo, "
+                                          "or tap \"Finish request\"."},
+    "wrap_fotos_limite_atingido": {"pt": "✅ Já recebemos o máximo de 5 fotografias. A concluir o seu pedido...",
+                                    "de": "✅ Wir haben bereits die maximal 5 Fotos erhalten. Ihre Anfrage wird abgeschlossen...",
+                                    "en": "✅ We've already received the maximum of 5 photos. Finishing your request..."},
     "wrap_finalizado_cliente": {"pt": "✅ Pedido de orçamento enviado! A nossa equipa vai analisar os detalhes "
                                       "(e as fotografias, se enviadas) e responde-lhe em breve com o orçamento e "
                                       "disponibilidade para *{veiculo}*.\n\nEscreva MENU para voltar ao início.",
@@ -456,6 +482,10 @@ NOME_CATEGORIA = {c["id"]: c["titulo"] for c in CATEGORIAS_MARCAR}
 # ---------------------------------------------------------------------------
 DB_PATH = os.environ.get("SESSOES_DB", "sessoes.db")
 
+# Estados possíveis de um pedido de orçamento (Wrap & Proteção). Só usados
+# internamente/no dashboard — não fazem parte do texto traduzido ao cliente.
+ESTADOS_PEDIDO = ("novo", "em análise", "orçamento enviado", "aceite", "recusado", "arquivado")
+
 
 def obter_bd():
     conn = sqlite3.connect(DB_PATH)
@@ -475,6 +505,35 @@ def obter_bd():
         "preco REAL, "
         "duracao TEXT, "
         "estado TEXT DEFAULT 'confirmado', "
+        "criado_em TEXT NOT NULL)"
+    )
+    # Pedidos de orçamento com fotografias (fluxo Wrap & Proteção). Estrutura
+    # separada dos agendamentos, pois um pedido de orçamento ainda não é uma
+    # marcação. `agendamento_id` é reservado (nulo por agora) para uma futura
+    # funcionalidade de calendário poder associar um pedido a uma marcação,
+    # sem duplicar dados — não implementado nesta fase.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS pedidos_orcamento ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "telefone TEXT NOT NULL, "
+        "nome TEXT, "
+        "veiculo TEXT, "
+        "ano_veiculo TEXT, "
+        "tipo_wrap TEXT, "
+        "cor_acabamento TEXT, "
+        "estado TEXT DEFAULT 'novo', "
+        "agendamento_id INTEGER, "
+        "criado_em TEXT NOT NULL)"
+    )
+    # Fotografias associadas a um pedido de orçamento. Só o NOME do ficheiro
+    # é guardado aqui — o conteúdo binário da imagem vive em disco (pasta
+    # MEDIA_DIR), nunca dentro do SQLite.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS fotografias ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "pedido_id INTEGER NOT NULL, "
+        "nome_ficheiro TEXT NOT NULL, "
+        "mime_tipo TEXT, "
         "criado_em TEXT NOT NULL)"
     )
     return conn
@@ -546,6 +605,80 @@ def ultimo_agendamento_ativo(telefone):
 def atualizar_estado_agendamento(id_agendamento, estado):
     with obter_bd() as conn:
         conn.execute("UPDATE agendamentos SET estado = ? WHERE id = ?", (estado, id_agendamento))
+
+
+# ---------------------------------------------------------------------------
+# Pedidos de orçamento com fotografias (Wrap & Proteção)
+# ---------------------------------------------------------------------------
+def criar_pedido_orcamento(telefone, sessao):
+    with obter_bd() as conn:
+        cur = conn.execute(
+            "INSERT INTO pedidos_orcamento "
+            "(telefone, nome, veiculo, ano_veiculo, tipo_wrap, cor_acabamento, estado, criado_em) "
+            "VALUES (?, ?, ?, ?, ?, ?, 'novo', ?)",
+            (
+                telefone, sessao.get("nome"), sessao.get("wrap_veiculo"),
+                extrair_ano_veiculo(sessao.get("wrap_veiculo")),
+                "Wrap total" if sessao.get("wrap_tipo") == "wrap_total" else "Wrap parcial",
+                sessao.get("wrap_cor"),
+                datetime.utcnow().isoformat(),
+            ),
+        )
+        return cur.lastrowid
+
+
+def adicionar_fotografia(pedido_id, nome_ficheiro, mime_tipo):
+    with obter_bd() as conn:
+        conn.execute(
+            "INSERT INTO fotografias (pedido_id, nome_ficheiro, mime_tipo, criado_em) VALUES (?, ?, ?, ?)",
+            (pedido_id, nome_ficheiro, mime_tipo, datetime.utcnow().isoformat()),
+        )
+
+
+def contar_fotografias(pedido_id):
+    if not pedido_id:
+        return 0
+    with obter_bd() as conn:
+        linha = conn.execute(
+            "SELECT COUNT(*) FROM fotografias WHERE pedido_id = ?", (pedido_id,)
+        ).fetchone()
+    return linha[0] if linha else 0
+
+
+def obter_pedido_orcamento(pedido_id):
+    with obter_bd() as conn:
+        linha = conn.execute(
+            "SELECT id, telefone, nome, veiculo, ano_veiculo, tipo_wrap, cor_acabamento, estado, "
+            "agendamento_id, criado_em FROM pedidos_orcamento WHERE id = ?", (pedido_id,)
+        ).fetchone()
+    if not linha:
+        return None
+    campos = ["id", "telefone", "nome", "veiculo", "ano_veiculo", "tipo_wrap", "cor_acabamento",
+              "estado", "agendamento_id", "criado_em"]
+    return dict(zip(campos, linha))
+
+
+def listar_pedidos_orcamento():
+    with obter_bd() as conn:
+        linhas = conn.execute(
+            "SELECT p.id, p.telefone, p.nome, p.veiculo, p.ano_veiculo, p.tipo_wrap, p.cor_acabamento, "
+            "p.estado, p.agendamento_id, p.criado_em, COUNT(f.id) AS num_fotos "
+            "FROM pedidos_orcamento p LEFT JOIN fotografias f ON f.pedido_id = p.id "
+            "GROUP BY p.id ORDER BY p.id DESC"
+        ).fetchall()
+    campos = ["id", "telefone", "nome", "veiculo", "ano_veiculo", "tipo_wrap", "cor_acabamento",
+              "estado", "agendamento_id", "criado_em", "num_fotos"]
+    return [dict(zip(campos, l)) for l in linhas]
+
+
+def listar_fotografias(pedido_id):
+    with obter_bd() as conn:
+        linhas = conn.execute(
+            "SELECT id, nome_ficheiro, mime_tipo, criado_em FROM fotografias "
+            "WHERE pedido_id = ? ORDER BY id ASC", (pedido_id,)
+        ).fetchall()
+    campos = ["id", "nome_ficheiro", "mime_tipo", "criado_em"]
+    return [dict(zip(campos, l)) for l in linhas]
 
 
 # ---------------------------------------------------------------------------
@@ -717,6 +850,58 @@ def duracao_traduzida(servico_pt, duracao_pt, idioma):
     return duracao_pt
 
 
+def extrair_ano_veiculo(texto):
+    """Extrai um ano plausível (19xx/20xx) do texto livre do veículo, se
+    existir — usado só para preencher o campo "ano" no pedido de orçamento."""
+    if not texto:
+        return None
+    m = re.search(r"\b(19|20)\d{2}\b", texto)
+    return m.group(0) if m else None
+
+
+# ---------------------------------------------------------------------------
+# Download e armazenamento de fotografias (pedidos de orçamento Wrap)
+# ---------------------------------------------------------------------------
+# Só estes formatos de imagem são aceites; qualquer outro tipo é recusado.
+MIME_IMAGENS_VALIDAS = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+}
+
+
+def descarregar_media_whatsapp(media_id):
+    """Descarrega uma imagem da Cloud API a partir do seu media_id: 1º pede
+    os metadados (que incluem um url temporário), depois descarrega o
+    conteúdo binário com o mesmo cabeçalho de autenticação. Devolve
+    (conteudo_binario, mime_tipo) ou (None, None) se algo falhar."""
+    headers = {"Authorization": f"Bearer {TOKEN}"}
+    resp_meta = requests.get(f"https://graph.facebook.com/v21.0/{media_id}", headers=headers, timeout=10)
+    resp_meta.raise_for_status()
+    info = resp_meta.json()
+    url = info.get("url")
+    mime_tipo = info.get("mime_type", "")
+    if not url:
+        return None, None
+    resp_bin = requests.get(url, headers=headers, timeout=20)
+    resp_bin.raise_for_status()
+    return resp_bin.content, mime_tipo
+
+
+def guardar_media_local(pedido_id, media_id, conteudo, mime_tipo):
+    """Guarda o ficheiro de imagem em disco (nunca dentro do SQLite), numa
+    pasta configurável (MEDIA_DIR). Função isolada e facilmente substituível
+    por armazenamento permanente/na nuvem (ex.: S3) mais tarde, sem tocar em
+    mais nenhuma parte do código — só esta função precisaria de mudar."""
+    os.makedirs(MEDIA_DIR, exist_ok=True)
+    extensao = MIME_IMAGENS_VALIDAS.get(mime_tipo, ".jpg")
+    nome_ficheiro = f"pedido{pedido_id}_{media_id}{extensao}"
+    caminho = os.path.join(MEDIA_DIR, nome_ficheiro)
+    with open(caminho, "wb") as f:
+        f.write(conteudo)
+    return nome_ficheiro
+
+
 # ---------------------------------------------------------------------------
 # Passos do fluxo "Marcar" — Limpeza
 # ---------------------------------------------------------------------------
@@ -882,18 +1067,25 @@ def passo_wrap_cor(de, idioma):
     enviar_texto(de, t("wrap_passo3", idioma) + "\n\n" + t("rodape_padrao", idioma))
 
 
-def passo_wrap_fotos(de, idioma):
-    enviar_texto(de, t("wrap_passo4", idioma))
+def passo_wrap_fotos_pergunta(de, idioma):
+    enviar_botoes(de, t("wrap_fotos_pergunta_corpo", idioma), [
+        {"id": "wrap_fotos_sim", "titulo": t("wrap_fotos_sim_botao", idioma)},
+        {"id": "wrap_fotos_nao", "titulo": t("wrap_fotos_nao_botao", idioma)},
+    ], idioma, rodape=t("rodape_padrao", idioma))
 
 
-def finalizar_pedido_wrap(de, idioma, sessao):
+def finalizar_pedido_wrap(de, idioma, sessao, pedido_id=None):
     tipo_wrap_pt = "Wrap total" if sessao.get("wrap_tipo") == "wrap_total" else "Wrap parcial"
+    num_fotos = contar_fotografias(pedido_id)
     linhas = ["📋 *Pedido de orçamento — Wrap & Proteção*", ""]
+    if pedido_id:
+        linhas.append(f"🆔 Pedido #{pedido_id}")
     linhas.append(f"👤 Cliente: {sessao.get('nome') or 'sem nome'}")
     linhas.append(f"📱 Contacto: {formatar_telefone(de)}")
     linhas.append(f"🚗 Veículo: {sessao.get('wrap_veiculo', '-')}")
     linhas.append(f"🎨 Tipo: {tipo_wrap_pt}")
     linhas.append(f"🖌️ Cor/acabamento: {sessao.get('wrap_cor', '-')}")
+    linhas.append(f"📸 Fotografias recebidas: {num_fotos}")
     texto_provider = "\n".join(linhas)  # sempre em português, ver mensagem_notificacao_provider
 
     veiculo = sessao.get("wrap_veiculo") or t("wrap_veiculo_generico", idioma)
@@ -972,14 +1164,61 @@ def mensagem_nao_entendi(idioma):
 
 
 # ---------------------------------------------------------------------------
+# Autenticação HTTP Basic do painel/API (nunca expor dados de clientes ou
+# fotografias publicamente)
+# ---------------------------------------------------------------------------
+def requer_autenticacao(func):
+    """Protege uma rota com autenticação HTTP Basic, usando
+    DASHBOARD_USER/DASHBOARD_PASSWORD. Falha sempre fechado: se as
+    credenciais não estiverem configuradas no ambiente, o acesso é
+    recusado, mesmo que o pedido não traga nenhuma autenticação."""
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        if not DASHBOARD_USER or not DASHBOARD_PASSWORD:
+            return Response("Painel não configurado.", 401)
+        auth = request.authorization
+        if not auth or auth.username != DASHBOARD_USER or auth.password != DASHBOARD_PASSWORD:
+            return Response(
+                "Autenticação necessária.", 401,
+                {"WWW-Authenticate": 'Basic realm="Painel Spotless"'},
+            )
+        return func(*args, **kwargs)
+    return wrapper
+
+
+# ---------------------------------------------------------------------------
 # Webhook
 # ---------------------------------------------------------------------------
 @app.route("/api/agendamentos", methods=["GET"])
+@requer_autenticacao
 def api_agendamentos():
     return jsonify(listar_agendamentos()), 200
 
 
+@app.route("/api/pedidos", methods=["GET"])
+@requer_autenticacao
+def api_pedidos():
+    return jsonify(listar_pedidos_orcamento()), 200
+
+
+@app.route("/api/pedidos/<int:pedido_id>", methods=["GET"])
+@requer_autenticacao
+def api_pedido_detalhe(pedido_id):
+    pedido = obter_pedido_orcamento(pedido_id)
+    if not pedido:
+        return jsonify(erro="Pedido não encontrado"), 404
+    pedido["fotografias"] = listar_fotografias(pedido_id)
+    return jsonify(pedido), 200
+
+
+@app.route("/media/<path:nome_ficheiro>", methods=["GET"])
+@requer_autenticacao
+def media(nome_ficheiro):
+    return send_from_directory(MEDIA_DIR, nome_ficheiro)
+
+
 @app.route("/dashboard", methods=["GET"])
+@requer_autenticacao
 def dashboard():
     return DASHBOARD_HTML
 
@@ -1019,6 +1258,20 @@ DASHBOARD_HTML = """
   .vazio{padding:40px 18px;text-align:center;color:var(--muted);}
   .refresh{color:var(--muted);font-size:12px;}
   a.btn{background:var(--gold);color:#1a1400;padding:8px 14px;border-radius:8px;text-decoration:none;font-size:13px;font-weight:700;}
+  tr.clicavel{cursor:pointer;}
+  .modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);align-items:center;justify-content:center;z-index:50;}
+  .modal-overlay.aberto{display:flex;}
+  .modal-caixa{background:var(--panel);border:1px solid var(--border);border-radius:12px;max-width:640px;width:92%;max-height:86vh;overflow-y:auto;}
+  .modal-cabecalho{display:flex;justify-content:space-between;align-items:center;padding:16px 18px;border-bottom:1px solid var(--border);}
+  .modal-cabecalho h3{margin:0;font-size:16px;}
+  .modal-fechar{cursor:pointer;color:var(--muted);font-size:18px;}
+  .modal-corpo{padding:18px;font-size:14px;line-height:1.7;}
+  .modal-corpo .linha{margin-bottom:6px;}
+  .galeria{display:grid;grid-template-columns:repeat(auto-fill,minmax(90px,1fr));gap:8px;margin-top:12px;}
+  .galeria img{width:100%;height:90px;object-fit:cover;border-radius:8px;cursor:zoom-in;border:1px solid var(--border);}
+  .lightbox{display:none;position:fixed;inset:0;background:rgba(0,0,0,.88);align-items:center;justify-content:center;z-index:60;cursor:zoom-out;}
+  .lightbox.aberto{display:flex;}
+  .lightbox img{max-width:92vw;max-height:92vh;border-radius:8px;}
 </style>
 </head>
 <body>
@@ -1042,7 +1295,27 @@ DASHBOARD_HTML = """
     <h2>Agendamentos</h2>
     <div id="conteudo"><div class="vazio">A carregar…</div></div>
   </div>
+
+  <div class="lista" style="margin-top:22px;">
+    <h2>Pedidos de orçamento (Wrap &amp; Proteção)</h2>
+    <div id="conteudo-pedidos"><div class="vazio">A carregar…</div></div>
+  </div>
+
   <div class="refresh" style="margin-top:10px;">Atualiza-se sozinho a cada 20 segundos.</div>
+</div>
+
+<div id="modal-pedido" class="modal-overlay" onclick="fecharModalSeExterior(event)">
+  <div class="modal-caixa">
+    <div class="modal-cabecalho">
+      <h3 id="modal-titulo">Pedido de orçamento</h3>
+      <span class="modal-fechar" onclick="fecharModal()">✕</span>
+    </div>
+    <div id="modal-corpo" class="modal-corpo"></div>
+  </div>
+</div>
+
+<div id="lightbox" class="lightbox" onclick="this.classList.remove('aberto')">
+  <img id="lightbox-img" src="">
 </div>
 
 <script>
@@ -1085,8 +1358,81 @@ async function carregar(){
   html += '</tbody></table>';
   cont.innerHTML = html;
 }
+
+async function carregarPedidos(){
+  const resp = await fetch('/api/pedidos');
+  if(!resp.ok){ return; }
+  const dados = await resp.json();
+
+  const cont = document.getElementById('conteudo-pedidos');
+  if(dados.length === 0){
+    cont.innerHTML = '<div class="vazio">Ainda não há pedidos de orçamento com fotografias.</div>';
+    return;
+  }
+
+  let html = '<table><thead><tr><th>Cliente</th><th>Veículo</th><th>Wrap</th><th>Estado</th><th>Fotos</th><th>Pedido em</th></tr></thead><tbody>';
+  dados.forEach(p => {
+    const criado = p.criado_em ? new Date(p.criado_em).toLocaleString('pt-PT') : '-';
+    html += `<tr class="clicavel" onclick="abrirPedido(${p.id})">
+      <td>${p.nome || p.telefone}<br><span style="color:var(--muted);font-size:12px;">${p.telefone}</span></td>
+      <td>${p.veiculo || '-'}${p.ano_veiculo ? ' ('+p.ano_veiculo+')' : ''}</td>
+      <td><span class="tag">${p.tipo_wrap || '-'}</span>${p.cor_acabamento ? '<br><span style="color:var(--muted);font-size:12px;">'+p.cor_acabamento+'</span>' : ''}</td>
+      <td>${p.estado}</td>
+      <td>${p.num_fotos || 0}</td>
+      <td style="color:var(--muted);">${criado}</td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+  cont.innerHTML = html;
+}
+
+async function abrirPedido(id){
+  const resp = await fetch('/api/pedidos/' + id);
+  if(!resp.ok){ return; }
+  const p = await resp.json();
+  document.getElementById('modal-titulo').textContent = 'Pedido de orçamento #' + p.id;
+
+  let html = '';
+  html += `<div class="linha">👤 Cliente: ${p.nome || p.telefone}</div>`;
+  html += `<div class="linha">📱 Contacto: ${p.telefone}</div>`;
+  html += `<div class="linha">🚗 Veículo: ${p.veiculo || '-'}${p.ano_veiculo ? ' ('+p.ano_veiculo+')' : ''}</div>`;
+  html += `<div class="linha">🎨 Tipo: ${p.tipo_wrap || '-'}</div>`;
+  html += `<div class="linha">🖌️ Cor/acabamento: ${p.cor_acabamento || '-'}</div>`;
+  html += `<div class="linha">📌 Estado: ${p.estado}</div>`;
+  html += `<div class="linha">🕓 Pedido em: ${p.criado_em ? new Date(p.criado_em).toLocaleString('pt-PT') : '-'}</div>`;
+
+  if(p.fotografias && p.fotografias.length){
+    html += '<div class="linha" style="margin-top:10px;">📸 Fotografias (' + p.fotografias.length + '):</div>';
+    html += '<div class="galeria">';
+    p.fotografias.forEach(f => {
+      html += `<img src="/media/${f.nome_ficheiro}" onclick="abrirLightbox('/media/${f.nome_ficheiro}')">`;
+    });
+    html += '</div>';
+  } else {
+    html += '<div class="linha" style="margin-top:10px;color:var(--muted);">Sem fotografias enviadas.</div>';
+  }
+
+  document.getElementById('modal-corpo').innerHTML = html;
+  document.getElementById('modal-pedido').classList.add('aberto');
+}
+
+function fecharModal(){
+  document.getElementById('modal-pedido').classList.remove('aberto');
+}
+
+function fecharModalSeExterior(event){
+  if(event.target.id === 'modal-pedido') fecharModal();
+}
+
+function abrirLightbox(src){
+  document.getElementById('lightbox-img').src = src;
+  document.getElementById('lightbox').classList.add('aberto');
+}
+
 carregar();
+carregarPedidos();
 setInterval(carregar, 20000);
+setInterval(carregarPedidos, 20000);
 </script>
 </body>
 </html>
@@ -1163,8 +1509,10 @@ def voltar_um_passo(de, idioma, sessao):
     categoria = sessao.get("categoria")
 
     if fluxo == "wrap":
-        if "wrap_cor" in sessao:
-            sessao.pop("wrap_cor", None); guardar_sessao(de, sessao); passo_wrap_cor(de, idioma)
+        if sessao.get("aguardando_fotos"):
+            sessao.pop("aguardando_fotos", None); guardar_sessao(de, sessao); passo_wrap_fotos_pergunta(de, idioma)
+        elif "wrap_cor" in sessao:
+            sessao.pop("wrap_cor", None); sessao.pop("pedido_id", None); guardar_sessao(de, sessao); passo_wrap_cor(de, idioma)
         elif "wrap_tipo" in sessao:
             sessao.pop("wrap_tipo", None); guardar_sessao(de, sessao); passo_wrap_tipo(de, idioma)
         elif "wrap_veiculo" in sessao:
@@ -1261,13 +1609,18 @@ def receber_mensagem():
 
             if sessao.get("fluxo") == "wrap" and "wrap_tipo" in sessao and "wrap_cor" not in sessao:
                 sessao["wrap_cor"] = msg["text"]["body"].strip()
+                pedido_id = criar_pedido_orcamento(de, sessao)
+                sessao["pedido_id"] = pedido_id
                 guardar_sessao(de, sessao)
-                passo_wrap_fotos(de, idioma)
+                passo_wrap_fotos_pergunta(de, idioma)
                 return jsonify(status="ok"), 200
 
-            if sessao.get("fluxo") == "wrap" and "wrap_cor" in sessao and texto == "continuar":
-                finalizar_pedido_wrap(de, idioma, sessao)
-                reiniciar_sessao(de)
+            if sessao.get("fluxo") == "wrap" and sessao.get("aguardando_fotos"):
+                if texto == "concluir":
+                    finalizar_pedido_wrap(de, idioma, sessao, sessao.get("pedido_id"))
+                    reiniciar_sessao(de)
+                else:
+                    enviar_texto(de, t("wrap_foto_formato_invalido", idioma))
                 return jsonify(status="ok"), 200
 
             if sessao.get("fluxo") == "orcamento":
@@ -1298,9 +1651,14 @@ def receber_mensagem():
             id_botao = msg["interactive"]["button_reply"]["id"]
 
             if id_botao in LANG_IDS:  # "Alterar idioma" com sessão já ativa
-                sessao["idioma"] = LANG_IDS[id_botao]
+                # Limpa os campos do processo em curso (categoria, passos já
+                # escolhidos, etc.) e preserva só o nome — para dados antigos
+                # nunca fazerem o bot saltar etapas depois de mudar de idioma.
+                novo_idioma = LANG_IDS[id_botao]
+                sessao = sessao_preservando_perfil(sessao)
+                sessao["idioma"] = novo_idioma
                 guardar_sessao(de, sessao)
-                enviar_menu_principal(de, sessao["idioma"], saudacao=True)
+                enviar_menu_principal(de, novo_idioma, saudacao=True)
                 return jsonify(status="ok"), 200
 
             if id_botao == ID_CANCELAR:
@@ -1337,6 +1695,18 @@ def receber_mensagem():
                 sessao["wrap_tipo"] = id_botao
                 guardar_sessao(de, sessao)
                 passo_wrap_cor(de, idioma)
+                return jsonify(status="ok"), 200
+
+            if id_botao == "wrap_fotos_sim":
+                sessao["aguardando_fotos"] = True
+                guardar_sessao(de, sessao)
+                enviar_texto(de, t("wrap_fotos_pedir", idioma))
+                return jsonify(status="ok"), 200
+
+            if id_botao in ("wrap_fotos_nao", "wrap_fotos_concluir"):
+                pedido_id = sessao.get("pedido_id")
+                finalizar_pedido_wrap(de, idioma, sessao, pedido_id)
+                reiniciar_sessao(de)
                 return jsonify(status="ok"), 200
 
             if id_botao == "confirmar":
@@ -1443,11 +1813,40 @@ def receber_mensagem():
             enviar_texto(de, mensagem_nao_entendi(idioma))
             return jsonify(status="ok"), 200
 
-        # --- Qualquer outro tipo (áudio, imagem, sticker, etc.) -------------
-        if tipo == "image" and sessao.get("fluxo") == "wrap" and "wrap_cor" in sessao:
-            enviar_texto(de, t("wrap_foto_recebida", idioma))
+        # --- Fotografias do pedido de orçamento Wrap & Proteção -------------
+        if tipo == "image" and sessao.get("fluxo") == "wrap" and sessao.get("aguardando_fotos") and sessao.get("pedido_id"):
+            pedido_id = sessao["pedido_id"]
+            media_id = msg["image"]["id"]
+            mime_tipo = msg["image"].get("mime_type", "")
+
+            conteudo, mime_confirmado = None, None
+            if mime_tipo in MIME_IMAGENS_VALIDAS:
+                try:
+                    conteudo, mime_confirmado = descarregar_media_whatsapp(media_id)
+                except requests.RequestException:
+                    conteudo = None
+
+            if not conteudo:
+                enviar_texto(de, t("wrap_foto_formato_invalido", idioma))
+                return jsonify(status="ok"), 200
+
+            nome_ficheiro = guardar_media_local(pedido_id, media_id, conteudo, mime_confirmado or mime_tipo)
+            adicionar_fotografia(pedido_id, nome_ficheiro, mime_confirmado or mime_tipo)
+            total_fotos = contar_fotografias(pedido_id)
+
+            if total_fotos >= 5:
+                enviar_texto(de, t("wrap_foto_recebida_contagem", idioma, atual=total_fotos, total=5))
+                enviar_texto(de, t("wrap_fotos_limite_atingido", idioma))
+                finalizar_pedido_wrap(de, idioma, sessao, pedido_id)
+                reiniciar_sessao(de)
+            else:
+                enviar_texto(de, t("wrap_foto_recebida_contagem", idioma, atual=total_fotos, total=5))
+                enviar_botoes(de, t("wrap_fotos_mais_ou_concluir", idioma), [
+                    {"id": "wrap_fotos_concluir", "titulo": t("wrap_fotos_concluir_botao", idioma)},
+                ], idioma)
             return jsonify(status="ok"), 200
 
+        # --- Qualquer outro tipo (áudio, imagem fora de contexto, sticker, etc.) ---
         enviar_texto(de, mensagem_nao_entendi(idioma))
 
     except (KeyError, IndexError):
@@ -1462,8 +1861,10 @@ def reenviar_passo_atual(de, idioma, sessao):
     fluxo = sessao.get("fluxo")
 
     if fluxo == "wrap":
-        if "wrap_cor" in sessao:
-            passo_wrap_fotos(de, idioma)
+        if sessao.get("aguardando_fotos"):
+            enviar_texto(de, t("wrap_fotos_pedir", idioma))
+        elif "wrap_cor" in sessao:
+            passo_wrap_fotos_pergunta(de, idioma)
         elif "wrap_tipo" in sessao:
             passo_wrap_cor(de, idioma)
         elif "wrap_veiculo" in sessao:
