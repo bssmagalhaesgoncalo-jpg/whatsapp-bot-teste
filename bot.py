@@ -50,6 +50,13 @@ MEDIA_DIR = os.environ.get("MEDIA_DIR", "media_pedidos")
 DASHBOARD_USER = os.environ.get("DASHBOARD_USER", "")
 DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "")
 
+# URL pública onde este serviço está publicado (ex.: https://o-teu-servico.onrender.com).
+# Usada só para construir a ligação direta ao dossiê de um pedido no painel,
+# enviada na notificação interna (ver link_dossie_pedido()). Opcional: se não
+# estiver definida, tenta-se deduzir do próprio pedido HTTP em curso; se isso
+# também não for possível (ex.: fora de um pedido Flask), a ligação é omitida.
+PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
+
 GRAPH_URL = f"https://graph.facebook.com/v21.0/{PHONE_NUMBER_ID}/messages"
 
 NOME_OFICINA = "Spotless Car Detail (TESTE)"
@@ -59,6 +66,25 @@ MORADA_OFICINA = "Spotless Car Detail, Zermatt"
 # identificadores internos, não texto visível)
 ID_VOLTAR = "voltar"
 ID_CANCELAR = "cancelar_processo"
+
+# IDs canónicos e reutilizáveis para as ações universais (menu, nova
+# marcação, voltar, cancelar, carrinho, gerir, idioma, humano, orçamento
+# rápido) — usados em todos os novos botões/listas criados por este pedido,
+# para nunca obrigar o cliente a escrever um comando. Os IDs "históricos"
+# (ID_VOLTAR, ID_CANCELAR, "mp_marcar", "ver_carrinho", "modo_rapido", ...)
+# continuam a funcionar exatamente como antes — cada ACAO_* é tratado como
+# um SINÓNIMO do respetivo ID histórico no despacho do webhook (nunca uma
+# substituição), para não repetir todo o fluxo já testado.
+ACAO_MENU = "acao_menu"
+ACAO_NOVA_MARCACAO = "acao_nova_marcacao"
+ACAO_VOLTAR = "acao_voltar"
+ACAO_CANCELAR = "acao_cancelar"
+ACAO_CARRINHO = "acao_carrinho"
+ACAO_GERIR = "acao_gerir"
+ACAO_IDIOMA = "acao_idioma"
+ACAO_HUMANO = "acao_humano"
+ACAO_RAPIDO = "acao_rapido"
+ACAO_MAIS = "acao_mais"  # "⚙️ Mais ações" — submenu quando uma lista está perto do limite
 
 # Limites impostos pela API do WhatsApp em mensagens interativas. Aplicados
 # defensivamente em enviar_lista()/enviar_botoes(), para que nenhum texto
@@ -230,6 +256,8 @@ TEXTOS = {
     "confirmado_instrucao": {"pt": "Por favor, retire os seus objetos pessoais do veículo antes da entrega.",
                               "de": "Bitte entfernen Sie Ihre persönlichen Gegenstände vor der Abgabe aus dem Fahrzeug.",
                               "en": "Please remove your personal belongings from the vehicle before drop-off."},
+    # Já não faz parte do texto de confirmação (ver botão "🗓️ Gerir marcação"
+    # enviado logo a seguir) — mantida por compatibilidade, não é mais usada.
     "confirmado_rodape": {"pt": "Escreva MENU para nova marcação, ou GERIR para consultar/alterar esta.",
                            "de": "Schreiben Sie MENU für eine neue Buchung oder GERIR, um diese anzusehen/zu ändern.",
                            "en": "Type MENU for a new booking, or GERIR to view/change this one."},
@@ -267,13 +295,11 @@ TEXTOS = {
                                   "en": "💰 Price: under review by our team"},
     "rapido_finalizado_cliente": {"pt": "✅ Pedido rápido enviado! A nossa equipa vai analisar "
                                         "(e as fotografias, se enviadas) e responde-lhe em breve com "
-                                        "o orçamento.\n\nEscreva MENU para voltar ao início.",
+                                        "o orçamento.",
                                    "de": "✅ Schnellanfrage gesendet! Unser Team prüft sie (und die Fotos, "
-                                        "falls gesendet) und meldet sich in Kürze mit dem Angebot.\n\n"
-                                        "Schreiben Sie MENU, um zum Anfang zurückzukehren.",
+                                        "falls gesendet) und meldet sich in Kürze mit dem Angebot.",
                                    "en": "✅ Quick request sent! Our team will review it (and the photos, "
-                                        "if sent) and will get back to you shortly with the quote.\n\n"
-                                        "Type MENU to return to the start."},
+                                        "if sent) and will get back to you shortly with the quote."},
 
     # --- Wrap & Proteção: carrinho no modo rápido ----------------------------
     "carrinho_rapido_titulo": {"pt": "🛒 *Pedido rápido de Wrap*", "de": "🛒 *Schnellanfrage Folierung*",
@@ -285,13 +311,21 @@ TEXTOS = {
 
     # --- Wrap & Proteção: falar com especialista -----------------------------
     "especialista_cliente": {"pt": "💬 Pedido recebido! Um especialista de wrap vai entrar em contacto "
-                                    "consigo por aqui em breve, sem compromisso.\n\n"
-                                    "Escreva MENU para voltar ao início.",
+                                    "consigo por aqui em breve, sem compromisso.",
                               "de": "💬 Anfrage erhalten! Ein Folierungs-Spezialist meldet sich in Kürze "
-                                    "unverbindlich hier bei Ihnen.\n\n"
-                                    "Schreiben Sie MENU, um zum Anfang zurückzukehren.",
+                                    "unverbindlich hier bei Ihnen.",
                               "en": "💬 Request received! A wrap specialist will get in touch with you here "
-                                    "shortly, with no obligation.\n\nType MENU to return to the start."},
+                                    "shortly, with no obligation."},
+
+    # --- Notificação interna sobre um pedido: reação do cliente (recusa) ----
+    "botao_menu_principal": {"pt": "🏠 Menu principal", "de": "🏠 Hauptmenü", "en": "🏠 Main menu"},
+    "rapido_recusado_cliente": {
+        "pt": "Lamentamos, mas não vamos avançar com este pedido de Wrap & Proteção "
+              "neste momento. Obrigado pelo seu interesse!",
+        "de": "Es tut uns leid, aber wir werden diese Anfrage für Folierung & Schutz "
+              "derzeit nicht weiterverfolgen. Danke für Ihr Interesse!",
+        "en": "We're sorry, but we won't be proceeding with this Wrap & Protection "
+              "request at this time. Thank you for your interest!"},
 
     "rapido_linha_lista": {"pt": "⚡ Pedido rápido", "de": "⚡ Schnellanfrage", "en": "⚡ Quick request"},
     "rapido_mudou_modo": {"pt": "⚡ Sem problema — vamos pelo caminho rápido.",
@@ -379,13 +413,13 @@ TEXTOS = {
                                     "en": "✅ We've already received the maximum of 5 photos. Let's now review your request."},
     "wrap_finalizado_cliente": {"pt": "✅ Pedido de orçamento enviado! A nossa equipa vai analisar os detalhes "
                                       "(e as fotografias, se enviadas) e responde-lhe em breve com o orçamento e "
-                                      "disponibilidade para *{veiculo}*.\n\nEscreva MENU para voltar ao início.",
+                                      "disponibilidade para *{veiculo}*.",
                                  "de": "✅ Kostenvoranschlag-Anfrage gesendet! Unser Team prüft die Details "
                                       "(und die Fotos, falls gesendet) und meldet sich in Kürze mit dem Angebot und "
-                                      "der Verfügbarkeit für *{veiculo}*.\n\nSchreiben Sie MENU, um zum Anfang zurückzukehren.",
+                                      "der Verfügbarkeit für *{veiculo}*.",
                                  "en": "✅ Quote request sent! Our team will review the details (and the photos, "
                                       "if sent) and will get back to you shortly with the quote and availability "
-                                      "for *{veiculo}*.\n\nType MENU to return to the start."},
+                                      "for *{veiculo}*."},
     "wrap_veiculo_generico": {"pt": "o seu veículo", "de": "Ihr Fahrzeug", "en": "your vehicle"},
     "wrap_total_estimado": {"pt": "💰 Total estimado: {total}\n(o valor final pode variar após a análise das fotografias)",
                              "de": "💰 Geschätzter Gesamtbetrag: {total}\n(der endgültige Betrag kann nach der Analyse der Fotos abweichen)",
@@ -410,14 +444,14 @@ TEXTOS = {
                                 "(z.B. \"Komplettpolitur, Audi A4 2019\"). Unser Team antwortet Ihnen in Kürze mit einem Kostenvoranschlag.",
                           "en": "💰 No problem! Briefly describe the service you'd like and the vehicle "
                                 "(e.g. \"Full polish, Audi A4 2019\"). Our team will reply with a quote shortly."},
-    "orcamento_recebido_cliente": {"pt": "✅ Recebido! A equipa vai analisar e responde-lhe em breve.\n\nEscreva MENU para voltar ao início.",
-                                    "de": "✅ Erhalten! Das Team prüft die Anfrage und meldet sich in Kürze.\n\nSchreiben Sie MENU, um zum Anfang zurückzukehren.",
-                                    "en": "✅ Received! Our team will review it and get back to you shortly.\n\nType MENU to return to the start."},
+    "orcamento_recebido_cliente": {"pt": "✅ Recebido! A equipa vai analisar e responde-lhe em breve.",
+                                    "de": "✅ Erhalten! Das Team prüft die Anfrage und meldet sich in Kürze.",
+                                    "en": "✅ Received! Our team will review it and get back to you shortly."},
 
     # --- Gestão de marcação -----------------------------------------------
-    "gerir_sem_marcacao": {"pt": "Não encontrei nenhuma marcação ativa associada a este número.\n\nEscreva MENU para fazer uma nova marcação.",
-                            "de": "Ich habe keine aktive Buchung zu dieser Nummer gefunden.\n\nSchreiben Sie MENU, um eine neue Buchung vorzunehmen.",
-                            "en": "I couldn't find any active booking for this number.\n\nType MENU to make a new booking."},
+    "gerir_sem_marcacao": {"pt": "Não encontrei nenhuma marcação ativa associada a este número.",
+                            "de": "Ich habe keine aktive Buchung zu dieser Nummer gefunden.",
+                            "en": "I couldn't find any active booking for this number."},
     "gerir_corpo": {"pt": "🗓️ A sua marcação #{id}:\n\n🔧 {servico}\n📅 {data} às {hora}\n⏱️ Duração: {duracao}\n💰 {preco}\n\nO que deseja fazer?",
                     "de": "🗓️ Ihre Buchung #{id}:\n\n🔧 {servico}\n📅 {data} um {hora}\n⏱️ Dauer: {duracao}\n💰 {preco}\n\nWas möchten Sie tun?",
                     "en": "🗓️ Your booking #{id}:\n\n🔧 {servico}\n📅 {data} at {hora}\n⏱️ Duration: {duracao}\n💰 {preco}\n\nWhat would you like to do?"},
@@ -427,14 +461,14 @@ TEXTOS = {
     "reagendar_aviso": {"pt": "Sem problema, vamos criar uma nova marcação. A anterior foi arquivada.",
                          "de": "Kein Problem, wir erstellen eine neue Buchung. Die vorherige wurde archiviert.",
                          "en": "No problem, let's create a new booking. The previous one has been archived."},
-    "cancelado_cliente": {"pt": "✅ A sua marcação foi cancelada. Escreva MENU quando quiser marcar novamente.",
-                           "de": "✅ Ihre Buchung wurde storniert. Schreiben Sie MENU, wenn Sie erneut buchen möchten.",
-                           "en": "✅ Your booking has been cancelled. Type MENU whenever you'd like to book again."},
+    "cancelado_cliente": {"pt": "✅ A sua marcação foi cancelada.",
+                           "de": "✅ Ihre Buchung wurde storniert.",
+                           "en": "✅ Your booking has been cancelled."},
 
     # --- Falar com a equipa ------------------------------------------------
-    "humano_cliente": {"pt": "💬 Vou avisar já a nossa equipa — em breve alguém entra em contacto consigo por aqui.\n\nEscreva MENU a qualquer momento para voltar ao início.",
-                        "de": "💬 Ich informiere unser Team sofort — jemand wird sich in Kürze hier bei Ihnen melden.\n\nSchreiben Sie jederzeit MENU, um zum Anfang zurückzukehren.",
-                        "en": "💬 I'll let our team know right away — someone will get in touch with you here shortly.\n\nType MENU at any time to return to the start."},
+    "humano_cliente": {"pt": "💬 Vou avisar já a nossa equipa — em breve alguém entra em contacto consigo por aqui.",
+                        "de": "💬 Ich informiere unser Team sofort — jemand wird sich in Kürze hier bei Ihnen melden.",
+                        "en": "💬 I'll let our team know right away — someone will get in touch with you here shortly."},
 
     # --- Ajuda / erros / comandos ------------------------------------------
     "ajuda_header": {"pt": "🆘 *Comandos disponíveis, a qualquer momento:*",
@@ -464,9 +498,9 @@ TEXTOS = {
 
     # --- Carrinho -----------------------------------------------------------
     "carrinho_titulo": {"pt": "🛒 *O seu carrinho*", "de": "🛒 *Ihr Warenkorb*", "en": "🛒 *Your cart*"},
-    "carrinho_vazio": {"pt": "🛒 O seu carrinho está vazio.\n\nEscreva MENU para começar uma marcação.",
-                        "de": "🛒 Ihr Warenkorb ist leer.\n\nSchreiben Sie MENU, um eine Buchung zu starten.",
-                        "en": "🛒 Your cart is empty.\n\nType MENU to start a booking."},
+    "carrinho_vazio": {"pt": "🛒 O seu carrinho está vazio.",
+                        "de": "🛒 Ihr Warenkorb ist leer.",
+                        "en": "🛒 Your cart is empty."},
     "carrinho_subtotal": {"pt": "Subtotal: {subtotal}", "de": "Zwischensumme: {subtotal}", "en": "Subtotal: {subtotal}"},
     "carrinho_total": {"pt": "💰 Total: {total}", "de": "💰 Gesamtbetrag: {total}", "en": "💰 Total: {total}"},
     "carrinho_total_estimado": {"pt": "💰 Total estimado: {total}", "de": "💰 Geschätzter Gesamtbetrag: {total}",
@@ -488,9 +522,9 @@ TEXTOS = {
     "nao_entendi": {"pt": "Desculpe, não consegui perceber 😅\n\nEscolha uma opção ou escreva MENU para recomeçar.",
                      "de": "Entschuldigung, das habe ich nicht verstanden 😅\n\nWählen Sie eine Option oder schreiben Sie MENU, um neu zu beginnen.",
                      "en": "Sorry, I didn't understand that 😅\n\nChoose an option or type MENU to start again."},
-    "processo_cancelado": {"pt": "❌ Processo cancelado. Escreva MENU quando quiser recomeçar.",
-                            "de": "❌ Vorgang abgebrochen. Schreiben Sie MENU, wenn Sie neu beginnen möchten.",
-                            "en": "❌ Process cancelled. Type MENU whenever you'd like to start again."},
+    "processo_cancelado": {"pt": "❌ Processo cancelado.",
+                            "de": "❌ Vorgang abgebrochen.",
+                            "en": "❌ Process cancelled."},
 
     "retomar_pergunta": {"pt": "Encontrámos uma marcação que ainda não terminou.\nDeseja continuar ou começar novamente?",
                           "de": "Wir haben eine noch nicht abgeschlossene Buchung gefunden.\nMöchten Sie fortfahren oder neu beginnen?",
@@ -499,6 +533,162 @@ TEXTOS = {
     "botao_recomecar": {"pt": "🔄 Recomeçar", "de": "🔄 Neu beginnen", "en": "🔄 Start again"},
 
     "preco_a_combinar": {"pt": "a combinar", "de": "auf Anfrage", "en": "on request"},
+
+    # --- Ações universais / seguimento sem obrigar a escrever comandos -------
+    "e_agora_pergunta": {"pt": "O que deseja fazer a seguir?", "de": "Was möchten Sie als Nächstes tun?",
+                          "en": "What would you like to do next?"},
+    "botao_falar_equipa": {"pt": "💬 Falar com a equipa", "de": "💬 Mit dem Team sprechen",
+                            "en": "💬 Talk to the team"},
+    "botao_gerir_marcacao": {"pt": "🗓️ Gerir marcação", "de": "🗓️ Termin verwalten", "en": "🗓️ Manage booking"},
+    "botao_mais_acoes": {"pt": "⚙️ Mais ações", "de": "⚙️ Weitere Aktionen", "en": "⚙️ More actions"},
+    "mais_acoes_pergunta": {"pt": "O que deseja fazer?", "de": "Was möchten Sie tun?", "en": "What would you like to do?"},
+    "mais_acoes_seccao": {"pt": "Mais ações", "de": "Weitere Aktionen", "en": "More actions"},
+    "nao_entendi_opcoes": {"pt": "Vamos tentar de outra forma. O que deseja fazer?",
+                            "de": "Versuchen wir es anders. Was möchten Sie tun?",
+                            "en": "Let's try another way. What would you like to do?"},
+
+    # --- Orçamento enviado pelo painel ao cliente ----------------------------
+    "orcamento_cliente_titulo": {"pt": "💰 *Orçamento — Pedido #{pedido}*", "de": "💰 *Angebot — Anfrage #{pedido}*",
+                                  "en": "💰 *Quote — Request #{pedido}*"},
+    "orcamento_cliente_subtotal": {"pt": "Subtotal: {subtotal}", "de": "Zwischensumme: {subtotal}",
+                                    "en": "Subtotal: {subtotal}"},
+    "orcamento_cliente_desconto": {"pt": "Desconto: -{desconto}", "de": "Rabatt: -{desconto}",
+                                    "en": "Discount: -{desconto}"},
+    "orcamento_cliente_total": {"pt": "💰 Total: {total}", "de": "💰 Gesamtbetrag: {total}", "en": "💰 Total: {total}"},
+    "orcamento_cliente_observacoes": {"pt": "📝 Observações: {observacoes}", "de": "📝 Anmerkungen: {observacoes}",
+                                       "en": "📝 Notes: {observacoes}"},
+    "orcamento_cliente_validade": {"pt": "⏳ Válido por {dias} dias", "de": "⏳ Gültig für {dias} Tage",
+                                    "en": "⏳ Valid for {dias} days"},
+    "botao_orcamento_aceitar": {"pt": "✅ Aceitar orçamento", "de": "✅ Angebot annehmen", "en": "✅ Accept quote"},
+    "botao_orcamento_alterar": {"pt": "✏️ Pedir alteração", "de": "✏️ Änderung anfragen", "en": "✏️ Request change"},
+    "botao_orcamento_recusar": {"pt": "❌ Recusar", "de": "❌ Ablehnen", "en": "❌ Decline"},
+    "orcamento_ja_respondido": {"pt": "Este orçamento já foi respondido anteriormente.",
+                                 "de": "Dieses Angebot wurde bereits beantwortet.",
+                                 "en": "This quote has already been responded to."},
+    "orcamento_aceite_cliente": {"pt": "✅ Ótimo! O seu orçamento foi aceite. A nossa equipa entra em contacto "
+                                       "para combinar os detalhes.",
+                                  "de": "✅ Grossartig! Ihr Angebot wurde angenommen. Unser Team meldet sich, "
+                                       "um die Details zu vereinbaren.",
+                                  "en": "✅ Great! Your quote has been accepted. Our team will get in touch "
+                                       "to arrange the details."},
+    "botao_avancar_agendamento": {"pt": "📅 Marcar agendamento", "de": "📅 Termin buchen", "en": "📅 Book appointment"},
+    "orcamento_recusar_confirmar_pergunta": {"pt": "Tem a certeza de que quer recusar este orçamento?",
+                                              "de": "Sind Sie sicher, dass Sie dieses Angebot ablehnen möchten?",
+                                              "en": "Are you sure you want to decline this quote?"},
+    "botao_sim_recusar": {"pt": "❌ Sim, recusar", "de": "❌ Ja, ablehnen", "en": "❌ Yes, decline"},
+    "botao_nao_voltar": {"pt": "↩️ Não, voltar", "de": "↩️ Nein, zurück", "en": "↩️ No, go back"},
+    "orcamento_recusado_cliente": {"pt": "Sem problema. Obrigado pelo seu tempo — ficamos à disposição "
+                                         "para um novo pedido quando quiser.",
+                                    "de": "Kein Problem. Danke für Ihre Zeit — wir stehen für eine neue "
+                                         "Anfrage jederzeit zur Verfügung.",
+                                    "en": "No problem. Thank you for your time — we're happy to help "
+                                         "with a new request whenever you'd like."},
+    "botao_novo_pedido": {"pt": "📅 Novo pedido", "de": "📅 Neue Anfrage", "en": "📅 New request"},
+
+    # --- Pedir alteração ao orçamento ----------------------------------------
+    "alteracao_pergunta": {"pt": "O que gostaria de alterar?", "de": "Was möchten Sie ändern?",
+                            "en": "What would you like to change?"},
+    "alteracao_seccao": {"pt": "Alterações possíveis", "de": "Mögliche Änderungen", "en": "Possible changes"},
+    "alteracao_botao": {"pt": "✏️ Escolher", "de": "✏️ Wählen", "en": "✏️ Choose"},
+    "alteracao_opcao_servico": {"pt": "Serviço/tipo de wrap", "de": "Service/Folierungsart",
+                                 "en": "Service/wrap type"},
+    "alteracao_opcao_veiculo": {"pt": "Veículo", "de": "Fahrzeug", "en": "Vehicle"},
+    "alteracao_opcao_cor": {"pt": "Cor/acabamento", "de": "Farbe/Finish", "en": "Colour/finish"},
+    "alteracao_opcao_prazo": {"pt": "Prazo/data", "de": "Frist/Termin", "en": "Timeline/date"},
+    "alteracao_opcao_outra": {"pt": "Outra alteração", "de": "Andere Änderung", "en": "Other change"},
+    "alteracao_opcao_equipa": {"pt": "Falar com a equipa", "de": "Mit dem Team sprechen", "en": "Talk to the team"},
+    "alteracao_outra_pedir": {"pt": "Descreva a alteração que pretende. Ex.: \"Gostaria de um prazo mais curto\".",
+                               "de": "Beschreiben Sie die gewünschte Änderung. Z.B. \"Ich hätte gerne einen "
+                                    "kürzeren Termin\".",
+                               "en": "Describe the change you'd like. E.g. \"I'd like a shorter timeline\"."},
+    "alteracao_recebida_cliente": {"pt": "✅ Pedido de alteração recebido! A equipa vai rever e envia um novo "
+                                         "orçamento em breve.",
+                                    "de": "✅ Änderungsanfrage erhalten! Das Team prüft sie und sendet in "
+                                         "Kürze ein neues Angebot.",
+                                    "en": "✅ Change request received! The team will review it and send a "
+                                         "new quote shortly."},
+
+    # --- Notificação interna: ações sobre um novo pedido ---------------------
+    "botao_pedido_analisar": {"pt": "🔎 Analisar pedido", "de": "🔎 Anfrage prüfen", "en": "🔎 Review request"},
+    "botao_pedido_contactar": {"pt": "💬 Contactar cliente", "de": "💬 Kunde kontaktieren", "en": "💬 Contact client"},
+    "botao_pedido_recusar": {"pt": "❌ Recusar pedido", "de": "❌ Anfrage ablehnen", "en": "❌ Decline request"},
+    "pedido_em_analise_cliente": {"pt": "✅ O seu pedido foi aceite e está agora em análise pela nossa equipa. "
+                                        "Vai receber o orçamento em breve.",
+                                   "de": "✅ Ihre Anfrage wurde angenommen und wird nun von unserem Team geprüft. "
+                                        "Sie erhalten in Kürze das Angebot.",
+                                   "en": "✅ Your request has been accepted and is now under review by our team. "
+                                        "You'll receive the quote shortly."},
+
+    # --- Carrinho: pedido pendente persistente -------------------------------
+    "carrinho_botao_ver_pendente": {"pt": "🛒 Carrinho · {n} pendente", "de": "🛒 Warenkorb · {n} offen",
+                                     "en": "🛒 Cart · {n} pending"},
+    "carrinho_pendente_titulo": {"pt": "🛒 *Pedido pendente*", "de": "🛒 *Ausstehende Anfrage*",
+                                  "en": "🛒 *Pending request*"},
+    "carrinho_pendente_id": {"pt": "🆔 Pedido #{id}", "de": "🆔 Anfrage #{id}", "en": "🆔 Request #{id}"},
+    "carrinho_pendente_estado": {"pt": "📌 Estado: {estado}", "de": "📌 Status: {estado}", "en": "📌 Status: {estado}"},
+    "carrinho_pendente_preco_sob_analise": {"pt": "💰 Preço: sob análise da equipa",
+                                             "de": "💰 Preis: wird vom Team geprüft",
+                                             "en": "💰 Price: under review by our team"},
+    "botao_ver_pedido_orcamento": {"pt": "🛒 Ver pedido/orçamento", "de": "🛒 Anfrage/Angebot ansehen",
+                                    "en": "🛒 View request/quote"},
+    "botao_cancelar_pedido_cliente": {"pt": "❌ Cancelar pedido", "de": "❌ Anfrage stornieren",
+                                       "en": "❌ Cancel request"},
+    "cancelar_pedido_confirmar_pergunta": {"pt": "Tem a certeza de que quer cancelar este pedido?",
+                                            "de": "Sind Sie sicher, dass Sie diese Anfrage stornieren möchten?",
+                                            "en": "Are you sure you want to cancel this request?"},
+    "botao_sim_cancelar": {"pt": "❌ Sim, cancelar", "de": "❌ Ja, stornieren", "en": "❌ Yes, cancel"},
+    "pedido_cancelado_cliente": {"pt": "✅ O seu pedido foi cancelado.", "de": "✅ Ihre Anfrage wurde storniert.",
+                                  "en": "✅ Your request has been cancelled."},
+    "pedido_ja_respondido_cliente": {"pt": "Este pedido já não está ativo.",
+                                      "de": "Diese Anfrage ist nicht mehr aktiv.",
+                                      "en": "This request is no longer active."},
+
+    # --- Carrinho: marcações confirmadas persistentes ------------------------
+    "carrinho_botao_ver_marcacoes": {"pt": "🛒 Carrinho · {n} marcações",
+                                      "de": "🛒 Warenkorb · {n} Buchungen",
+                                      "en": "🛒 Cart · {n} bookings"},
+    "carrinho_marcacao_titulo": {"pt": "🗓️ *Marcação confirmada*", "de": "🗓️ *Bestätigte Buchung*",
+                                  "en": "🗓️ *Confirmed booking*"},
+    "carrinho_marcacao_id": {"pt": "🆔 Marcação #{id}", "de": "🆔 Buchung #{id}", "en": "🆔 Booking #{id}"},
+    "carrinho_marcacao_estado": {"pt": "📌 Estado: Confirmada", "de": "📌 Status: Bestätigt",
+                                  "en": "📌 Status: Confirmed"},
+    "carrinho_marcacao_servico": {"pt": "🔧 Serviço: {servico}", "de": "🔧 Service: {servico}",
+                                   "en": "🔧 Service: {servico}"},
+    "carrinho_marcacao_extra": {"pt": "➕ Extras: {extra}", "de": "➕ Extras: {extra}", "en": "➕ Extras: {extra}"},
+    "carrinho_marcacao_data": {"pt": "📅 Data: {data}", "de": "📅 Datum: {data}", "en": "📅 Date: {data}"},
+    "carrinho_marcacao_hora": {"pt": "🕘 Hora: {hora}", "de": "🕘 Uhrzeit: {hora}", "en": "🕘 Time: {hora}"},
+    "carrinho_marcacao_duracao": {"pt": "⏱️ Duração: {duracao}", "de": "⏱️ Dauer: {duracao}",
+                                   "en": "⏱️ Duration: {duracao}"},
+    "carrinho_marcacao_total": {"pt": "💰 Total: {total}", "de": "💰 Gesamtbetrag: {total}",
+                                 "en": "💰 Total: {total}"},
+    "carrinho_marcacoes_seccao": {"pt": "Marcações confirmadas", "de": "Bestätigte Buchungen",
+                                   "en": "Confirmed bookings"},
+    "carrinho_marcacoes_pergunta": {"pt": "🛒 *O seu carrinho*\n\nTem {n} marcações confirmadas. "
+                                          "Qual deseja ver?",
+                                     "de": "🛒 *Ihr Warenkorb*\n\nSie haben {n} bestätigte Buchungen. "
+                                          "Welche möchten Sie ansehen?",
+                                     "en": "🛒 *Your cart*\n\nYou have {n} confirmed bookings. "
+                                          "Which one would you like to view?"},
+    "carrinho_marcacoes_extra_linha": {"pt": "🗓️ Também tem {n} marcação(ões) confirmada(s).",
+                                        "de": "🗓️ Sie haben ausserdem {n} bestätigte Buchung(en).",
+                                        "en": "🗓️ You also have {n} confirmed booking(s)."},
+    "botao_ver_gerir_marcacao": {"pt": "🗓️ Ver/Gerir marcação", "de": "🗓️ Buchung ansehen",
+                                  "en": "🗓️ View/Manage booking"},
+    "carrinho_marcacao_nao_encontrada": {"pt": "Não encontrei essa marcação confirmada.",
+                                          "de": "Diese bestätigte Buchung wurde nicht gefunden.",
+                                          "en": "I couldn't find that confirmed booking."},
+}
+
+# Nomes traduzidos dos estados de um pedido de orçamento, para apresentação
+# ao CLIENTE no carrinho persistente (a base de dados guarda sempre o valor
+# canónico em português — ver ESTADOS_PEDIDO).
+ESTADO_PEDIDO_NOMES = {
+    "novo": {"pt": "recebido", "de": "erhalten", "en": "received"},
+    "em análise": {"pt": "em análise", "de": "wird geprüft", "en": "under review"},
+    "orçamento enviado": {"pt": "orçamento enviado", "de": "Angebot gesendet", "en": "quote sent"},
+    "alteração solicitada": {"pt": "alteração solicitada", "de": "Änderung angefragt", "en": "change requested"},
+    "aceite": {"pt": "aceite", "de": "angenommen", "en": "accepted"},
+    "contacto solicitado": {"pt": "contacto solicitado", "de": "Kontakt angefragt", "en": "contact requested"},
 }
 
 
@@ -649,6 +839,32 @@ WRAP_NEUTRO_VEICULO = "Por indicar"
 WRAP_NEUTRO_ANO = ""
 WRAP_NEUTRO_COR_ACABAMENTO = "Aconselhamento necessário"
 WRAP_NEUTRO_TIPO = "Por indicar"
+
+# Tradução do valor canónico (em português) guardado em "tipo_wrap" — usado
+# na apresentação ao cliente do pedido pendente no carrinho persistente (ver
+# mostrar_pedido_pendente_carrinho). Cobre "Wrap total"/"Wrap parcial" (modo
+# detalhado), "Ainda não sei" (modo rápido) e o valor neutro.
+TIPO_WRAP_TEXTO_TRADUZIDO = {
+    "Wrap total": {"pt": "Wrap total", "de": "Vollfolierung", "en": "Full wrap"},
+    "Wrap parcial": {"pt": "Wrap parcial", "de": "Teilfolierung", "en": "Partial wrap"},
+    "Ainda não sei": {"pt": "Ainda não sei", "de": "Weiss noch nicht", "en": "Not sure yet"},
+    WRAP_NEUTRO_TIPO: {"pt": WRAP_NEUTRO_TIPO, "de": "Wird noch angegeben", "en": "To be specified"},
+}
+
+
+def texto_tipo_wrap_traduzido(tipo_pt, idioma):
+    dic = TIPO_WRAP_TEXTO_TRADUZIDO.get(tipo_pt)
+    return tx(dic, idioma) if dic else (tipo_pt or "-")
+
+
+# Nome traduzido do MODO de um pedido, para apresentação ao cliente (o painel
+# usa MODO_NOMES_PT, sempre em português — ver dashboard).
+MODO_NOMES_TRADUZIDO = {
+    MODO_RAPIDO: {"pt": "Pedido rápido", "de": "Schnellanfrage", "en": "Quick request"},
+    MODO_DETALHE: {"pt": "Pedido de orçamento", "de": "Kostenvoranschlag-Anfrage", "en": "Quote request"},
+    MODO_ESPECIALISTA: {"pt": "Contacto com especialista", "de": "Kontakt mit Spezialist", "en": "Specialist contact"},
+}
+MODO_EMOJI = {MODO_RAPIDO: "⚡", MODO_DETALHE: "🎨", MODO_ESPECIALISTA: "💬"}
 
 
 def _remover_emoji_prefixo(texto):
@@ -860,10 +1076,17 @@ DB_PATH = os.environ.get("SESSOES_DB", "sessoes.db")
 # Estados possíveis de um pedido de orçamento (Wrap & Proteção). Só usados
 # internamente/no dashboard — não fazem parte do texto traduzido ao cliente.
 ESTADOS_PEDIDO = ("rascunho", "novo", "contacto solicitado", "em análise", "orçamento enviado",
-                   "aceite", "recusado", "arquivado")
+                   "alteração solicitada", "aceite", "recusado", "arquivado")
 # "rascunho": pedido criado ainda a meio do fluxo Wrap (antes da confirmação
 # final do cliente) — nunca deve aparecer como "novo" no painel antes de o
 # cliente ter efetivamente confirmado o pedido.
+
+# Estados considerados "ativos" para efeitos do carrinho persistente (ver
+# pedido_ativo_por_telefone/mostrar_carrinho): um pedido "aceite" só continua
+# ativo enquanto ainda não tiver sido convertido numa marcação (agendamento_id
+# continua NULO — o calendário/agendamento avançado não é implementado nesta
+# fase, por isso esta condição está sempre para já satisfeita quando "aceite").
+ESTADOS_PEDIDO_ATIVOS = ("novo", "em análise", "orçamento enviado", "alteração solicitada", "aceite")
 
 
 def obter_bd():
@@ -932,6 +1155,49 @@ def obter_bd():
         conn.execute("ALTER TABLE pedidos_orcamento ADD COLUMN modo_pedido TEXT")
     except sqlite3.OperationalError:
         pass  # coluna já existe
+
+    # Orçamentos criados no painel para um pedido, e respetivas linhas
+    # (descrição + quantidade + preço). Estrutura própria, associada ao ID do
+    # pedido — nunca reaproveita as colunas de pedidos_orcamento. Cada edição
+    # de um orçamento já ENVIADO cria uma nova "versao" (nunca reescreve a
+    # anterior), para preservar sempre o que foi efetivamente enviado ao
+    # cliente (ver obter_ou_criar_rascunho_orcamento). Tabelas novas -> não
+    # precisam de ALTER TABLE, só de CREATE TABLE IF NOT EXISTS (compatível
+    # com bases de dados antigas, que simplesmente ainda não as têm).
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS orcamentos ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "pedido_id INTEGER NOT NULL, "
+        "versao INTEGER NOT NULL, "
+        "estado TEXT NOT NULL DEFAULT 'rascunho', "
+        "desconto_centimos INTEGER NOT NULL DEFAULT 0, "
+        "observacoes TEXT, "
+        "validade_dias INTEGER, "
+        "criado_em TEXT NOT NULL, "
+        "atualizado_em TEXT NOT NULL, "
+        "enviado_em TEXT, "
+        "respondido_em TEXT)"
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS orcamento_linhas ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "orcamento_id INTEGER NOT NULL, "
+        "descricao TEXT NOT NULL, "
+        "quantidade INTEGER NOT NULL DEFAULT 1, "
+        "preco_centimos INTEGER NOT NULL DEFAULT 0, "
+        "criado_em TEXT NOT NULL)"
+    )
+    # Última mensagem recebida de cada cliente — usada só para saber se ainda
+    # estamos dentro da janela de 24h de atendimento ao cliente da Meta (fora
+    # dela, mensagens iniciadas pelo negócio como o envio de um orçamento têm
+    # de usar um template pré-aprovado; ver dentro_da_janela_24h()). É uma
+    # tabela à parte da sessão (nunca dentro do JSON de "sessoes"), para nunca
+    # interferir com o formato/conteúdo já testado da sessão.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS interacoes_cliente ("
+        "telefone TEXT PRIMARY KEY, "
+        "ultima_mensagem_em TEXT NOT NULL)"
+    )
     return conn
 
 
@@ -997,6 +1263,58 @@ def ultimo_agendamento_ativo(telefone):
         return None
     return {"id": linha[0], "servico": linha[1], "data": linha[2], "hora": linha[3],
             "preco": linha[4], "duracao": recuperar_duracao(linha[1], linha[5])}
+
+
+CAMPOS_AGENDAMENTO = ["id", "telefone", "nome", "categoria", "servico", "extra", "data", "hora",
+                       "preco", "duracao", "estado", "criado_em", "carrinho_json"]
+
+
+def obter_agendamento(id_agendamento):
+    with obter_bd() as conn:
+        linha = conn.execute(
+            "SELECT id, telefone, nome, categoria, servico, extra, data, hora, preco, duracao, estado, "
+            "criado_em, carrinho_json FROM agendamentos WHERE id = ?",
+            (id_agendamento,),
+        ).fetchone()
+    return dict(zip(CAMPOS_AGENDAMENTO, linha)) if linha else None
+
+
+def agendamentos_confirmados_por_telefone(telefone):
+    """Marcações CONFIRMADAS de um número, da mais recente para a mais antiga
+    — a fonte de verdade do carrinho persistente depois de a sessão ser
+    reiniciada. Só devolve estado "confirmado": marcações canceladas,
+    concluídas, reagendadas ou arquivadas deixam de aparecer no carrinho."""
+    with obter_bd() as conn:
+        linhas = conn.execute(
+            "SELECT id, telefone, nome, categoria, servico, extra, data, hora, preco, duracao, estado, "
+            "criado_em, carrinho_json FROM agendamentos WHERE telefone = ? AND estado = 'confirmado' "
+            "ORDER BY id DESC",
+            (telefone,),
+        ).fetchall()
+    return [dict(zip(CAMPOS_AGENDAMENTO, l)) for l in linhas]
+
+
+def linhas_carrinho_agendamento(agendamento):
+    """Linhas do carrinho tal como foram guardadas COM a marcação
+    (carrinho_json). Marcações antigas, criadas antes de essa coluna existir,
+    não têm nenhuma — nesse caso devolve [] e quem chama usa o fallback
+    serviço/extra/preço (ver total_centimos_agendamento)."""
+    try:
+        linhas = json.loads(agendamento.get("carrinho_json") or "[]")
+    except (ValueError, TypeError):
+        return []
+    return linhas if isinstance(linhas, list) else []
+
+
+def total_centimos_agendamento(agendamento):
+    """Total de uma marcação em cêntimos. Usa sempre o carrinho_json guardado
+    com a marcação; se não existir (marcações antigas), cai para a coluna
+    `preco` (em CHF). Nunca devolve 0 quando há de facto um preço guardado."""
+    linhas = linhas_carrinho_agendamento(agendamento)
+    if linhas:
+        return sum(int(l.get("preco", 0)) * int(l.get("quantidade", 1) or 1) for l in linhas)
+    preco = agendamento.get("preco")
+    return int(round(float(preco) * 100)) if preco else 0
 
 
 def atualizar_estado_agendamento(id_agendamento, estado):
@@ -1159,6 +1477,227 @@ def listar_fotografias(pedido_id):
     return [dict(zip(campos, l)) for l in linhas]
 
 
+def pedido_ativo_por_telefone(telefone):
+    """Devolve o pedido de orçamento ATIVO mais recente de um número (ou
+    None) — usado para o carrinho continuar a mostrar um pedido rápido/
+    detalhado confirmado mesmo depois de a sessão ter sido reiniciada. A base
+    de dados é sempre a fonte de verdade aqui, nunca a sessão."""
+    with obter_bd() as conn:
+        marcadores = ",".join("?" for _ in ESTADOS_PEDIDO_ATIVOS)
+        linha = conn.execute(
+            f"SELECT id FROM pedidos_orcamento WHERE telefone = ? AND estado IN ({marcadores}) "
+            f"AND agendamento_id IS NULL ORDER BY id DESC LIMIT 1",
+            (telefone, *ESTADOS_PEDIDO_ATIVOS),
+        ).fetchone()
+    return obter_pedido_orcamento(linha[0]) if linha else None
+
+
+# ---------------------------------------------------------------------------
+# Orçamentos (criados/enviados através do painel) — estrutura própria,
+# associada ao ID do pedido (nunca reaproveita colunas de pedidos_orcamento).
+# Os preços são sempre inteiros em CÊNTIMOS, tal como no carrinho. O total é
+# SEMPRE recalculado a partir das linhas atuais (nunca somado sobre um valor
+# antigo). Cada versão enviada ao cliente fica preservada (ver
+# obter_ou_criar_rascunho_orcamento) — editar um orçamento já enviado cria
+# sempre uma nova versão em rascunho, nunca reescreve a que foi enviada.
+# ---------------------------------------------------------------------------
+CAMPOS_ORCAMENTO = ["id", "pedido_id", "versao", "estado", "desconto_centimos", "observacoes",
+                     "validade_dias", "criado_em", "atualizado_em", "enviado_em", "respondido_em"]
+CAMPOS_LINHA_ORCAMENTO = ["id", "orcamento_id", "descricao", "quantidade", "preco_centimos", "criado_em"]
+
+
+def _agora_iso():
+    return datetime.utcnow().isoformat()
+
+
+def listar_linhas_orcamento(orcamento_id):
+    with obter_bd() as conn:
+        linhas = conn.execute(
+            "SELECT id, orcamento_id, descricao, quantidade, preco_centimos, criado_em "
+            "FROM orcamento_linhas WHERE orcamento_id = ? ORDER BY id ASC", (orcamento_id,)
+        ).fetchall()
+    return [dict(zip(CAMPOS_LINHA_ORCAMENTO, l)) for l in linhas]
+
+
+def _compor_orcamento(linha_bd):
+    orcamento = dict(zip(CAMPOS_ORCAMENTO, linha_bd))
+    orcamento["linhas"] = listar_linhas_orcamento(orcamento["id"])
+    orcamento["subtotal_centimos"] = sum(l["quantidade"] * l["preco_centimos"] for l in orcamento["linhas"])
+    orcamento["total_centimos"] = max(0, orcamento["subtotal_centimos"] - orcamento["desconto_centimos"])
+    return orcamento
+
+
+def obter_orcamento_por_id(orcamento_id):
+    with obter_bd() as conn:
+        linha = conn.execute(
+            "SELECT id, pedido_id, versao, estado, desconto_centimos, observacoes, validade_dias, "
+            "criado_em, atualizado_em, enviado_em, respondido_em FROM orcamentos WHERE id = ?",
+            (orcamento_id,),
+        ).fetchone()
+    return _compor_orcamento(linha) if linha else None
+
+
+def obter_orcamento_atual(pedido_id):
+    """Devolve a versão mais recente do orçamento de um pedido (rascunho,
+    enviado, ou já respondido), com as respetivas linhas — ou None se ainda
+    não existir nenhum orçamento para este pedido."""
+    with obter_bd() as conn:
+        linha = conn.execute(
+            "SELECT id, pedido_id, versao, estado, desconto_centimos, observacoes, validade_dias, "
+            "criado_em, atualizado_em, enviado_em, respondido_em "
+            "FROM orcamentos WHERE pedido_id = ? ORDER BY versao DESC LIMIT 1",
+            (pedido_id,),
+        ).fetchone()
+    return _compor_orcamento(linha) if linha else None
+
+
+def listar_versoes_orcamento(pedido_id):
+    """Todas as versões de um orçamento, da mais antiga para a mais recente
+    — usada apenas para confirmar/consultar que versões anteriores nunca são
+    apagadas nem reescritas quando o orçamento é revisto."""
+    with obter_bd() as conn:
+        linhas = conn.execute(
+            "SELECT id, pedido_id, versao, estado, desconto_centimos, observacoes, validade_dias, "
+            "criado_em, atualizado_em, enviado_em, respondido_em "
+            "FROM orcamentos WHERE pedido_id = ? ORDER BY versao ASC",
+            (pedido_id,),
+        ).fetchall()
+    return [_compor_orcamento(l) for l in linhas]
+
+
+def obter_ou_criar_rascunho_orcamento(pedido_id):
+    """Devolve o orçamento RASCUNHO atual de um pedido, pronto a editar no
+    painel. Se a versão mais recente já tiver sido enviada (ou respondida
+    pelo cliente), cria uma NOVA versão em rascunho — a versão anterior
+    nunca é reescrita, para preservar sempre o que já foi enviado ao
+    cliente. Copia as linhas/desconto/observações/validade da versão
+    anterior como ponto de partida (uma revisão parte sempre do que já
+    existia, não de uma folha em branco)."""
+    atual = obter_orcamento_atual(pedido_id)
+    if atual and atual["estado"] == "rascunho":
+        return atual
+    agora = _agora_iso()
+    nova_versao = (atual["versao"] + 1) if atual else 1
+    with obter_bd() as conn:
+        cur = conn.execute(
+            "INSERT INTO orcamentos (pedido_id, versao, estado, desconto_centimos, observacoes, "
+            "validade_dias, criado_em, atualizado_em) VALUES (?, ?, 'rascunho', ?, ?, ?, ?, ?)",
+            (pedido_id, nova_versao,
+             atual["desconto_centimos"] if atual else 0,
+             atual["observacoes"] if atual else None,
+             atual["validade_dias"] if atual else 14,
+             agora, agora),
+        )
+        novo_id = cur.lastrowid
+        if atual:
+            for l in atual["linhas"]:
+                conn.execute(
+                    "INSERT INTO orcamento_linhas (orcamento_id, descricao, quantidade, preco_centimos, criado_em) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (novo_id, l["descricao"], l["quantidade"], l["preco_centimos"], agora),
+                )
+    return obter_orcamento_por_id(novo_id)
+
+
+def adicionar_linha_orcamento(orcamento_id, descricao, quantidade, preco_centimos):
+    with obter_bd() as conn:
+        conn.execute(
+            "INSERT INTO orcamento_linhas (orcamento_id, descricao, quantidade, preco_centimos, criado_em) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (orcamento_id, descricao, quantidade, preco_centimos, _agora_iso()),
+        )
+        conn.execute("UPDATE orcamentos SET atualizado_em = ? WHERE id = ?", (_agora_iso(), orcamento_id))
+
+
+def editar_linha_orcamento(linha_id, descricao, quantidade, preco_centimos):
+    with obter_bd() as conn:
+        conn.execute(
+            "UPDATE orcamento_linhas SET descricao = ?, quantidade = ?, preco_centimos = ? WHERE id = ?",
+            (descricao, quantidade, preco_centimos, linha_id),
+        )
+        linha = conn.execute("SELECT orcamento_id FROM orcamento_linhas WHERE id = ?", (linha_id,)).fetchone()
+        if linha:
+            conn.execute("UPDATE orcamentos SET atualizado_em = ? WHERE id = ?", (_agora_iso(), linha[0]))
+
+
+def remover_linha_orcamento(linha_id):
+    with obter_bd() as conn:
+        linha = conn.execute("SELECT orcamento_id FROM orcamento_linhas WHERE id = ?", (linha_id,)).fetchone()
+        conn.execute("DELETE FROM orcamento_linhas WHERE id = ?", (linha_id,))
+        if linha:
+            conn.execute("UPDATE orcamentos SET atualizado_em = ? WHERE id = ?", (_agora_iso(), linha[0]))
+
+
+def obter_linha_orcamento(linha_id):
+    with obter_bd() as conn:
+        linha = conn.execute(
+            "SELECT id, orcamento_id, descricao, quantidade, preco_centimos, criado_em "
+            "FROM orcamento_linhas WHERE id = ?", (linha_id,)
+        ).fetchone()
+    return dict(zip(CAMPOS_LINHA_ORCAMENTO, linha)) if linha else None
+
+
+def atualizar_campos_orcamento(orcamento_id, desconto_centimos=None, observacoes=None, validade_dias=None):
+    campos, valores = [], []
+    if desconto_centimos is not None:
+        campos.append("desconto_centimos = ?"); valores.append(desconto_centimos)
+    if observacoes is not None:
+        campos.append("observacoes = ?"); valores.append(observacoes)
+    if validade_dias is not None:
+        campos.append("validade_dias = ?"); valores.append(validade_dias)
+    if not campos:
+        return
+    campos.append("atualizado_em = ?"); valores.append(_agora_iso())
+    valores.append(orcamento_id)
+    with obter_bd() as conn:
+        conn.execute(f"UPDATE orcamentos SET {', '.join(campos)} WHERE id = ?", valores)
+
+
+def marcar_orcamento_enviado(orcamento_id):
+    agora = _agora_iso()
+    with obter_bd() as conn:
+        conn.execute(
+            "UPDATE orcamentos SET estado = 'enviado', enviado_em = ?, atualizado_em = ? WHERE id = ?",
+            (agora, agora, orcamento_id),
+        )
+
+
+def atualizar_estado_orcamento(orcamento_id, estado):
+    agora = _agora_iso()
+    with obter_bd() as conn:
+        conn.execute(
+            "UPDATE orcamentos SET estado = ?, respondido_em = ?, atualizado_em = ? WHERE id = ?",
+            (estado, agora, agora, orcamento_id),
+        )
+
+
+def registar_interacao_cliente(telefone):
+    """Marca "agora" como a última mensagem recebida deste número — usado só
+    para saber se ainda estamos dentro da janela de 24h de atendimento ao
+    cliente da Meta (ver dentro_da_janela_24h). Tabela à parte da sessão."""
+    agora = _agora_iso()
+    with obter_bd() as conn:
+        conn.execute(
+            "INSERT INTO interacoes_cliente (telefone, ultima_mensagem_em) VALUES (?, ?) "
+            "ON CONFLICT(telefone) DO UPDATE SET ultima_mensagem_em = excluded.ultima_mensagem_em",
+            (telefone, agora),
+        )
+
+
+def dentro_da_janela_24h(telefone):
+    with obter_bd() as conn:
+        linha = conn.execute(
+            "SELECT ultima_mensagem_em FROM interacoes_cliente WHERE telefone = ?", (telefone,)
+        ).fetchone()
+    if not linha or not linha[0]:
+        return False
+    try:
+        ultima = datetime.fromisoformat(linha[0])
+    except ValueError:
+        return False
+    return (datetime.utcnow() - ultima) < timedelta(hours=24)
+
+
 # ---------------------------------------------------------------------------
 # Envio de mensagens
 # ---------------------------------------------------------------------------
@@ -1176,6 +1715,28 @@ def enviar_texto(destinatario, texto):
         "type": "text",
         "text": {"body": texto},
     })
+
+
+def titulo_linha_carrinho(telefone, idioma, sessao):
+    """Rótulo da linha "🛒 Carrinho" nas listas. NUNCA mostra CHF 0 quando há
+    alguma coisa guardada na base de dados: uma configuração em curso na
+    sessão mostra o total dessa sessão; sem sessão, um pedido de orçamento
+    pendente mostra "1 pendente", uma marcação confirmada mostra o total real
+    dessa marcação, e várias marcações mostram a contagem."""
+    if sessao.get("carrinho"):
+        return f"🛒 Carrinho · {formatar_centimos(carrinho_total_centimos(sessao), idioma)}"
+
+    agendamentos = agendamentos_confirmados_por_telefone(telefone)
+    if pedido_ativo_por_telefone(telefone):
+        # Um pedido pendente tem sempre prioridade no rótulo (é o que está à
+        # espera de resposta); as marcações continuam visíveis dentro do
+        # carrinho, ver mostrar_pedido_pendente_carrinho.
+        return t("carrinho_botao_ver_pendente", idioma, n=1)
+    if len(agendamentos) == 1:
+        return f"🛒 Carrinho · {formatar_centimos(total_centimos_agendamento(agendamentos[0]), idioma)}"
+    if agendamentos:
+        return t("carrinho_botao_ver_marcacoes", idioma, n=len(agendamentos))
+    return f"🛒 Carrinho · {formatar_centimos(0, idioma)}"
 
 
 def enviar_lista(destinatario, corpo, titulo_seccao, opcoes, idioma, botao="👉 Escolher", com_voltar=False,
@@ -1206,8 +1767,8 @@ def enviar_lista(destinatario, corpo, titulo_seccao, opcoes, idioma, botao="👉
         rows.append(row)
 
     if sessao is not None:
-        total_str = formatar_centimos(carrinho_total_centimos(sessao), idioma)
-        rows.append({"id": "ver_carrinho", "title": f"🛒 Carrinho · {total_str}"[:MAX_TITULO_LINHA]})
+        rows.append({"id": "ver_carrinho",
+                     "title": titulo_linha_carrinho(destinatario, idioma, sessao)[:MAX_TITULO_LINHA]})
 
     # "⚡ Pedido rápido" só entra quando SOBRA espaço dentro do limite de 10
     # linhas por lista da API do WhatsApp (contando Carrinho, Voltar e
@@ -1289,6 +1850,29 @@ def formatar_telefone(numero):
     if n.startswith("41") and len(n) == 11:
         return f"+41 {n[2:4]} {n[4:7]} {n[7:9]} {n[9:11]}"
     return f"+{n}"
+
+
+def wa_me_link(telefone):
+    """Ligação segura wa.me para abrir diretamente uma conversa de WhatsApp
+    com este número — usada como ALTERNATIVA ao envio pelo próprio bot
+    (nunca o método principal), tanto no botão "Contactar cliente" do painel
+    como na resposta ao botão "💬 Contactar cliente" da notificação interna."""
+    return f"https://wa.me/{telefone.lstrip('+')}"
+
+
+def link_dossie_pedido(pedido_id):
+    """Ligação direta ao dossiê de um pedido no painel (aberta automaticamente
+    ao carregar, ver o pequeno script no DASHBOARD_HTML). PUBLIC_BASE_URL tem
+    sempre prioridade; sem ela, tenta deduzir-se do próprio pedido HTTP em
+    curso (webhook) — e, se isso também não for possível, a ligação é
+    simplesmente omitida em vez de rebentar."""
+    base = PUBLIC_BASE_URL
+    if not base:
+        try:
+            base = request.url_root.rstrip("/")
+        except RuntimeError:
+            base = ""
+    return f"{base}/dashboard#pedido-{pedido_id}" if base else ""
 
 
 def preco_formatado(valor, idioma="pt"):
@@ -1541,18 +2125,30 @@ def carrinho_nome_traduzido(linha, idioma):
     return nome_pt
 
 
+def linhas_traduzidas(linhas, idioma):
+    """Traduz uma lista de linhas de carrinho (venham da sessão ou do
+    carrinho_json guardado com uma marcação — o formato é exatamente o
+    mesmo)."""
+    return [{**linha, "nome_traduzido": carrinho_nome_traduzido(linha, idioma)}
+            for linha in (linhas or [])]
+
+
 def linhas_carrinho_traduzidas(sessao, idioma):
     """Devolve as linhas do carrinho com o nome já traduzido para
     apresentação (idioma só entra aqui, nunca é gravado na linha)."""
-    return [{**linha, "nome_traduzido": carrinho_nome_traduzido(linha, idioma)}
-            for linha in sessao.get("carrinho", [])]
+    return linhas_traduzidas(sessao.get("carrinho", []), idioma)
+
+
+def discriminacao_de_linhas(linhas, idioma):
+    """Linhas de texto "• Nome: CHF X" a partir de linhas de carrinho soltas."""
+    return [f"• {item['nome_traduzido']}: {formatar_centimos(item['preco'], idioma)}"
+            for item in linhas_traduzidas(linhas, idioma)]
 
 
 def linhas_discriminacao(sessao, idioma):
     """Linhas de texto prontas a mostrar (cliente ou negócio, consoante o
     `idioma` passado — "pt" para as notificações internas)."""
-    return [f"• {item['nome_traduzido']}: {formatar_centimos(item['preco'], idioma)}"
-            for item in linhas_carrinho_traduzidas(sessao, idioma)]
+    return discriminacao_de_linhas(sessao.get("carrinho", []), idioma)
 
 
 def carrinho_nome_traduzido_por_grupo(sessao, grupo, idioma):
@@ -1770,8 +2366,6 @@ def mensagem_confirmacao_final(sessao, idioma):
     linhas.append(t("resumo_total", idioma, total=formatar_centimos(total_centimos, idioma)))
     linhas.append("")
     linhas.append(t("confirmado_instrucao", idioma))
-    linhas.append("")
-    linhas.append(t("confirmado_rodape", idioma))
     return "\n".join(linhas)
 
 
@@ -1788,8 +2382,235 @@ def mensagem_notificacao_provider(de, sessao, id_agendamento):
     linhas.extend(linhas_discriminacao(sessao, "pt"))
     linhas.append(f"💰 Total: {formatar_centimos(carrinho_total_centimos(sessao), 'pt')}")
     linhas.append("")
-    linhas.append("Responda com: CONTACTAR, REAGENDAR, CANCELAR ou CONCLUIDO seguido do número da marcação.")
+    # Contactar o cliente: ligação direta (ver wa_me_link) em vez de um
+    # comando de texto. REAGENDAR/CANCELAR/CONCLUIDO ficam como comandos —
+    # são ações de calendário, fora do âmbito desta alteração.
+    linhas.append(f"💬 {wa_me_link(de)}")
+    linhas.append("Para reagendar, cancelar ou concluir, responda com: REAGENDAR, CANCELAR ou CONCLUIDO "
+                  "seguido do número da marcação.")
     return "\n".join(linhas)
+
+
+# ---------------------------------------------------------------------------
+# Orçamentos criados no painel — ENVIO ao cliente pelo próprio bot
+# ---------------------------------------------------------------------------
+# Método PRINCIPAL de comunicar um orçamento: o botão "Contactar cliente" do
+# painel (ver wa_me_link) é sempre uma ALTERNATIVA, nunca o caminho normal.
+# Dentro da janela de 24h de atendimento ao cliente (ver dentro_da_janela_24h)
+# envia-se a mensagem interativa normal; fora da janela, é preciso reabri-la
+# com um template Utility pré-aprovado na Meta (ver enviar_orcamento_via_template).
+# ---------------------------------------------------------------------------
+def linhas_orcamento_texto(orcamento, idioma):
+    linhas = []
+    for l in orcamento["linhas"]:
+        preco_linha = l["preco_centimos"] * l["quantidade"]
+        qtd_txt = f" ×{l['quantidade']}" if l["quantidade"] != 1 else ""
+        linhas.append(f"• {l['descricao']}{qtd_txt}: {formatar_centimos(preco_linha, idioma)}")
+    return linhas
+
+
+def corpo_mensagem_orcamento(pedido, orcamento, idioma):
+    linhas = [t("orcamento_cliente_titulo", idioma, pedido=pedido["id"]), ""]
+    linhas.extend(linhas_orcamento_texto(orcamento, idioma))
+    linhas.append("")
+    linhas.append(t("orcamento_cliente_subtotal", idioma,
+                    subtotal=formatar_centimos(orcamento["subtotal_centimos"], idioma)))
+    if orcamento["desconto_centimos"]:
+        linhas.append(t("orcamento_cliente_desconto", idioma,
+                        desconto=formatar_centimos(orcamento["desconto_centimos"], idioma)))
+    linhas.append(t("orcamento_cliente_total", idioma, total=formatar_centimos(orcamento["total_centimos"], idioma)))
+    if orcamento.get("observacoes"):
+        linhas.append(t("orcamento_cliente_observacoes", idioma, observacoes=orcamento["observacoes"]))
+    linhas.append(t("orcamento_cliente_validade", idioma, dias=orcamento.get("validade_dias") or 14))
+    return "\n".join(linhas)
+
+
+def enviar_orcamento_via_template(telefone, idioma, pedido):
+    """Fallback fora da janela de 24h de atendimento (ver dentro_da_janela_24h):
+    a Meta só permite reabrir a conversa com um template Utility já aprovado.
+    O botão de resposta rápida do template devolve um button_reply normal com
+    o ID "ver_orcamento_<pedido_id>" (ver receber_mensagem), reabrindo a
+    janela e disparando o envio da mensagem interativa completa. Os nomes dos
+    templates e variáveis a configurar na Meta (PT/DE/EN) são indicados no
+    resumo entregue ao cliente — nunca inventados nem enviados sem essa
+    configuração prévia."""
+    nome_template = f"orcamento_pronto_{idioma if idioma in IDIOMAS_VALIDOS else 'pt'}"
+    nome_cliente = primeiro_nome(carregar_sessao(telefone).get("nome")) or "-"
+    enviar({
+        "messaging_product": "whatsapp",
+        "to": telefone,
+        "type": "template",
+        "template": {
+            "name": nome_template,
+            "language": {"code": {"pt": "pt_PT", "de": "de", "en": "en"}.get(idioma, "pt_PT")},
+            "components": [
+                {"type": "body", "parameters": [
+                    {"type": "text", "text": nome_cliente},
+                    {"type": "text", "text": str(pedido["id"])},
+                ]},
+                {"type": "button", "sub_type": "quick_reply", "index": "0",
+                 "parameters": [{"type": "payload", "payload": f"ver_orcamento_{pedido['id']}"}]},
+            ],
+        },
+    })
+
+
+def enviar_orcamento_cliente(pedido_id):
+    """Envia (ou reenvia) ao cliente o orçamento ATUAL de um pedido — chamada
+    tanto pelo painel ("Enviar orçamento") como pelo botão de resposta rápida
+    do template de reabertura de janela. Nunca envia um orçamento em
+    "rascunho": só depois de marcar_orcamento_enviado()."""
+    pedido = obter_pedido_orcamento(pedido_id)
+    orcamento = obter_orcamento_atual(pedido_id) if pedido else None
+    if not pedido or not orcamento or orcamento["estado"] not in ("enviado", "alteração solicitada"):
+        return
+    telefone = pedido["telefone"]
+    sessao_cliente = carregar_sessao(telefone)
+    idioma = sessao_cliente.get("idioma") if sessao_cliente.get("idioma") in IDIOMAS_VALIDOS else "pt"
+
+    if not dentro_da_janela_24h(telefone):
+        enviar_orcamento_via_template(telefone, idioma, pedido)
+        return
+
+    corpo = corpo_mensagem_orcamento(pedido, orcamento, idioma)
+    enviar_botoes(telefone, corpo, [
+        {"id": f"orcamento_aceitar_{orcamento['id']}", "titulo": t("botao_orcamento_aceitar", idioma)},
+        {"id": f"orcamento_alterar_{orcamento['id']}", "titulo": t("botao_orcamento_alterar", idioma)},
+        {"id": f"orcamento_recusar_{orcamento['id']}", "titulo": t("botao_orcamento_recusar", idioma)},
+    ], idioma)
+
+
+# ---------------------------------------------------------------------------
+# Orçamentos — resposta do CLIENTE (aceitar / pedir alteração / recusar)
+# ---------------------------------------------------------------------------
+def _orcamento_e_pedido_de(orcamento_id):
+    orcamento = obter_orcamento_por_id(orcamento_id)
+    if not orcamento:
+        return None, None
+    return orcamento, obter_pedido_orcamento(orcamento["pedido_id"])
+
+
+def responder_orcamento_aceitar(de, idioma, orcamento_id):
+    orcamento, pedido = _orcamento_e_pedido_de(orcamento_id)
+    if not orcamento or not pedido:
+        enviar_texto(de, t("pedido_ja_respondido_cliente", idioma))
+        return
+    if orcamento["estado"] != "enviado":
+        enviar_texto(de, t("orcamento_ja_respondido", idioma))
+        return
+    atualizar_estado_orcamento(orcamento_id, "aceite")
+    atualizar_estado_pedido(pedido["id"], "aceite")
+    # "Avançar para agendamento" reaproveita o início do fluxo normal de
+    # marcação (sem calendário próprio para orçamentos de Wrap — fora do
+    # âmbito desta alteração, ver "Não implementes... calendário").
+    enviar_botoes(de, t("orcamento_aceite_cliente", idioma), [
+        {"id": ACAO_NOVA_MARCACAO, "titulo": t("botao_avancar_agendamento", idioma)},
+        {"id": ACAO_MENU, "titulo": t("botao_menu_principal", idioma)},
+    ], idioma)
+    if PROVIDER_WHATSAPP:
+        enviar_texto(PROVIDER_WHATSAPP, f"✅ Orçamento do pedido #{pedido['id']} foi ACEITE pelo cliente "
+                                         f"{formatar_telefone(de)}.")
+
+
+def mostrar_lista_alteracao_orcamento(de, idioma, orcamento_id):
+    opcoes = [
+        {"id": f"orcamento_alt_servico_{orcamento_id}", "titulo": t("alteracao_opcao_servico", idioma)},
+        {"id": f"orcamento_alt_veiculo_{orcamento_id}", "titulo": t("alteracao_opcao_veiculo", idioma)},
+        {"id": f"orcamento_alt_cor_{orcamento_id}", "titulo": t("alteracao_opcao_cor", idioma)},
+        {"id": f"orcamento_alt_prazo_{orcamento_id}", "titulo": t("alteracao_opcao_prazo", idioma)},
+        {"id": f"orcamento_alt_outra_{orcamento_id}", "titulo": t("alteracao_opcao_outra", idioma)},
+        {"id": f"orcamento_alt_equipa_{orcamento_id}", "titulo": t("alteracao_opcao_equipa", idioma)},
+    ]
+    enviar_lista(de, t("alteracao_pergunta", idioma), t("alteracao_seccao", idioma), opcoes, idioma,
+                 botao=t("alteracao_botao", idioma))
+
+
+def registar_pedido_alteracao(de, idioma, orcamento_id, sessao, aspeto, texto_livre=None):
+    orcamento, pedido = _orcamento_e_pedido_de(orcamento_id)
+    if not orcamento or not pedido:
+        enviar_texto(de, t("pedido_ja_respondido_cliente", idioma))
+        return
+    if aspeto == "equipa":
+        falar_com_equipa(de, idioma, sessao)
+        reiniciar_sessao(de)
+        return
+    if orcamento["estado"] != "enviado":
+        enviar_texto(de, t("orcamento_ja_respondido", idioma))
+        return
+    atualizar_estado_orcamento(orcamento_id, "alteração solicitada")
+    atualizar_estado_pedido(pedido["id"], "alteração solicitada")
+    enviar_texto(de, t("alteracao_recebida_cliente", idioma))
+    if PROVIDER_WHATSAPP:
+        nomes_aspeto = {"servico": "Serviço/tipo de wrap", "veiculo": "Veículo", "cor": "Cor/acabamento",
+                        "prazo": "Prazo/data", "outra": "Outra alteração"}
+        descricao_aspeto = nomes_aspeto.get(aspeto, aspeto)
+        texto = (f"✏️ Pedido de alteração ao orçamento do pedido #{pedido['id']} "
+                 f"({formatar_telefone(de)})\n\nAspeto: {descricao_aspeto}")
+        if texto_livre:
+            texto += f"\n\nDescrição do cliente: {texto_livre}"
+        link = link_dossie_pedido(pedido["id"])
+        if link:
+            texto += f"\n\n📋 {link}"
+        enviar_texto(PROVIDER_WHATSAPP, texto)
+
+
+def responder_orcamento_recusar_confirmar(de, idioma, orcamento_id):
+    orcamento, _ = _orcamento_e_pedido_de(orcamento_id)
+    if not orcamento or orcamento["estado"] != "enviado":
+        enviar_texto(de, t("orcamento_ja_respondido", idioma))
+        return
+    enviar_botoes(de, t("orcamento_recusar_confirmar_pergunta", idioma), [
+        {"id": f"orcamento_recusar_sim_{orcamento_id}", "titulo": t("botao_sim_recusar", idioma)},
+        {"id": f"orcamento_recusar_nao_{orcamento_id}", "titulo": t("botao_nao_voltar", idioma)},
+    ], idioma)
+
+
+def responder_orcamento_recusar_efetivar(de, idioma, orcamento_id):
+    orcamento, pedido = _orcamento_e_pedido_de(orcamento_id)
+    if not orcamento or not pedido:
+        enviar_texto(de, t("pedido_ja_respondido_cliente", idioma))
+        return
+    if orcamento["estado"] != "enviado":
+        enviar_texto(de, t("orcamento_ja_respondido", idioma))
+        return
+    atualizar_estado_orcamento(orcamento_id, "recusado")
+    atualizar_estado_pedido(pedido["id"], "recusado")
+    enviar_botoes(de, t("orcamento_recusado_cliente", idioma), [
+        {"id": ACAO_NOVA_MARCACAO, "titulo": t("botao_novo_pedido", idioma)},
+        {"id": ACAO_MENU, "titulo": t("botao_menu_principal", idioma)},
+    ], idioma)
+    if PROVIDER_WHATSAPP:
+        enviar_texto(PROVIDER_WHATSAPP, f"❌ Orçamento do pedido #{pedido['id']} foi RECUSADO pelo cliente "
+                                         f"{formatar_telefone(de)}.")
+
+
+# ---------------------------------------------------------------------------
+# Pedido pendente — CANCELAMENTO pelo próprio cliente, a partir do carrinho
+# ---------------------------------------------------------------------------
+def pedido_cliente_cancelar_confirmar(de, idioma, pedido_id):
+    pedido = obter_pedido_orcamento(pedido_id)
+    if not pedido or pedido["estado"] not in ESTADOS_PEDIDO_ATIVOS:
+        enviar_texto(de, t("pedido_ja_respondido_cliente", idioma))
+        return
+    enviar_botoes(de, t("cancelar_pedido_confirmar_pergunta", idioma), [
+        {"id": f"pedido_cancelar_cliente_sim_{pedido_id}", "titulo": t("botao_sim_cancelar", idioma)},
+        {"id": f"pedido_cancelar_cliente_nao_{pedido_id}", "titulo": t("botao_nao_voltar", idioma)},
+    ], idioma)
+
+
+def pedido_cliente_cancelar_efetivar(de, idioma, pedido_id):
+    pedido = obter_pedido_orcamento(pedido_id)
+    if not pedido or pedido["estado"] not in ESTADOS_PEDIDO_ATIVOS:
+        enviar_texto(de, t("pedido_ja_respondido_cliente", idioma))
+        return
+    atualizar_estado_pedido(pedido_id, "recusado")
+    enviar_botoes(de, t("pedido_cancelado_cliente", idioma), [
+        {"id": ACAO_NOVA_MARCACAO, "titulo": t("botao_nova_marcacao", idioma)},
+        {"id": ACAO_MENU, "titulo": t("botao_menu_principal", idioma)},
+    ], idioma)
+    if PROVIDER_WHATSAPP:
+        enviar_texto(PROVIDER_WHATSAPP, f"❌ Pedido #{pedido_id} cancelado pelo próprio cliente "
+                                         f"{formatar_telefone(de)}.")
 
 
 # ---------------------------------------------------------------------------
@@ -1862,6 +2683,38 @@ def passo_rapido_resumo(de, idioma, sessao):
     ], idioma, rodape=t("rodape_wrap", idioma))
 
 
+def enviar_notificacao_interna_pedido(pedido_id, texto_provider):
+    """Notificação interna (sempre em português) para QUALQUER pedido de
+    Wrap & Proteção — rápido, detalhado ou de contacto com especialista.
+    Em vez de pedir à equipa para escrever um comando de texto, mostra
+    sempre 3 botões interativos com o pedido_id embutido no próprio ID
+    (ver processar_resposta_interna_pedido, chamada antes do fluxo normal
+    da sessão em receber_mensagem, para a resposta da equipa nunca ser
+    interpretada como uma mensagem de cliente)."""
+    if not PROVIDER_WHATSAPP or not pedido_id:
+        return
+    enviar_botoes(PROVIDER_WHATSAPP, texto_provider, [
+        {"id": f"pedido_analisar_{pedido_id}", "titulo": t("botao_pedido_analisar", "pt")},
+        {"id": f"pedido_contactar_{pedido_id}", "titulo": t("botao_pedido_contactar", "pt")},
+        {"id": f"pedido_recusar_{pedido_id}", "titulo": t("botao_pedido_recusar", "pt")},
+    ], "pt")
+
+
+def recusar_pedido_e_avisar_cliente(pedido):
+    """Lógica partilhada de "recusar pedido" — usada tanto pela notificação
+    interna (equipa) como, no futuro, por outras origens. Marca o pedido
+    como recusado, avisa o cliente no idioma guardado e oferece sempre as
+    duas saídas universais (nunca obriga a escrever um comando)."""
+    atualizar_estado_pedido(pedido["id"], "recusado")
+    telefone_cliente = pedido["telefone"]
+    sessao_cliente = carregar_sessao(telefone_cliente)
+    idioma_cliente = sessao_cliente.get("idioma") if sessao_cliente.get("idioma") in IDIOMAS_VALIDOS else "pt"
+    enviar_botoes(telefone_cliente, t("rapido_recusado_cliente", idioma_cliente), [
+        {"id": ACAO_NOVA_MARCACAO, "titulo": t("botao_nova_marcacao", idioma_cliente)},
+        {"id": ACAO_MENU, "titulo": t("botao_menu_principal", idioma_cliente)},
+    ], idioma_cliente)
+
+
 def finalizar_pedido_rapido(de, idioma, sessao, pedido_id=None):
     """Só é chamada depois de o cliente confirmar o resumo do modo rápido —
     é aqui que o pedido passa de "rascunho" a "novo" e é enviado à equipa."""
@@ -1881,9 +2734,80 @@ def finalizar_pedido_rapido(de, idioma, sessao, pedido_id=None):
     texto_provider = "\n".join(linhas)  # notificações internas sempre em português
 
     enviar_texto(de, t("rapido_finalizado_cliente", idioma))
+    enviar_notificacao_interna_pedido(pedido_id, texto_provider)
 
-    if PROVIDER_WHATSAPP:
-        enviar_texto(PROVIDER_WHATSAPP, texto_provider + f"\n\n💬 Responda com: CONTACTAR {formatar_telefone(de)}")
+
+def processar_resposta_interna_pedido(id_botao):
+    """Trata os botões "🔎 Analisar pedido" / "💬 Contactar cliente" /
+    "❌ Recusar pedido" da notificação interna de um novo pedido de Wrap &
+    Proteção (rápido, detalhado ou de contacto com especialista). É chamada
+    logo à entrada de receber_mensagem, ANTES de a sessão do remetente ser
+    carregada/tratada como uma mensagem de cliente (ver receber_mensagem) —
+    assim a resposta da equipa nunca é interpretada como parte do fluxo do
+    cliente.
+
+    "Analisar pedido" passa o estado a "em análise" e devolve uma ligação
+    direta ao dossiê no painel — só atua enquanto o pedido ainda estiver em
+    "novo" (duplo toque ou toque tardio ficam sem efeito). "Contactar
+    cliente" nunca muda o estado e pode ser usado quantas vezes forem
+    necessárias — devolve sempre uma ligação wa.me segura para o número
+    certo, como ALTERNATIVA ao envio do orçamento pelo próprio bot. "Recusar
+    pedido" pede confirmação antes de recusar de facto, também protegido
+    contra ações duplicadas."""
+    if id_botao.startswith("pedido_analisar_"):
+        acao, pedido_id_txt = "analisar", id_botao[len("pedido_analisar_"):]
+    elif id_botao.startswith("pedido_contactar_"):
+        acao, pedido_id_txt = "contactar", id_botao[len("pedido_contactar_"):]
+    else:
+        acao, pedido_id_txt = "recusar", id_botao[len("pedido_recusar_"):]
+
+    try:
+        pedido_id = int(pedido_id_txt)
+    except ValueError:
+        return
+
+    pedido = obter_pedido_orcamento(pedido_id)
+    if not pedido:
+        if PROVIDER_WHATSAPP:
+            enviar_texto(PROVIDER_WHATSAPP, f"⚠️ Pedido #{pedido_id} não encontrado.")
+        return
+
+    if acao == "contactar":
+        # Nunca muda o estado do pedido e pode repetir-se sem qualquer
+        # restrição — é só uma ligação direta, alternativa ao bot.
+        if PROVIDER_WHATSAPP:
+            enviar_texto(PROVIDER_WHATSAPP,
+                         f"💬 Contacto direto com o cliente do pedido #{pedido_id}: {wa_me_link(pedido['telefone'])}")
+        return
+
+    if pedido["estado"] not in ("novo", "contacto solicitado"):
+        # Já analisado/recusado anteriormente — impede ações duplicadas.
+        # ("contacto solicitado" é o estado inicial de um pedido de contacto
+        # com especialista — ver pedido_falar_especialista — e conta aqui
+        # como "ainda por processar", tal como "novo".)
+        if PROVIDER_WHATSAPP:
+            enviar_texto(PROVIDER_WHATSAPP,
+                         f"ℹ️ O pedido #{pedido_id} já tinha sido processado "
+                         f"(estado atual: {pedido['estado']}).")
+        return
+
+    telefone_cliente = pedido["telefone"]
+    sessao_cliente = carregar_sessao(telefone_cliente)
+    idioma_cliente = sessao_cliente.get("idioma") if sessao_cliente.get("idioma") in IDIOMAS_VALIDOS else "pt"
+
+    if acao == "analisar":
+        atualizar_estado_pedido(pedido_id, "em análise")
+        enviar_texto(telefone_cliente, t("pedido_em_analise_cliente", idioma_cliente))
+        if PROVIDER_WHATSAPP:
+            link = link_dossie_pedido(pedido_id)
+            aviso = f"✅ Pedido #{pedido_id} em análise — cliente avisado."
+            if link:
+                aviso += f"\n📋 {link}"
+            enviar_texto(PROVIDER_WHATSAPP, aviso)
+    else:  # recusar
+        recusar_pedido_e_avisar_cliente(pedido)
+        if PROVIDER_WHATSAPP:
+            enviar_texto(PROVIDER_WHATSAPP, f"❌ Pedido #{pedido_id} recusado — cliente avisado.")
 
 
 # ---------------------------------------------------------------------------
@@ -1907,18 +2831,15 @@ def pedido_falar_especialista(de, idioma, sessao):
 
     enviar_texto(de, t("especialista_cliente", idioma))
 
-    if PROVIDER_WHATSAPP:
-        num_fotos = contar_fotografias(pedido_id)
-        linhas = ["💬 *Pedido de contacto — especialista de Wrap*", ""]
-        linhas.append(f"🆔 Pedido #{pedido_id}")
-        linhas.append(f"👤 Cliente: {sessao.get('nome') or 'sem nome'}")
-        linhas.append(f"📱 Contacto: {formatar_telefone(de)}")
-        if num_fotos:
-            linhas.append(f"📸 Fotografias recebidas: {num_fotos}")
-        linhas.append("💰 Preço: sob análise da equipa")
-        linhas.append("")
-        linhas.append(f"💬 Responda com: CONTACTAR {formatar_telefone(de)}")
-        enviar_texto(PROVIDER_WHATSAPP, "\n".join(linhas))
+    num_fotos = contar_fotografias(pedido_id)
+    linhas = ["💬 *Pedido de contacto — especialista de Wrap*", ""]
+    linhas.append(f"🆔 Pedido #{pedido_id}")
+    linhas.append(f"👤 Cliente: {sessao.get('nome') or 'sem nome'}")
+    linhas.append(f"📱 Contacto: {formatar_telefone(de)}")
+    if num_fotos:
+        linhas.append(f"📸 Fotografias recebidas: {num_fotos}")
+    linhas.append("💰 Preço: sob análise da equipa")
+    enviar_notificacao_interna_pedido(pedido_id, "\n".join(linhas))
 
     reiniciar_sessao(de)
 
@@ -2075,8 +2996,7 @@ def finalizar_pedido_wrap(de, idioma, sessao, pedido_id=None):
     linhas_cliente.append(t("wrap_total_estimado", idioma, total=formatar_centimos(total_centimos, idioma)))
     enviar_texto(de, "\n".join(linhas_cliente))
 
-    if PROVIDER_WHATSAPP:
-        enviar_texto(PROVIDER_WHATSAPP, texto_provider + f"\n\n💬 Responda com: CONTACTAR {formatar_telefone(de)}")
+    enviar_notificacao_interna_pedido(pedido_id, texto_provider)
 
 
 # ---------------------------------------------------------------------------
@@ -2155,6 +3075,10 @@ def cancelar_processo(de, idioma, sessao):
     como "novo" sem o cliente ter efetivamente confirmado."""
     reiniciar_sessao(de)
     enviar_texto(de, t("processo_cancelado", idioma))
+    enviar_botoes(de, t("e_agora_pergunta", idioma), [
+        {"id": ACAO_NOVA_MARCACAO, "titulo": t("botao_nova_marcacao", idioma)},
+        {"id": ACAO_MENU, "titulo": t("botao_menu_principal", idioma)},
+    ], idioma)
 
 
 def avancar_para_resumo_wrap(de, idioma, sessao):
@@ -2229,7 +3153,32 @@ def mostrar_carrinho(de, idioma, sessao):
         return
 
     if not sessao.get("carrinho"):
-        enviar_texto(de, t("carrinho_vazio", idioma))
+        # Sem nenhuma linha na SESSÃO atual — mas o carrinho reúne SEMPRE três
+        # tipos de conteúdo, e a base de dados (nunca a sessão) é a fonte de
+        # verdade para os dois últimos:
+        #   1) a configuração em curso na sessão (o ramo acima);
+        #   2) pedidos de orçamento ativos (ver pedido_ativo_por_telefone);
+        #   3) marcações confirmadas (ver agendamentos_confirmados_por_telefone).
+        # Por isso o carrinho continua a mostrar a marcação depois de a sessão
+        # ter sido reiniciada na confirmação — e nunca aparece "CHF 0".
+        pedido = pedido_ativo_por_telefone(de)
+        agendamentos = agendamentos_confirmados_por_telefone(de)
+        if pedido:
+            mostrar_pedido_pendente_carrinho(de, idioma, pedido, agendamentos)
+        elif len(agendamentos) == 1:
+            mostrar_marcacao_carrinho(de, idioma, agendamentos[0])
+        elif agendamentos:
+            mostrar_lista_marcacoes_carrinho(de, idioma, agendamentos)
+        else:
+            # Só agora é que o carrinho está MESMO vazio: sem configuração em
+            # curso, sem pedido ativo (o que inclui um orçamento aceite ainda
+            # sem marcação) e sem nenhuma marcação confirmada.
+            enviar_texto(de, t("carrinho_vazio", idioma))
+            enviar_botoes(de, t("e_agora_pergunta", idioma), [
+                {"id": ACAO_NOVA_MARCACAO, "titulo": t("botao_nova_marcacao", idioma)},
+                {"id": ACAO_MENU, "titulo": t("botao_menu_principal", idioma)},
+                {"id": ACAO_HUMANO, "titulo": t("botao_falar_equipa", idioma)},
+            ], idioma)
         return
 
     estimado = sessao.get("categoria") == "cat_wrap" or sessao.get("fluxo") == "wrap"
@@ -2248,6 +3197,141 @@ def mostrar_carrinho(de, idioma, sessao):
         {"id": "carrinho_alterar", "titulo": t("carrinho_botao_alterar", idioma)},
         {"id": "carrinho_esvaziar", "titulo": t("carrinho_botao_esvaziar", idioma)},
     ], idioma)
+
+
+def linhas_detalhe_marcacao(agendamento, idioma):
+    """Bloco de texto com o dossiê completo de uma marcação confirmada:
+    número, estado, serviço com discriminação completa, extras, data, hora,
+    duração e total. A discriminação vem do carrinho_json guardado COM a
+    marcação; marcações antigas (sem essa coluna) caem para serviço/extra/
+    preço, sem nunca mostrar CHF 0 quando há um preço guardado."""
+    linhas = [t("carrinho_marcacao_titulo", idioma), ""]
+    linhas.append(t("carrinho_marcacao_id", idioma, id=agendamento["id"]))
+    linhas.append(t("carrinho_marcacao_estado", idioma))
+    linhas.append(t("carrinho_marcacao_servico", idioma,
+                    servico=nome_servico_traduzido(agendamento.get("servico"), idioma) or "-"))
+    if agendamento.get("extra"):
+        linhas.append(t("carrinho_marcacao_extra", idioma,
+                        extra=nome_extra_traduzido(agendamento["extra"], idioma)))
+    linhas.append(t("carrinho_marcacao_data", idioma, data=agendamento.get("data") or "-"))
+    linhas.append(t("carrinho_marcacao_hora", idioma, hora=agendamento.get("hora") or "-"))
+    linhas.append(t("carrinho_marcacao_duracao", idioma,
+                    duracao=duracao_traduzida(agendamento.get("servico"),
+                                              recuperar_duracao(agendamento.get("servico"),
+                                                                agendamento.get("duracao")) or "-", idioma)))
+
+    linhas_carrinho = linhas_carrinho_agendamento(agendamento)
+    if linhas_carrinho:
+        linhas.append("")
+        linhas.append(t("resumo_discriminacao", idioma))
+        linhas.extend(discriminacao_de_linhas(linhas_carrinho, idioma))
+    linhas.append(t("carrinho_marcacao_total", idioma,
+                    total=formatar_centimos(total_centimos_agendamento(agendamento), idioma)))
+    return linhas
+
+
+def botoes_marcacao_carrinho(agendamento, idioma):
+    return [
+        {"id": f"gerir_ag_{agendamento['id']}", "titulo": t("botao_ver_gerir_marcacao", idioma)},
+        {"id": ACAO_NOVA_MARCACAO, "titulo": t("botao_nova_marcacao", idioma)},
+        {"id": ACAO_MENU, "titulo": t("botao_menu_principal", idioma)},
+    ]
+
+
+def mostrar_marcacao_carrinho(de, idioma, agendamento):
+    """Carrinho com UMA marcação confirmada: dossiê completo + as três ações
+    (Ver/Gerir marcação, Nova marcação, Menu principal). A marcação NÃO é
+    copiada de volta para o carrinho da sessão — seria a forma mais fácil de
+    a duplicar; este ecrã lê sempre diretamente da base de dados."""
+    enviar_botoes(de, "\n".join(linhas_detalhe_marcacao(agendamento, idioma)),
+                  botoes_marcacao_carrinho(agendamento, idioma), idioma)
+
+
+def mostrar_lista_marcacoes_carrinho(de, idioma, agendamentos):
+    """Várias marcações confirmadas: lista para escolher qual ver, com o
+    total real de cada uma (nunca CHF 0)."""
+    opcoes = []
+    for ag in agendamentos[:MAX_LINHAS_LISTA - 2]:
+        total = formatar_centimos(total_centimos_agendamento(ag), idioma)
+        opcoes.append({
+            "id": f"carrinho_marcacao_{ag['id']}",
+            "titulo": f"#{ag['id']} · {ag.get('data') or '-'}",
+            "descricao": f"{nome_servico_traduzido(ag.get('servico'), idioma)} · {ag.get('hora') or '-'} · {total}",
+        })
+    opcoes.append({"id": ACAO_NOVA_MARCACAO, "titulo": t("botao_nova_marcacao", idioma)})
+    opcoes.append({"id": ACAO_MENU, "titulo": t("botao_menu_principal", idioma)})
+    enviar_lista(de, t("carrinho_marcacoes_pergunta", idioma, n=len(agendamentos)),
+                 t("carrinho_marcacoes_seccao", idioma), opcoes, idioma, botao=t("menu_botao", idioma))
+
+
+def abrir_marcacao_do_carrinho(de, idioma, id_agendamento):
+    """Abre o dossiê de uma marcação escolhida na lista do carrinho — só se
+    ela continuar confirmada e pertencer a este número."""
+    ag = obter_agendamento(id_agendamento)
+    if not ag or ag["telefone"] != de or ag["estado"] != "confirmado":
+        enviar_texto(de, t("carrinho_marcacao_nao_encontrada", idioma))
+        return
+    mostrar_marcacao_carrinho(de, idioma, ag)
+
+
+def mostrar_pedido_pendente_carrinho(de, idioma, pedido, agendamentos=None):
+    """Ecrã do carrinho para um pedido ATIVO persistente (rápido, detalhado
+    ou de contacto com especialista) — mostrado mesmo depois de a sessão ter
+    sido reiniciada, porque a base de dados (nunca a sessão) é a fonte de
+    verdade aqui. Nunca mostra CHF 0: enquanto não houver orçamento enviado
+    pelo painel, o preço aparece sempre como "sob análise"; assim que existe
+    um orçamento enviado, mostra a discriminação e o total reais. Se também
+    houver marcações confirmadas, elas continuam acessíveis a partir daqui."""
+    orcamento = obter_orcamento_atual(pedido["id"])
+    tem_orcamento_enviado = bool(orcamento) and orcamento["estado"] in ("enviado", "aceite", "alteração solicitada")
+
+    modo = pedido.get("modo_pedido") or MODO_DETALHE
+    emoji = MODO_EMOJI.get(modo, "🎨")
+    nome_modo = tx(MODO_NOMES_TRADUZIDO.get(modo), idioma)
+    tipo_traduzido = texto_tipo_wrap_traduzido(pedido.get("tipo_wrap"), idioma)
+    estado_dic = ESTADO_PEDIDO_NOMES.get(pedido["estado"])
+    estado_traduzido = tx(estado_dic, idioma) if estado_dic else pedido["estado"]
+
+    linhas = [f"{emoji} *{nome_modo} — {tipo_traduzido}*"]
+    linhas.append(t("carrinho_pendente_id", idioma, id=pedido["id"]))
+    linhas.append(t("carrinho_pendente_estado", idioma, estado=estado_traduzido))
+    linhas.append("")
+
+    opcoes = []
+    if tem_orcamento_enviado:
+        for l in orcamento["linhas"]:
+            preco_linha = l["preco_centimos"] * l["quantidade"]
+            qtd_txt = f" ×{l['quantidade']}" if l["quantidade"] != 1 else ""
+            linhas.append(f"• {l['descricao']}{qtd_txt}: {formatar_centimos(preco_linha, idioma)}")
+        if orcamento["desconto_centimos"]:
+            linhas.append(t("orcamento_cliente_desconto", idioma,
+                            desconto=formatar_centimos(orcamento["desconto_centimos"], idioma)))
+        linhas.append(t("orcamento_cliente_total", idioma, total=formatar_centimos(orcamento["total_centimos"], idioma)))
+        if orcamento["estado"] == "enviado":
+            opcoes.append({"id": f"orcamento_aceitar_{orcamento['id']}", "titulo": t("botao_orcamento_aceitar", idioma)})
+            opcoes.append({"id": f"orcamento_alterar_{orcamento['id']}", "titulo": t("botao_orcamento_alterar", idioma)})
+    else:
+        linhas.append(t("carrinho_pendente_preco_sob_analise", idioma))
+
+    if pedido["estado"] in ESTADOS_PEDIDO_ATIVOS:
+        opcoes.append({"id": f"pedido_cancelar_cliente_{pedido['id']}", "titulo": t("botao_cancelar_pedido_cliente", idioma)})
+
+    # As marcações confirmadas nunca desaparecem do carrinho só por haver
+    # também um pedido pendente — ficam acessíveis aqui.
+    agendamentos = agendamentos or []
+    if agendamentos:
+        linhas.append("")
+        linhas.append(t("carrinho_marcacoes_extra_linha", idioma, n=len(agendamentos)))
+        for ag in agendamentos[:2]:
+            total = formatar_centimos(total_centimos_agendamento(ag), idioma)
+            opcoes.append({"id": f"carrinho_marcacao_{ag['id']}",
+                           "titulo": f"#{ag['id']} · {ag.get('data') or '-'}",
+                           "descricao": f"{nome_servico_traduzido(ag.get('servico'), idioma)} · {total}"})
+
+    opcoes.append({"id": "carrinho_continuar", "titulo": t("botao_continuar", idioma)})
+    opcoes.append({"id": ACAO_MENU, "titulo": t("botao_menu_principal", idioma)})
+
+    enviar_lista(de, "\n".join(linhas), t("mais_acoes_seccao", idioma), opcoes, idioma, botao=t("menu_botao", idioma))
 
 
 def mostrar_alterar_carrinho(de, idioma, sessao):
@@ -2305,10 +3389,28 @@ def passo_orcamento_generico(de, idioma):
     enviar_texto(de, t("orcamento_pedido", idioma) + "\n\n" + t("rodape_padrao", idioma))
 
 
-def mostrar_gestao_marcacao(de, idioma):
-    ag = ultimo_agendamento_ativo(de)
+def mostrar_gestao_marcacao(de, idioma, id_agendamento=None):
+    """Sem `id_agendamento`, gere a marcação ativa mais recente (comportamento
+    de sempre). Com um id, gere essa marcação em concreto — usado pelo botão
+    "🗓️ Ver/Gerir marcação" do carrinho, quando há mais do que uma."""
+    if id_agendamento is not None:
+        completo = obter_agendamento(id_agendamento)
+        if not completo or completo["telefone"] != de or completo["estado"] != "confirmado":
+            enviar_texto(de, t("carrinho_marcacao_nao_encontrada", idioma))
+            return
+        ag = {"id": completo["id"], "servico": completo["servico"], "data": completo["data"],
+              "hora": completo["hora"], "preco": completo["preco"],
+              "duracao": recuperar_duracao(completo["servico"], completo["duracao"])}
+    else:
+        ag = ultimo_agendamento_ativo(de)
     if not ag:
+        # Sem marcação ativa: nunca "escreva MENU" — sempre botões.
         enviar_texto(de, t("gerir_sem_marcacao", idioma))
+        enviar_botoes(de, t("e_agora_pergunta", idioma), [
+            {"id": ACAO_NOVA_MARCACAO, "titulo": t("botao_nova_marcacao", idioma)},
+            {"id": ACAO_MENU, "titulo": t("botao_menu_principal", idioma)},
+            {"id": ACAO_HUMANO, "titulo": t("botao_falar_equipa", idioma)},
+        ], idioma)
         return
     servico_disp = nome_servico_traduzido(ag["servico"], idioma)
     duracao_disp = duracao_traduzida(ag["servico"], ag.get("duracao", "-"), idioma)
@@ -2321,12 +3423,28 @@ def mostrar_gestao_marcacao(de, idioma):
     ], idioma, rodape=t("rodape_padrao", idioma))
 
 
+def mostrar_mais_acoes(de, idioma, sessao):
+    """Submenu "⚙️ Mais ações" (ACAO_MAIS) — usado quando uma lista já está
+    perto do limite de 10 linhas da API do WhatsApp e não sobra espaço para
+    todas as saídas universais na própria lista (ver enviar_lista)."""
+    opcoes = [
+        {"id": ID_VOLTAR, "titulo": t("voltar_titulo", idioma)},
+        {"id": "menu_principal", "titulo": t("botao_menu_principal", idioma)},
+        {"id": "ver_carrinho", "titulo": t("carrinho_botao_ver", idioma)},
+        {"id": ID_CANCELAR, "titulo": t("cancelar_titulo", idioma)},
+    ]
+    enviar_lista(de, t("mais_acoes_pergunta", idioma), t("mais_acoes_seccao", idioma), opcoes, idioma,
+                 botao=t("botao_mais_acoes", idioma))
+
+
 def falar_com_equipa(de, idioma, sessao):
     enviar_texto(de, t("humano_cliente", idioma))
     if PROVIDER_WHATSAPP:
         nome = sessao.get("nome") or "sem nome"
+        # Ligação wa.me em vez de um comando de texto — abre diretamente a
+        # conversa com o número certo (ver wa_me_link).
         enviar_texto(PROVIDER_WHATSAPP, f"💬 *Pedido de contacto direto*\n\n👤 {nome}\n"
-                                         f"📱 {formatar_telefone(de)}\n\nResponda com: CONTACTAR {formatar_telefone(de)}")
+                                         f"📱 {formatar_telefone(de)}\n\n{wa_me_link(de)}")
 
 
 def mensagem_ajuda(idioma):
@@ -2339,6 +3457,20 @@ def mensagem_ajuda(idioma):
 
 def mensagem_nao_entendi(idioma):
     return t("nao_entendi", idioma)
+
+
+def nao_entendi_com_opcoes(de, idioma, sessao):
+    """Nunca responde só com "não percebi, escreva MENU": repete o passo
+    atual com os seus próprios botões/lista (se houver um processo em
+    curso) e mostra sempre as duas saídas universais — Menu principal e
+    Falar com a equipa — para o cliente nunca ficar sem opção por toque."""
+    enviar_texto(de, t("nao_entendi_opcoes", idioma))
+    if sessao.get("categoria") or sessao.get("fluxo"):
+        reenviar_passo_atual(de, idioma, sessao)
+    enviar_botoes(de, t("e_agora_pergunta", idioma), [
+        {"id": ACAO_MENU, "titulo": t("botao_menu_principal", idioma)},
+        {"id": ACAO_HUMANO, "titulo": t("botao_falar_equipa", idioma)},
+    ], idioma)
 
 
 # ---------------------------------------------------------------------------
@@ -2387,6 +3519,131 @@ def api_pedido_detalhe(pedido_id):
         return jsonify(erro="Pedido não encontrado"), 404
     pedido["fotografias"] = listar_fotografias(pedido_id)
     return jsonify(pedido), 200
+
+
+# ---------------------------------------------------------------------------
+# Orçamentos — API do painel (secção 1 do pedido do cliente). Protegida pela
+# mesma autenticação do resto do painel; validação sempre do lado do
+# servidor (nunca confiar só na validação do JavaScript do browser).
+# ---------------------------------------------------------------------------
+def _validar_linha_orcamento(dados):
+    descricao = str((dados or {}).get("descricao", "")).strip()
+    if not descricao or len(descricao) > 200:
+        return None, "Descrição inválida (obrigatória, até 200 caracteres)."
+    try:
+        quantidade = int((dados or {}).get("quantidade", 1))
+        preco_centimos = int((dados or {}).get("preco_centimos", 0))
+    except (TypeError, ValueError):
+        return None, "Quantidade ou preço inválidos."
+    if quantidade < 1 or quantidade > 999:
+        return None, "Quantidade inválida (entre 1 e 999)."
+    if preco_centimos < 0 or preco_centimos > 100_000_00:
+        return None, "Preço inválido."
+    return {"descricao": descricao, "quantidade": quantidade, "preco_centimos": preco_centimos}, None
+
+
+@app.route("/api/pedidos/<int:pedido_id>/orcamento", methods=["GET"])
+@requer_autenticacao
+def api_orcamento_atual(pedido_id):
+    if not obter_pedido_orcamento(pedido_id):
+        return jsonify(erro="Pedido não encontrado"), 404
+    return jsonify(orcamento=obter_orcamento_atual(pedido_id), versoes=listar_versoes_orcamento(pedido_id)), 200
+
+
+@app.route("/api/pedidos/<int:pedido_id>/orcamento/linhas", methods=["POST"])
+@requer_autenticacao
+def api_orcamento_adicionar_linha(pedido_id):
+    if not obter_pedido_orcamento(pedido_id):
+        return jsonify(erro="Pedido não encontrado"), 404
+    dados, erro = _validar_linha_orcamento(request.get_json(force=True, silent=True))
+    if erro:
+        return jsonify(erro=erro), 400
+    orcamento = obter_ou_criar_rascunho_orcamento(pedido_id)
+    adicionar_linha_orcamento(orcamento["id"], dados["descricao"], dados["quantidade"], dados["preco_centimos"])
+    return jsonify(obter_orcamento_por_id(orcamento["id"])), 200
+
+
+@app.route("/api/pedidos/<int:pedido_id>/orcamento/linhas/<int:linha_id>", methods=["PUT", "DELETE"])
+@requer_autenticacao
+def api_orcamento_linha(pedido_id, linha_id):
+    if not obter_pedido_orcamento(pedido_id):
+        return jsonify(erro="Pedido não encontrado"), 404
+    linha = obter_linha_orcamento(linha_id)
+    orcamento_atual = obter_orcamento_atual(pedido_id)
+    # Uma linha só pode ser editada/removida enquanto pertencer ao RASCUNHO
+    # atual deste pedido — nunca a uma versão já enviada ao cliente.
+    if not linha or not orcamento_atual or linha["orcamento_id"] != orcamento_atual["id"] \
+            or orcamento_atual["estado"] != "rascunho":
+        return jsonify(erro="Linha não encontrada ou já não editável."), 404
+    if request.method == "DELETE":
+        remover_linha_orcamento(linha_id)
+    else:
+        dados, erro = _validar_linha_orcamento(request.get_json(force=True, silent=True))
+        if erro:
+            return jsonify(erro=erro), 400
+        editar_linha_orcamento(linha_id, dados["descricao"], dados["quantidade"], dados["preco_centimos"])
+    return jsonify(obter_orcamento_por_id(orcamento_atual["id"])), 200
+
+
+@app.route("/api/pedidos/<int:pedido_id>/orcamento/rascunho", methods=["POST"])
+@requer_autenticacao
+def api_orcamento_rascunho(pedido_id):
+    if not obter_pedido_orcamento(pedido_id):
+        return jsonify(erro="Pedido não encontrado"), 404
+    dados = request.get_json(force=True, silent=True) or {}
+    orcamento = obter_ou_criar_rascunho_orcamento(pedido_id)
+
+    desconto_centimos = None
+    if "desconto_centimos" in dados:
+        try:
+            desconto_centimos = max(0, min(100_000_00, int(dados["desconto_centimos"])))
+        except (TypeError, ValueError):
+            return jsonify(erro="Desconto inválido."), 400
+
+    observacoes = None
+    if "observacoes" in dados:
+        observacoes = str(dados["observacoes"] or "").strip()[:500]
+
+    validade_dias = None
+    if "validade_dias" in dados:
+        try:
+            validade_dias = max(1, min(90, int(dados["validade_dias"])))
+        except (TypeError, ValueError):
+            return jsonify(erro="Validade inválida (entre 1 e 90 dias)."), 400
+
+    atualizar_campos_orcamento(orcamento["id"], desconto_centimos=desconto_centimos,
+                                observacoes=observacoes, validade_dias=validade_dias)
+    return jsonify(obter_orcamento_por_id(orcamento["id"])), 200
+
+
+@app.route("/api/pedidos/<int:pedido_id>/orcamento/enviar", methods=["POST"])
+@requer_autenticacao
+def api_orcamento_enviar(pedido_id):
+    if not obter_pedido_orcamento(pedido_id):
+        return jsonify(erro="Pedido não encontrado"), 404
+    orcamento = obter_orcamento_atual(pedido_id)
+    # Impede envios duplicados: só há algo para enviar enquanto a versão mais
+    # recente ainda estiver em rascunho.
+    if not orcamento or orcamento["estado"] != "rascunho":
+        return jsonify(erro="Não há nenhum rascunho de orçamento por enviar para este pedido."), 409
+    if not orcamento["linhas"]:
+        return jsonify(erro="Adicione pelo menos uma linha antes de enviar o orçamento."), 400
+    marcar_orcamento_enviado(orcamento["id"])
+    atualizar_estado_pedido(pedido_id, "orçamento enviado")
+    enviar_orcamento_cliente(pedido_id)
+    return jsonify(obter_orcamento_por_id(orcamento["id"])), 200
+
+
+@app.route("/api/pedidos/<int:pedido_id>/recusar", methods=["POST"])
+@requer_autenticacao
+def api_pedido_recusar(pedido_id):
+    pedido = obter_pedido_orcamento(pedido_id)
+    if not pedido:
+        return jsonify(erro="Pedido não encontrado"), 404
+    if pedido["estado"] == "recusado":
+        return jsonify(erro="Este pedido já tinha sido recusado."), 409
+    recusar_pedido_e_avisar_cliente(pedido)
+    return jsonify(obter_pedido_orcamento(pedido_id)), 200
 
 
 @app.route("/media/<path:nome_ficheiro>", methods=["GET"])
@@ -2450,6 +3707,19 @@ DASHBOARD_HTML = """
   .lightbox{display:none;position:fixed;inset:0;background:rgba(0,0,0,.88);align-items:center;justify-content:center;z-index:60;cursor:zoom-out;}
   .lightbox.aberto{display:flex;}
   .lightbox img{max-width:92vw;max-height:92vh;border-radius:8px;}
+  .orc-tabela{width:100%;border-collapse:collapse;margin-top:8px;}
+  .orc-tabela th,.orc-tabela td{padding:6px 4px;font-size:13px;border-bottom:1px solid var(--border);}
+  .orc-tabela input,.orc-tabela textarea{background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:5px 7px;font-size:13px;width:100%;}
+  .orc-campo{margin-top:8px;}
+  .orc-campo label{display:block;color:var(--muted);font-size:12px;margin-bottom:3px;}
+  .orc-total{font-size:15px;margin-top:10px;}
+  .orc-acoes{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;}
+  .orc-acoes button,.orc-acoes a{cursor:pointer;border:none;border-radius:8px;padding:8px 12px;font-size:13px;font-weight:700;text-decoration:none;display:inline-block;}
+  .btn-primario{background:var(--gold);color:#1a1400;}
+  .btn-secundario{background:var(--panel2);color:var(--text);border:1px solid var(--border) !important;}
+  .btn-perigo{background:#3a1a1a;color:#f2a3a3;}
+  .orc-erro{color:#e05252;font-size:12.5px;margin-top:6px;}
+  .orc-mini{background:transparent;border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:3px 8px;font-size:12px;cursor:pointer;}
 </style>
 </head>
 <body>
@@ -2497,6 +3767,20 @@ DASHBOARD_HTML = """
 </div>
 
 <script>
+// Escapa qualquer valor antes de o colocar em innerHTML — nunca confiar em
+// dados vindos da base de dados (nome, veículo, observações, etc.) como se
+// fossem HTML seguro.
+function esc(valor){
+  if(valor === null || valor === undefined) return '';
+  return String(valor).replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
+}
+
+function formatarCentimos(centimos){
+  return 'CHF ' + ((centimos||0)/100).toFixed(2);
+}
+
 async function carregar(){
   const resp = await fetch('/api/agendamentos');
   const dados = await resp.json();
@@ -2524,13 +3808,13 @@ async function carregar(){
     const criado = d.criado_em ? new Date(d.criado_em).toLocaleString('pt-PT') : '-';
     const classeEstado = d.estado !== 'confirmado' ? 'estado-cancelado' : '';
     html += `<tr>
-      <td>${d.nome || d.telefone}<br><span style="color:var(--muted);font-size:12px;">${d.telefone}</span></td>
-      <td><span class="tag">${d.servico}</span>${d.extra ? '<br><span style="color:var(--muted);font-size:12px;">+ '+d.extra+'</span>' : ''}</td>
-      <td>${d.data || '-'}</td>
-      <td>${d.hora || '-'}</td>
-      <td>${d.preco ? 'CHF '+d.preco : '-'}</td>
-      <td class="${classeEstado}">${d.estado}</td>
-      <td style="color:var(--muted);">${criado}</td>
+      <td>${esc(d.nome || d.telefone)}<br><span style="color:var(--muted);font-size:12px;">${esc(d.telefone)}</span></td>
+      <td><span class="tag">${esc(d.servico)}</span>${d.extra ? '<br><span style="color:var(--muted);font-size:12px;">+ '+esc(d.extra)+'</span>' : ''}</td>
+      <td>${esc(d.data) || '-'}</td>
+      <td>${esc(d.hora) || '-'}</td>
+      <td>${d.preco ? 'CHF '+esc(d.preco) : '-'}</td>
+      <td class="${classeEstado}">${esc(d.estado)}</td>
+      <td style="color:var(--muted);">${esc(criado)}</td>
     </tr>`;
   });
   html += '</tbody></table>';
@@ -2551,15 +3835,15 @@ async function carregarPedidos(){
   let html = '<table><thead><tr><th>Cliente</th><th>Modo</th><th>Veículo</th><th>Wrap</th><th>Preço</th><th>Estado</th><th>Fotos</th><th>Pedido em</th></tr></thead><tbody>';
   dados.forEach(p => {
     const criado = p.criado_em ? new Date(p.criado_em).toLocaleString('pt-PT') : '-';
-    html += `<tr class="clicavel" onclick="abrirPedido(${p.id})">
-      <td>${p.nome || p.telefone}<br><span style="color:var(--muted);font-size:12px;">${p.telefone}</span></td>
-      <td>${nomeModo(p.modo_pedido)}</td>
-      <td>${p.veiculo || '-'}${p.ano_veiculo ? ' ('+p.ano_veiculo+')' : ''}</td>
-      <td><span class="tag">${p.tipo_wrap || '-'}</span>${p.cor_acabamento ? '<br><span style="color:var(--muted);font-size:12px;">'+p.cor_acabamento+'</span>' : ''}</td>
+    html += `<tr class="clicavel" onclick="abrirPedido(${parseInt(p.id, 10)})">
+      <td>${esc(p.nome || p.telefone)}<br><span style="color:var(--muted);font-size:12px;">${esc(p.telefone)}</span></td>
+      <td>${esc(nomeModo(p.modo_pedido))}</td>
+      <td>${esc(p.veiculo) || '-'}${p.ano_veiculo ? ' ('+esc(p.ano_veiculo)+')' : ''}</td>
+      <td><span class="tag">${esc(p.tipo_wrap) || '-'}</span>${p.cor_acabamento ? '<br><span style="color:var(--muted);font-size:12px;">'+esc(p.cor_acabamento)+'</span>' : ''}</td>
       <td>${precoPedido(p)}</td>
-      <td>${p.estado}</td>
+      <td>${esc(p.estado)}</td>
       <td>${p.num_fotos || 0}</td>
-      <td style="color:var(--muted);">${criado}</td>
+      <td style="color:var(--muted);">${esc(criado)}</td>
     </tr>`;
   });
   html += '</tbody></table>';
@@ -2586,21 +3870,26 @@ function precoPedido(p){
   return 'CHF ' + (total/100).toFixed(2);
 }
 
+let pedidoAtualId = null;
+let pedidoAtualTelefone = null;
+
 async function abrirPedido(id){
   const resp = await fetch('/api/pedidos/' + id);
   if(!resp.ok){ return; }
   const p = await resp.json();
-  document.getElementById('modal-titulo').textContent = 'Pedido de orçamento #' + p.id;
+  pedidoAtualId = p.id;
+  pedidoAtualTelefone = p.telefone;
+  document.getElementById('modal-titulo').textContent = 'Pedido de orçamento #' + esc(p.id);
 
   let html = '';
-  html += `<div class="linha">👤 Cliente: ${p.nome || p.telefone}</div>`;
-  html += `<div class="linha">📱 Contacto: ${p.telefone}</div>`;
-  html += `<div class="linha">🧭 Modo: ${nomeModo(p.modo_pedido)}</div>`;
-  html += `<div class="linha">🚗 Veículo: ${p.veiculo || '-'}${p.ano_veiculo ? ' ('+p.ano_veiculo+')' : ''}</div>`;
-  html += `<div class="linha">🎨 Tipo: ${p.tipo_wrap || '-'}</div>`;
-  html += `<div class="linha">🖌️ Cor/acabamento: ${p.cor_acabamento || '-'}</div>`;
-  html += `<div class="linha">📌 Estado: ${p.estado}</div>`;
-  html += `<div class="linha">🕓 Pedido em: ${p.criado_em ? new Date(p.criado_em).toLocaleString('pt-PT') : '-'}</div>`;
+  html += `<div class="linha">👤 Cliente: ${esc(p.nome || p.telefone)}</div>`;
+  html += `<div class="linha">📱 Contacto: ${esc(p.telefone)}</div>`;
+  html += `<div class="linha">🧭 Modo: ${esc(nomeModo(p.modo_pedido))}</div>`;
+  html += `<div class="linha">🚗 Veículo: ${esc(p.veiculo) || '-'}${p.ano_veiculo ? ' ('+esc(p.ano_veiculo)+')' : ''}</div>`;
+  html += `<div class="linha">🎨 Tipo: ${esc(p.tipo_wrap) || '-'}</div>`;
+  html += `<div class="linha">🖌️ Cor/acabamento: ${esc(p.cor_acabamento) || '-'}</div>`;
+  html += `<div class="linha">📌 Estado: <span id="pedido-estado-atual">${esc(p.estado)}</span></div>`;
+  html += `<div class="linha">🕓 Pedido em: ${esc(p.criado_em ? new Date(p.criado_em).toLocaleString('pt-PT') : '-')}</div>`;
 
   let carrinho = [];
   try { carrinho = p.carrinho_json ? JSON.parse(p.carrinho_json) : []; } catch(e) { carrinho = []; }
@@ -2610,9 +3899,9 @@ async function abrirPedido(id){
     carrinho.forEach(l => {
       const preco = (l.preco||0) * (l.quantidade||1);
       total += preco;
-      html += `<div class="linha" style="color:var(--muted);">• ${l.nome}: CHF ${(preco/100).toFixed(2)}</div>`;
+      html += `<div class="linha" style="color:var(--muted);">• ${esc(l.nome)}: ${formatarCentimos(preco)}</div>`;
     });
-    html += `<div class="linha"><strong>💰 Total estimado: CHF ${(total/100).toFixed(2)}</strong></div>`;
+    html += `<div class="linha"><strong>💰 Total estimado: ${formatarCentimos(total)}</strong></div>`;
   } else {
     html += '<div class="linha" style="margin-top:10px;"><strong>💰 Preço: Sob análise</strong></div>';
   }
@@ -2621,19 +3910,176 @@ async function abrirPedido(id){
     html += '<div class="linha" style="margin-top:10px;">📸 Fotografias (' + p.fotografias.length + '):</div>';
     html += '<div class="galeria">';
     p.fotografias.forEach(f => {
-      html += `<img src="/media/${f.nome_ficheiro}" onclick="abrirLightbox('/media/${f.nome_ficheiro}')">`;
+      const src = '/media/' + encodeURIComponent(f.nome_ficheiro);
+      html += `<img src="${src}" onclick="abrirLightbox('${src}')">`;
     });
     html += '</div>';
   } else {
     html += '<div class="linha" style="margin-top:10px;color:var(--muted);">Sem fotografias enviadas.</div>';
   }
 
+  html += '<div id="orc-secao" style="margin-top:16px;border-top:1px solid var(--border);padding-top:14px;">A carregar orçamento…</div>';
+
   document.getElementById('modal-corpo').innerHTML = html;
   document.getElementById('modal-pedido').classList.add('aberto');
+
+  await carregarOrcamento(p.id, p.telefone);
+}
+
+async function carregarOrcamento(pedidoId, telefone){
+  const secao = document.getElementById('orc-secao');
+  const resp = await fetch('/api/pedidos/' + pedidoId + '/orcamento');
+  if(!resp.ok){ secao.innerHTML = '<div class="orc-erro">Não foi possível carregar o orçamento.</div>'; return; }
+  const dados = await resp.json();
+  renderizarOrcamento(pedidoId, telefone, dados.orcamento);
+}
+
+function renderizarOrcamento(pedidoId, telefone, orcamento){
+  const secao = document.getElementById('orc-secao');
+  const linhas = orcamento ? orcamento.linhas : [];
+  const editavel = !orcamento || orcamento.estado === 'rascunho';
+  const waLink = 'https://wa.me/' + String(telefone || '').replace(/[^0-9]/g, '');
+
+  let html = '<h4 style="margin:0 0 4px;">💰 Orçamento</h4>';
+  if(orcamento && orcamento.estado !== 'rascunho'){
+    html += `<div class="linha" style="color:var(--muted);">Versão ${esc(orcamento.versao)} — estado: ${esc(orcamento.estado)}`
+          + (orcamento.enviado_em ? ' — enviado em ' + esc(new Date(orcamento.enviado_em).toLocaleString('pt-PT')) : '') + '</div>';
+  }
+
+  html += '<table class="orc-tabela"><thead><tr><th>Descrição</th><th style="width:70px;">Qtd</th><th style="width:100px;">Preço (CHF)</th><th></th></tr></thead><tbody>';
+  linhas.forEach(l => {
+    const precoChf = (l.preco_centimos/100).toFixed(2);
+    if(editavel){
+      html += `<tr data-linha-id="${l.id}">
+        <td><input type="text" class="orc-desc" value="${esc(l.descricao)}"></td>
+        <td><input type="number" min="1" step="1" class="orc-qtd" value="${esc(l.quantidade)}"></td>
+        <td><input type="number" min="0" step="0.05" class="orc-preco" value="${esc(precoChf)}"></td>
+        <td><button class="orc-mini" onclick="orcGuardarLinha(${pedidoId}, ${l.id})">💾</button>
+            <button class="orc-mini" onclick="orcRemoverLinha(${pedidoId}, ${l.id})">🗑️</button></td>
+      </tr>`;
+    } else {
+      html += `<tr><td>${esc(l.descricao)}</td><td>${esc(l.quantidade)}</td><td>${esc(precoChf)}</td><td></td></tr>`;
+    }
+  });
+  if(editavel){
+    html += `<tr>
+      <td><input type="text" id="orc-nova-desc" placeholder="Ex.: Wrap total, mate"></td>
+      <td><input type="number" id="orc-nova-qtd" min="1" step="1" value="1"></td>
+      <td><input type="number" id="orc-nova-preco" min="0" step="0.05" value="0"></td>
+      <td><button class="orc-mini" onclick="orcAdicionarLinha(${pedidoId})">➕</button></td>
+    </tr>`;
+  }
+  html += '</tbody></table>';
+
+  const descontoChf = orcamento ? (orcamento.desconto_centimos/100).toFixed(2) : '0.00';
+  const observacoes = orcamento ? (orcamento.observacoes || '') : '';
+  const validade = orcamento ? (orcamento.validade_dias || 14) : 14;
+
+  if(editavel){
+    html += `<div class="orc-campo"><label>Desconto (CHF)</label><input type="number" id="orc-desconto" min="0" step="0.05" value="${esc(descontoChf)}"></div>`;
+    html += `<div class="orc-campo"><label>Observações</label><textarea id="orc-observacoes" rows="2">${esc(observacoes)}</textarea></div>`;
+    html += `<div class="orc-campo"><label>Validade do orçamento (dias)</label><input type="number" id="orc-validade" min="1" max="90" step="1" value="${esc(validade)}"></div>`;
+  } else if(orcamento){
+    if(orcamento.desconto_centimos){ html += `<div class="linha">Desconto: -${formatarCentimos(orcamento.desconto_centimos)}</div>`; }
+    if(observacoes){ html += `<div class="linha">Observações: ${esc(observacoes)}</div>`; }
+    html += `<div class="linha">Validade: ${esc(validade)} dias</div>`;
+  }
+
+  const total = orcamento ? orcamento.total_centimos : 0;
+  html += `<div class="orc-total"><strong>Total: ${formatarCentimos(total)}</strong></div>`;
+  html += '<div id="orc-erro" class="orc-erro"></div>';
+
+  html += '<div class="orc-acoes">';
+  if(editavel){
+    html += `<button class="btn-secundario" onclick="orcGuardarRascunho(${pedidoId})">💾 Guardar rascunho</button>`;
+    html += `<button class="btn-primario" onclick="orcEnviar(${pedidoId})">📤 Enviar orçamento</button>`;
+  }
+  html += `<a class="btn-secundario" href="${waLink}" target="_blank" rel="noopener">💬 Contactar cliente</a>`;
+  html += `<button class="btn-perigo" onclick="pedidoRecusar(${pedidoId})">❌ Recusar pedido</button>`;
+  html += '</div>';
+  html += '<div class="linha" style="color:var(--muted);font-size:12px;margin-top:8px;">"Contactar cliente" abre o WhatsApp diretamente — é sempre uma alternativa; o envio do orçamento pelo botão acima é o método principal.</div>';
+
+  secao.innerHTML = html;
+}
+
+function orcErro(msg){
+  const el = document.getElementById('orc-erro');
+  if(el) el.textContent = msg || '';
+}
+
+async function orcPedirJson(url, opcoes){
+  try {
+    const resp = await fetch(url, opcoes);
+    const dados = await resp.json().catch(() => ({}));
+    if(!resp.ok){ orcErro(dados.erro || 'Ocorreu um erro.'); return null; }
+    return dados;
+  } catch(e){ orcErro('Falha de rede.'); return null; }
+}
+
+async function orcAdicionarLinha(pedidoId){
+  const descricao = document.getElementById('orc-nova-desc').value.trim();
+  const quantidade = parseInt(document.getElementById('orc-nova-qtd').value, 10);
+  const precoChf = parseFloat(document.getElementById('orc-nova-preco').value);
+  if(!descricao){ orcErro('Indique uma descrição.'); return; }
+  const dados = await orcPedirJson('/api/pedidos/' + pedidoId + '/orcamento/linhas', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({descricao, quantidade, preco_centimos: Math.round((precoChf||0)*100)}),
+  });
+  if(dados) await carregarOrcamento(pedidoId, pedidoAtualTelefone);
+}
+
+async function orcGuardarLinha(pedidoId, linhaId){
+  const tr = document.querySelector(`tr[data-linha-id="${linhaId}"]`);
+  const descricao = tr.querySelector('.orc-desc').value.trim();
+  const quantidade = parseInt(tr.querySelector('.orc-qtd').value, 10);
+  const precoChf = parseFloat(tr.querySelector('.orc-preco').value);
+  if(!descricao){ orcErro('Indique uma descrição.'); return; }
+  const dados = await orcPedirJson('/api/pedidos/' + pedidoId + '/orcamento/linhas/' + linhaId, {
+    method: 'PUT', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({descricao, quantidade, preco_centimos: Math.round((precoChf||0)*100)}),
+  });
+  if(dados) await carregarOrcamento(pedidoId, pedidoAtualTelefone);
+}
+
+async function orcRemoverLinha(pedidoId, linhaId){
+  const dados = await orcPedirJson('/api/pedidos/' + pedidoId + '/orcamento/linhas/' + linhaId, {method: 'DELETE'});
+  if(dados) await carregarOrcamento(pedidoId, pedidoAtualTelefone);
+}
+
+async function orcGuardarRascunho(pedidoId){
+  const descontoChf = parseFloat(document.getElementById('orc-desconto').value) || 0;
+  const observacoes = document.getElementById('orc-observacoes').value;
+  const validade = parseInt(document.getElementById('orc-validade').value, 10) || 14;
+  const dados = await orcPedirJson('/api/pedidos/' + pedidoId + '/orcamento/rascunho', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({desconto_centimos: Math.round(descontoChf*100), observacoes, validade_dias: validade}),
+  });
+  if(dados) await carregarOrcamento(pedidoId, pedidoAtualTelefone);
+}
+
+async function orcEnviar(pedidoId){
+  if(!confirm('Enviar este orçamento ao cliente agora, pelo WhatsApp?')) return;
+  const dados = await orcPedirJson('/api/pedidos/' + pedidoId + '/orcamento/enviar', {method: 'POST'});
+  if(dados){
+    await carregarOrcamento(pedidoId, pedidoAtualTelefone);
+    document.getElementById('pedido-estado-atual').textContent = 'orçamento enviado';
+    carregarPedidos();
+  }
+}
+
+async function pedidoRecusar(pedidoId){
+  if(!confirm('Recusar este pedido e avisar o cliente?')) return;
+  const dados = await orcPedirJson('/api/pedidos/' + pedidoId + '/recusar', {method: 'POST'});
+  if(dados){
+    document.getElementById('pedido-estado-atual').textContent = dados.estado;
+    carregarPedidos();
+  }
 }
 
 function fecharModal(){
   document.getElementById('modal-pedido').classList.remove('aberto');
+  pedidoAtualId = null;
+  if(location.hash.startsWith('#pedido-')) history.replaceState(null, '', location.pathname);
 }
 
 function fecharModalSeExterior(event){
@@ -2649,6 +4095,17 @@ carregar();
 carregarPedidos();
 setInterval(carregar, 20000);
 setInterval(carregarPedidos, 20000);
+
+// Abre automaticamente o dossiê de um pedido quando se chega a esta página
+// por uma ligação #pedido-<id> (ver link_dossie_pedido, usado na notificação
+// interna "🔎 Analisar pedido").
+function abrirPedidoPeloHash(){
+  const m = /^#pedido-(\d+)$/.exec(location.hash);
+  if(m) abrirPedido(parseInt(m[1], 10));
+}
+window.addEventListener('hashchange', abrirPedidoPeloHash);
+window.addEventListener('load', abrirPedidoPeloHash);
+abrirPedidoPeloHash();
 </script>
 </body>
 </html>
@@ -2657,7 +4114,8 @@ setInterval(carregarPedidos, 20000);
 
 @app.route("/versao", methods=["GET"])
 def versao():
-    return jsonify(versao="v4-multilingue", fluxos=["limpeza", "estetica", "wrap"], idiomas=list(IDIOMAS_VALIDOS)), 200
+    return jsonify(versao="v5.1-carrinho-persistente", fluxos=["limpeza", "estetica", "wrap"],
+                   idiomas=list(IDIOMAS_VALIDOS)), 200
 
 
 @app.route("/webhook", methods=["GET"])
@@ -2837,7 +4295,24 @@ def receber_mensagem():
 
         msg = entry["messages"][0]
         de = msg["from"]
+
+        # --- Resposta da equipa a uma notificação interna de pedido rápido -
+        # Processada antes de qualquer carregamento/tratamento de sessão,
+        # para nunca ser interpretada como uma mensagem de cliente (ver
+        # processar_resposta_interna_pedido).
+        if msg.get("type") == "interactive" and msg.get("interactive", {}).get("type") == "button_reply":
+            id_botao_resposta = msg["interactive"]["button_reply"]["id"]
+            if id_botao_resposta.startswith(("pedido_analisar_", "pedido_contactar_", "pedido_recusar_")):
+                processar_resposta_interna_pedido(id_botao_resposta)
+                return jsonify(status="ok"), 200
+
         sessao = carregar_sessao(de)
+
+        # Regista esta interação como "última mensagem do cliente" — só serve
+        # para saber se ainda estamos dentro da janela de 24h de atendimento
+        # da Meta (ver dentro_da_janela_24h), nunca para nada relacionado com
+        # a resposta da equipa (já tratada e devolvida acima).
+        registar_interacao_cliente(de)
 
         try:
             nome_perfil = entry["contacts"][0]["profile"]["name"]
@@ -2882,6 +4357,13 @@ def receber_mensagem():
                 else:
                     nova = reiniciar_sessao(de)
                     enviar_menu_principal(de, idioma, saudacao=True, sessao=nova)
+                return jsonify(status="ok"), 200
+
+            # --- Orçamento: descrição livre de "Outra alteração" -------------
+            if sessao.get("_aguardando_alteracao_orcamento_id"):
+                orcamento_id = sessao.pop("_aguardando_alteracao_orcamento_id")
+                guardar_sessao(de, sessao)
+                registar_pedido_alteracao(de, idioma, orcamento_id, sessao, "outra", texto_livre=msg["text"]["body"].strip())
                 return jsonify(status="ok"), 200
 
             # --- Wrap & Proteção: únicos 3 pontos com texto livre ------------
@@ -2952,6 +4434,40 @@ def receber_mensagem():
         if tipo == "interactive" and msg["interactive"]["type"] == "button_reply":
             id_botao = msg["interactive"]["button_reply"]["id"]
 
+            # --- Aliases dos IDs canónicos "acao_*" (ver constantes ACAO_*) -
+            # Botões NOVOS usam sempre estes IDs; os antigos equivalentes
+            # (ex.: "menu_principal", "mp_marcar") continuam a funcionar tal e
+            # qual, sem qualquer alteração — nunca foram removidos, só deixou
+            # de se criar botões novos com eles.
+            id_botao = {
+                ACAO_MENU: "menu_principal",
+                ACAO_NOVA_MARCACAO: "mp_marcar",
+                ACAO_CARRINHO: "ver_carrinho",
+                ACAO_CANCELAR: ID_CANCELAR,
+                ACAO_RAPIDO: "modo_rapido",
+            }.get(id_botao, id_botao)
+
+            if id_botao == ACAO_VOLTAR:
+                voltar_um_passo(de, idioma, sessao)
+                return jsonify(status="ok"), 200
+
+            if id_botao == ACAO_GERIR:
+                mostrar_gestao_marcacao(de, idioma)
+                return jsonify(status="ok"), 200
+
+            if id_botao == ACAO_HUMANO:
+                falar_com_equipa(de, idioma, sessao)
+                reiniciar_sessao(de)
+                return jsonify(status="ok"), 200
+
+            if id_botao == ACAO_IDIOMA:
+                enviar_seletor_idioma(de)
+                return jsonify(status="ok"), 200
+
+            if id_botao == ACAO_MAIS:
+                mostrar_mais_acoes(de, idioma, sessao)
+                return jsonify(status="ok"), 200
+
             if id_botao in LANG_IDS:  # "Alterar idioma" com sessão já ativa
                 # Limpa os campos do processo em curso (categoria, passos já
                 # escolhidos, etc.) e preserva só o nome — para dados antigos
@@ -2968,6 +4484,11 @@ def receber_mensagem():
 
             if id_botao == ID_CANCELAR:
                 cancelar_processo(de, idioma, sessao)
+                return jsonify(status="ok"), 200
+
+            if id_botao == "menu_principal":  # botão "Voltar ao menu" após um pedido recusado
+                nova = reiniciar_sessao(de)
+                enviar_menu_principal(de, idioma, saudacao=False, sessao=nova)
                 return jsonify(status="ok"), 200
 
             if id_botao in ("retomar_continuar", "retomar_recomecar"):
@@ -3086,6 +4607,11 @@ def receber_mensagem():
             if id_botao == "confirmar":
                 id_ag = guardar_agendamento(de, sessao)
                 enviar_texto(de, mensagem_confirmacao_final(sessao, idioma))
+                # Em vez de "Escreva MENU/GERIR" no próprio texto: dois botões.
+                enviar_botoes(de, t("e_agora_pergunta", idioma), [
+                    {"id": ACAO_GERIR, "titulo": t("botao_gerir_marcacao", idioma)},
+                    {"id": ACAO_MENU, "titulo": t("botao_menu_principal", idioma)},
+                ], idioma)
                 if PROVIDER_WHATSAPP:
                     enviar_texto(PROVIDER_WHATSAPP, mensagem_notificacao_provider(de, sessao, id_ag))
                 reiniciar_sessao(de)
@@ -3101,6 +4627,15 @@ def receber_mensagem():
                 carrinho_remover_grupo(sessao, GRUPO_EXTRA)
                 guardar_sessao(de, sessao)
                 (passo_limpeza_tipo if categoria == "cat_limpeza" else passo_estetica_servico)(de, idioma, sessao)
+                return jsonify(status="ok"), 200
+
+            # --- Marcação confirmada aberta a partir do carrinho -------------
+            if id_botao.startswith("gerir_ag_"):
+                mostrar_gestao_marcacao(de, idioma, int(id_botao.split("_")[-1]))
+                return jsonify(status="ok"), 200
+
+            if id_botao.startswith("carrinho_marcacao_"):
+                abrir_marcacao_do_carrinho(de, idioma, int(id_botao.split("_")[-1]))
                 return jsonify(status="ok"), 200
 
             if id_botao.startswith("reagendar_"):
@@ -3119,12 +4654,71 @@ def receber_mensagem():
                     enviar_texto(PROVIDER_WHATSAPP, f"❌ Marcação #{id_ag} cancelada pelo cliente {formatar_telefone(de)}.")
                 return jsonify(status="ok"), 200
 
-            enviar_texto(de, mensagem_nao_entendi(idioma))
+            # --- Orçamento: resposta do cliente (aceitar/alterar/recusar) ---
+            # A ordem importa: os sufixos "_sim_"/"_nao_" da confirmação de
+            # recusa têm de ser verificados ANTES do prefixo genérico
+            # "orcamento_recusar_", que também lhes serve de prefixo.
+            if id_botao.startswith("orcamento_recusar_sim_"):
+                responder_orcamento_recusar_efetivar(de, idioma, int(id_botao.split("_")[-1]))
+                return jsonify(status="ok"), 200
+
+            if id_botao.startswith("orcamento_recusar_nao_"):
+                orcamento_id = int(id_botao.split("_")[-1])
+                orcamento, pedido = _orcamento_e_pedido_de(orcamento_id)
+                if orcamento and pedido:
+                    enviar_orcamento_cliente(pedido["id"])
+                return jsonify(status="ok"), 200
+
+            if id_botao.startswith("orcamento_aceitar_"):
+                responder_orcamento_aceitar(de, idioma, int(id_botao.split("_")[-1]))
+                return jsonify(status="ok"), 200
+
+            if id_botao.startswith("orcamento_alterar_"):
+                mostrar_lista_alteracao_orcamento(de, idioma, int(id_botao.split("_")[-1]))
+                return jsonify(status="ok"), 200
+
+            if id_botao.startswith("orcamento_recusar_"):
+                responder_orcamento_recusar_confirmar(de, idioma, int(id_botao.split("_")[-1]))
+                return jsonify(status="ok"), 200
+
+            # Botão de resposta rápida do template Utility de reabertura de
+            # janela (ver enviar_orcamento_via_template) — reabre a janela de
+            # 24h e dispara o envio da mensagem interativa completa.
+            if id_botao.startswith("ver_orcamento_"):
+                enviar_orcamento_cliente(int(id_botao[len("ver_orcamento_"):]))
+                return jsonify(status="ok"), 200
+
+            # --- Pedido pendente: cancelamento pelo próprio cliente ---------
+            # Mesma ordem cuidadosa: "_sim_"/"_nao_" antes do prefixo genérico.
+            if id_botao.startswith("pedido_cancelar_cliente_sim_"):
+                pedido_cliente_cancelar_efetivar(de, idioma, int(id_botao.split("_")[-1]))
+                return jsonify(status="ok"), 200
+
+            if id_botao.startswith("pedido_cancelar_cliente_nao_"):
+                mostrar_carrinho(de, idioma, sessao)
+                return jsonify(status="ok"), 200
+
+            if id_botao.startswith("pedido_cancelar_cliente_"):
+                pedido_cliente_cancelar_confirmar(de, idioma, int(id_botao.split("_")[-1]))
+                return jsonify(status="ok"), 200
+
+            nao_entendi_com_opcoes(de, idioma, sessao)
             return jsonify(status="ok"), 200
 
         # --- Listas -------------------------------------------------------
         if tipo == "interactive" and msg["interactive"]["type"] == "list_reply":
             id_escolhido = msg["interactive"]["list_reply"]["id"]
+
+            # --- Aliases dos IDs canónicos "acao_*" — ver o mesmo bloco no
+            # dispatch de botões, acima, para a explicação completa.
+            id_escolhido = {
+                ACAO_MENU: "menu_principal",
+                ACAO_NOVA_MARCACAO: "mp_marcar",
+                ACAO_CARRINHO: "ver_carrinho",
+                ACAO_CANCELAR: ID_CANCELAR,
+                ACAO_VOLTAR: ID_VOLTAR,
+                ACAO_RAPIDO: "modo_rapido",
+            }.get(id_escolhido, id_escolhido)
 
             if id_escolhido == ID_CANCELAR:
                 cancelar_processo(de, idioma, sessao)
@@ -3132,6 +4726,28 @@ def receber_mensagem():
 
             if id_escolhido == ID_VOLTAR:
                 voltar_um_passo(de, idioma, sessao)
+                return jsonify(status="ok"), 200
+
+            if id_escolhido == "menu_principal":
+                nova = reiniciar_sessao(de)
+                enviar_menu_principal(de, idioma, saudacao=False, sessao=nova)
+                return jsonify(status="ok"), 200
+
+            if id_escolhido == ACAO_GERIR:
+                mostrar_gestao_marcacao(de, idioma)
+                return jsonify(status="ok"), 200
+
+            if id_escolhido == ACAO_HUMANO:
+                falar_com_equipa(de, idioma, sessao)
+                reiniciar_sessao(de)
+                return jsonify(status="ok"), 200
+
+            if id_escolhido == ACAO_IDIOMA:
+                enviar_seletor_idioma(de)
+                return jsonify(status="ok"), 200
+
+            if id_escolhido == ACAO_MAIS:
+                mostrar_mais_acoes(de, idioma, sessao)
                 return jsonify(status="ok"), 200
 
             # Menu principal
@@ -3167,7 +4783,7 @@ def receber_mensagem():
                 item_id = id_escolhido[len("carrinho_item_"):]
                 linha_item = next((l for l in sessao.get("carrinho", []) if l["id"] == item_id), None)
                 if not linha_item:
-                    enviar_texto(de, mensagem_nao_entendi(idioma))
+                    nao_entendi_com_opcoes(de, idioma, sessao)
                     return jsonify(status="ok"), 200
                 if linha_item["grupo"] in GRUPOS_REMOVIVEIS:
                     carrinho_remover_item(sessao, item_id)
@@ -3176,6 +4792,32 @@ def receber_mensagem():
                     mostrar_carrinho(de, idioma, sessao)
                 else:
                     _reabrir_passo_para_grupo(de, idioma, sessao, linha_item["grupo"])
+                return jsonify(status="ok"), 200
+
+            # --- Marcação confirmada escolhida na lista do carrinho ----------
+            if id_escolhido.startswith("carrinho_marcacao_"):
+                abrir_marcacao_do_carrinho(de, idioma, int(id_escolhido.split("_")[-1]))
+                return jsonify(status="ok"), 200
+
+            if id_escolhido.startswith("gerir_ag_"):
+                mostrar_gestao_marcacao(de, idioma, int(id_escolhido.split("_")[-1]))
+                return jsonify(status="ok"), 200
+
+            # --- Orçamento: lista de aspetos a alterar -----------------------
+            if id_escolhido.startswith("orcamento_alt_"):
+                resto = id_escolhido[len("orcamento_alt_"):]
+                aspeto, _, orcamento_id_txt = resto.rpartition("_")
+                try:
+                    orcamento_id = int(orcamento_id_txt)
+                except ValueError:
+                    nao_entendi_com_opcoes(de, idioma, sessao)
+                    return jsonify(status="ok"), 200
+                if aspeto == "outra":
+                    sessao["_aguardando_alteracao_orcamento_id"] = orcamento_id
+                    guardar_sessao(de, sessao)
+                    enviar_texto(de, t("alteracao_outra_pedir", idioma))
+                else:
+                    registar_pedido_alteracao(de, idioma, orcamento_id, sessao, aspeto)
                 return jsonify(status="ok"), 200
 
             # --- Wrap & Proteção: passos 1, 2, 3, 4, 5 e 6 (todos por lista) ---
@@ -3261,7 +4903,7 @@ def receber_mensagem():
                     passo_wrap_fotos_pergunta(de, idioma, sessao)
                     return jsonify(status="ok"), 200
 
-                enviar_texto(de, mensagem_nao_entendi(idioma))
+                nao_entendi_com_opcoes(de, idioma, sessao)
                 return jsonify(status="ok"), 200
 
             categoria = sessao.get("categoria")
@@ -3308,7 +4950,7 @@ def receber_mensagem():
                     passo_resumo(de, idioma, sessao)
                 return jsonify(status="ok"), 200
 
-            enviar_texto(de, mensagem_nao_entendi(idioma))
+            nao_entendi_com_opcoes(de, idioma, sessao)
             return jsonify(status="ok"), 200
 
         # --- Fotografias do pedido de orçamento Wrap & Proteção -------------
@@ -3348,7 +4990,7 @@ def receber_mensagem():
             return jsonify(status="ok"), 200
 
         # --- Qualquer outro tipo (áudio, imagem fora de contexto, sticker, etc.) ---
-        enviar_texto(de, mensagem_nao_entendi(idioma))
+        nao_entendi_com_opcoes(de, idioma, sessao)
 
     except (KeyError, IndexError):
         pass  # notificações de status (entregue/lido) chegam neste mesmo endpoint — ignora-as
