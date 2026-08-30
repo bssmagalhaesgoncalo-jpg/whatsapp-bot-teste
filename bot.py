@@ -69,8 +69,10 @@ IDIOMAS_VALIDOS = ("pt", "de", "en")
 COMANDOS_TEXTO = {
     "menu", "voltar", "cancelar", "ajuda", "humano", "gerir",
     "idioma", "sprache", "language",
+    "carrinho", "cart", "warenkorb",
 }
 COMANDOS_IDIOMA = {"idioma", "sprache", "language"}
+COMANDOS_CARRINHO = {"carrinho", "cart", "warenkorb"}
 
 # IDs dos botões de seleção de idioma -> código de idioma interno
 LANG_IDS = {"lang_pt": "pt", "lang_de": "de", "lang_en": "en"}
@@ -117,9 +119,9 @@ TEXTOS = {
                             "en": "What type of service are you looking for?"},
 
     # --- Rodapé / linhas auxiliares de lista -------------------------------
-    "rodape_padrao": {"pt": "Escreva VOLTAR, CANCELAR ou MENU a qualquer momento",
-                       "de": "Schreiben Sie jederzeit VOLTAR, CANCELAR oder MENU",
-                       "en": "Type VOLTAR, CANCELAR or MENU at any time"},
+    "rodape_padrao": {"pt": "Escreva VOLTAR, CANCELAR, MENU ou CARRINHO a qualquer momento",
+                       "de": "Schreiben Sie jederzeit VOLTAR, CANCELAR, MENU oder CARRINHO",
+                       "en": "Type VOLTAR, CANCELAR, MENU or CARRINHO at any time"},
     "voltar_titulo": {"pt": "⬅️ Voltar", "de": "⬅️ Zurück", "en": "⬅️ Back"},
     "voltar_desc": {"pt": "Passo anterior", "de": "Vorheriger Schritt", "en": "Previous step"},
     "cancelar_titulo": {"pt": "❌ Cancelar processo", "de": "❌ Vorgang abbrechen", "en": "❌ Cancel process"},
@@ -180,6 +182,8 @@ TEXTOS = {
     "resumo_duracao": {"pt": "⏱️ Duração estimada: {duracao}", "de": "⏱️ Geschätzte Dauer: {duracao}",
                         "en": "⏱️ Estimated duration: {duracao}"},
     "resumo_preco": {"pt": "💰 Preço: {preco}", "de": "💰 Preis: {preco}", "en": "💰 Price: {preco}"},
+    "resumo_discriminacao": {"pt": "📊 Discriminação:", "de": "📊 Aufschlüsselung:", "en": "📊 Breakdown:"},
+    "resumo_total": {"pt": "💰 Total: {total}", "de": "💰 Gesamtbetrag: {total}", "en": "💰 Total: {total}"},
     "resumo_pergunta": {"pt": "Está tudo correto?", "de": "Ist alles korrekt?", "en": "Is everything correct?"},
     "botao_confirmar": {"pt": "✅ Confirmar", "de": "✅ Bestätigen", "en": "✅ Confirm"},
     "botao_alterar": {"pt": "✏️ Alterar", "de": "✏️ Ändern", "en": "✏️ Change"},
@@ -250,6 +254,9 @@ TEXTOS = {
                                       "if sent) and will get back to you shortly with the quote and availability "
                                       "for *{veiculo}*.\n\nType MENU to return to the start."},
     "wrap_veiculo_generico": {"pt": "o seu veículo", "de": "Ihr Fahrzeug", "en": "your vehicle"},
+    "wrap_total_estimado": {"pt": "💰 Total estimado: {total}\n(o valor final pode variar após a análise das fotografias)",
+                             "de": "💰 Geschätzter Gesamtbetrag: {total}\n(der endgültige Betrag kann nach der Analyse der Fotos abweichen)",
+                             "en": "💰 Estimated total: {total}\n(the final amount may vary after we review the photos)"},
 
     # --- Orçamento genérico ---------------------------------------------------
     "orcamento_pedido": {"pt": "💰 Sem problema! Descreva em poucas palavras o serviço que pretende e o veículo "
@@ -303,6 +310,32 @@ TEXTOS = {
     "ajuda_idioma": {"pt": "• IDIOMA / SPRACHE / LANGUAGE — mudar de idioma",
                       "de": "• IDIOMA / SPRACHE / LANGUAGE — Sprache ändern",
                       "en": "• IDIOMA / SPRACHE / LANGUAGE — change language"},
+    "ajuda_carrinho": {"pt": "• CARRINHO / CART / WARENKORB — ver o carrinho atual",
+                        "de": "• CARRINHO / CART / WARENKORB — aktuellen Warenkorb ansehen",
+                        "en": "• CARRINHO / CART / WARENKORB — view your current cart"},
+
+    # --- Carrinho -----------------------------------------------------------
+    "carrinho_titulo": {"pt": "🛒 *O seu carrinho*", "de": "🛒 *Ihr Warenkorb*", "en": "🛒 *Your cart*"},
+    "carrinho_vazio": {"pt": "🛒 O seu carrinho está vazio.\n\nEscreva MENU para começar uma marcação.",
+                        "de": "🛒 Ihr Warenkorb ist leer.\n\nSchreiben Sie MENU, um eine Buchung zu starten.",
+                        "en": "🛒 Your cart is empty.\n\nType MENU to start a booking."},
+    "carrinho_subtotal": {"pt": "Subtotal: {subtotal}", "de": "Zwischensumme: {subtotal}", "en": "Subtotal: {subtotal}"},
+    "carrinho_total": {"pt": "💰 Total: {total}", "de": "💰 Gesamtbetrag: {total}", "en": "💰 Total: {total}"},
+    "carrinho_total_estimado": {"pt": "💰 Total estimado: {total}", "de": "💰 Geschätzter Gesamtbetrag: {total}",
+                                 "en": "💰 Estimated total: {total}"},
+    "carrinho_botao_alterar": {"pt": "✏️ Alterar item", "de": "✏️ Artikel ändern", "en": "✏️ Change item"},
+    "carrinho_botao_esvaziar": {"pt": "🗑️ Esvaziar carrinho", "de": "🗑️ Warenkorb leeren", "en": "🗑️ Empty cart"},
+    "carrinho_alterar_pergunta": {"pt": "Qual item deseja alterar ou remover?",
+                                   "de": "Welchen Artikel möchten Sie ändern oder entfernen?",
+                                   "en": "Which item would you like to change or remove?"},
+    "carrinho_item_substituir": {"pt": "🔁 Substituir", "de": "🔁 Ersetzen", "en": "🔁 Replace"},
+    "carrinho_item_remover": {"pt": "🗑️ Remover", "de": "🗑️ Entfernen", "en": "🗑️ Remove"},
+    "carrinho_item_removido": {"pt": "✅ Item removido do carrinho.", "de": "✅ Artikel aus dem Warenkorb entfernt.",
+                                "en": "✅ Item removed from cart."},
+    "carrinho_esvaziado": {"pt": "🗑️ Carrinho esvaziado. Vamos recomeçar.",
+                            "de": "🗑️ Warenkorb geleert. Fangen wir neu an.",
+                            "en": "🗑️ Cart emptied. Let's start again."},
+    "carrinho_botao_ver": {"pt": "🛒 Carrinho", "de": "🛒 Warenkorb", "en": "🛒 Cart"},
 
     "nao_entendi": {"pt": "Desculpe, não consegui perceber 😅\n\nEscolha uma opção ou escreva MENU para recomeçar.",
                      "de": "Entschuldigung, das habe ich nicht verstanden 😅\n\nWählen Sie eine Option oder schreiben Sie MENU, um neu zu beginnen.",
@@ -435,6 +468,22 @@ EXTRAS_ESTETICA = [
      "descricao": {"pt": "Acabamento final", "de": "Abschliessende Politur", "en": "Finishing touch"}},
 ]
 
+# ---------------------------------------------------------------------------
+# Tabela central de preços de DEMONSTRAÇÃO para Wrap & Proteção — claramente
+# separada da lógica do fluxo, fácil de alterar sem tocar em mais nada.
+# Valores em CÊNTIMOS (CHF) para evitar erros de arredondamento. O preço
+# final real depende sempre da análise das fotografias pela equipa, por
+# isso este fluxo mostra sempre "Total estimado" ao cliente, nunca "Total".
+# ---------------------------------------------------------------------------
+WRAP_PRECOS_CENTIMOS = {
+    "wrap_total": 180000,    # CHF 1800.00 (demonstração)
+    "wrap_parcial": 90000,   # CHF 900.00 (demonstração)
+}
+WRAP_NOMES = {
+    "wrap_total": {"pt": "Wrap total", "de": "Vollfolierung", "en": "Full wrap"},
+    "wrap_parcial": {"pt": "Wrap parcial", "de": "Teilfolierung", "en": "Partial wrap"},
+}
+
 HORARIOS = ["🕘 09:00", "🕥 10:30", "🕐 13:00", "🕝 14:30", "🕓 16:00"]  # iguais nos 3 idiomas
 
 DIAS_SEMANA = {
@@ -536,6 +585,15 @@ def obter_bd():
         "mime_tipo TEXT, "
         "criado_em TEXT NOT NULL)"
     )
+    # Migração leve: guarda o carrinho (JSON) junto da marcação/pedido, para
+    # futuramente alimentar o dashboard, orçamento, pagamento e calendário,
+    # sem duplicar dados. Em bases de dados já existentes (criadas antes
+    # desta funcionalidade), a coluna ainda não existe — adiciona-a agora.
+    for tabela in ("agendamentos", "pedidos_orcamento"):
+        try:
+            conn.execute(f"ALTER TABLE {tabela} ADD COLUMN carrinho_json TEXT")
+        except sqlite3.OperationalError:
+            pass  # coluna já existe
     return conn
 
 
@@ -565,14 +623,15 @@ def guardar_agendamento(telefone, sessao):
     with obter_bd() as conn:
         cur = conn.execute(
             "INSERT INTO agendamentos "
-            "(telefone, nome, categoria, servico, extra, data, hora, preco, duracao, estado, criado_em) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmado', ?)",
+            "(telefone, nome, categoria, servico, extra, data, hora, preco, duracao, estado, criado_em, carrinho_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmado', ?, ?)",
             (
                 telefone, sessao.get("nome"), sessao.get("categoria"),
                 sessao.get("servico"), sessao.get("extra"),
                 sessao.get("data"), sessao.get("hora"),
                 sessao.get("preco"), sessao.get("duracao"),
                 datetime.utcnow().isoformat(),
+                json.dumps(sessao.get("carrinho", [])),
             ),
         )
         return cur.lastrowid
@@ -581,11 +640,11 @@ def guardar_agendamento(telefone, sessao):
 def listar_agendamentos():
     with obter_bd() as conn:
         linhas = conn.execute(
-            "SELECT id, telefone, nome, categoria, servico, extra, data, hora, preco, duracao, estado, criado_em "
-            "FROM agendamentos ORDER BY id DESC"
+            "SELECT id, telefone, nome, categoria, servico, extra, data, hora, preco, duracao, estado, "
+            "criado_em, carrinho_json FROM agendamentos ORDER BY id DESC"
         ).fetchall()
     campos = ["id", "telefone", "nome", "categoria", "servico", "extra", "data", "hora",
-              "preco", "duracao", "estado", "criado_em"]
+              "preco", "duracao", "estado", "criado_em", "carrinho_json"]
     return [dict(zip(campos, l)) for l in linhas]
 
 
@@ -614,17 +673,26 @@ def criar_pedido_orcamento(telefone, sessao):
     with obter_bd() as conn:
         cur = conn.execute(
             "INSERT INTO pedidos_orcamento "
-            "(telefone, nome, veiculo, ano_veiculo, tipo_wrap, cor_acabamento, estado, criado_em) "
-            "VALUES (?, ?, ?, ?, ?, ?, 'novo', ?)",
+            "(telefone, nome, veiculo, ano_veiculo, tipo_wrap, cor_acabamento, estado, criado_em, carrinho_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, 'novo', ?, ?)",
             (
                 telefone, sessao.get("nome"), sessao.get("wrap_veiculo"),
                 extrair_ano_veiculo(sessao.get("wrap_veiculo")),
                 "Wrap total" if sessao.get("wrap_tipo") == "wrap_total" else "Wrap parcial",
                 sessao.get("wrap_cor"),
                 datetime.utcnow().isoformat(),
+                json.dumps(sessao.get("carrinho", [])),
             ),
         )
         return cur.lastrowid
+
+
+def guardar_carrinho_pedido(pedido_id, carrinho):
+    """Atualiza o carrinho (JSON) guardado com o pedido de orçamento — usado
+    quando o pedido é finalizado, para refletir o carrinho definitivo."""
+    with obter_bd() as conn:
+        conn.execute("UPDATE pedidos_orcamento SET carrinho_json = ? WHERE id = ?",
+                     (json.dumps(carrinho), pedido_id))
 
 
 def adicionar_fotografia(pedido_id, nome_ficheiro, mime_tipo):
@@ -649,12 +717,12 @@ def obter_pedido_orcamento(pedido_id):
     with obter_bd() as conn:
         linha = conn.execute(
             "SELECT id, telefone, nome, veiculo, ano_veiculo, tipo_wrap, cor_acabamento, estado, "
-            "agendamento_id, criado_em FROM pedidos_orcamento WHERE id = ?", (pedido_id,)
+            "agendamento_id, criado_em, carrinho_json FROM pedidos_orcamento WHERE id = ?", (pedido_id,)
         ).fetchone()
     if not linha:
         return None
     campos = ["id", "telefone", "nome", "veiculo", "ano_veiculo", "tipo_wrap", "cor_acabamento",
-              "estado", "agendamento_id", "criado_em"]
+              "estado", "agendamento_id", "criado_em", "carrinho_json"]
     return dict(zip(campos, linha))
 
 
@@ -662,12 +730,12 @@ def listar_pedidos_orcamento():
     with obter_bd() as conn:
         linhas = conn.execute(
             "SELECT p.id, p.telefone, p.nome, p.veiculo, p.ano_veiculo, p.tipo_wrap, p.cor_acabamento, "
-            "p.estado, p.agendamento_id, p.criado_em, COUNT(f.id) AS num_fotos "
+            "p.estado, p.agendamento_id, p.criado_em, p.carrinho_json, COUNT(f.id) AS num_fotos "
             "FROM pedidos_orcamento p LEFT JOIN fotografias f ON f.pedido_id = p.id "
             "GROUP BY p.id ORDER BY p.id DESC"
         ).fetchall()
     campos = ["id", "telefone", "nome", "veiculo", "ano_veiculo", "tipo_wrap", "cor_acabamento",
-              "estado", "agendamento_id", "criado_em", "num_fotos"]
+              "estado", "agendamento_id", "criado_em", "carrinho_json", "num_fotos"]
     return [dict(zip(campos, l)) for l in linhas]
 
 
@@ -700,11 +768,12 @@ def enviar_texto(destinatario, texto):
     })
 
 
-def enviar_lista(destinatario, corpo, titulo_seccao, opcoes, idioma, botao="👉 Escolher", com_voltar=False, rodape=None):
+def enviar_lista(destinatario, corpo, titulo_seccao, opcoes, idioma, botao="👉 Escolher", com_voltar=False, rodape=None, sessao=None):
     """`opcoes`: lista de dicts {"id","titulo","descricao"?} (titulo/descricao
     podem ser strings simples ou dicts multilingues {"pt","de","en"} — são
     sempre resolvidos aqui, para `idioma`) ou strings simples (ex.: horários,
-    iguais nos 3 idiomas)."""
+    iguais nos 3 idiomas). `sessao`, quando passada, acrescenta sempre uma
+    linha "🛒 Carrinho · CHF X" com o total atual (ver carrinho_total_centimos())."""
     rows = []
     for i, opc in enumerate(opcoes):
         if isinstance(opc, dict):
@@ -716,6 +785,10 @@ def enviar_lista(destinatario, corpo, titulo_seccao, opcoes, idioma, botao="👉
         else:
             row = {"id": f"opt_{i}", "title": str(opc)[:24]}
         rows.append(row)
+
+    if sessao is not None:
+        total_str = formatar_centimos(carrinho_total_centimos(sessao), idioma)
+        rows.append({"id": "ver_carrinho", "title": f"🛒 Carrinho · {total_str}"[:24]})
 
     if com_voltar:
         rows.append({"id": ID_VOLTAR, "title": t("voltar_titulo", idioma), "description": t("voltar_desc", idioma)})
@@ -784,7 +857,9 @@ def formatar_telefone(numero):
 
 
 def preco_formatado(valor, idioma="pt"):
-    return f"CHF {valor:.0f}" if valor else t("preco_a_combinar", idioma)
+    if not valor:
+        return t("preco_a_combinar", idioma)
+    return f"CHF {valor:.0f}" if float(valor).is_integer() else f"CHF {valor:.2f}"
 
 
 def duracao_valida(duracao):
@@ -903,52 +978,241 @@ def guardar_media_local(pedido_id, media_id, conteudo, mime_tipo):
 
 
 # ---------------------------------------------------------------------------
+# Sistema central de preços e carrinho — usado por TODOS os fluxos de
+# marcação (Limpeza, Estética e Wrap). O carrinho vive dentro da própria
+# sessão (sessao["carrinho"]), como lista de linhas. Cada linha tem:
+#   id         - identificador interno (id do catálogo, ou fixo p/ wrap_cor)
+#   grupo      - um dos GRUPOS_CARRINHO abaixo
+#   nome       - nome canónico, sempre em português (tal como o resto do bot)
+#   preco      - inteiro, em CÊNTIMOS (CHF), para evitar erros de cálculo
+#   quantidade - inteiro (sempre 1 nos fluxos atuais; suportado para o futuro)
+# O idioma NUNCA é gravado na linha — é só usado em tempo real, na
+# apresentação, via carrinho_nome_traduzido()/formatar_centimos(). O total é
+# SEMPRE recalculado a partir das linhas atuais (carrinho_total_centimos),
+# nunca somado/subtraído sobre um valor antigo guardado.
+# ---------------------------------------------------------------------------
+GRUPO_SERVICO_BASE = "servico_base"        # tipo de Limpeza / serviço de Estética
+GRUPO_TAMANHO_VEICULO = "tamanho_veiculo"  # tamanho (Limpeza) ou estado (Estética) do veículo
+GRUPO_WRAP_TIPO = "wrap_tipo"              # wrap total / parcial
+GRUPO_WRAP_COR = "wrap_cor"                # cor/acabamento (hoje um único campo de texto livre)
+GRUPO_ACABAMENTO = "acabamento"            # reservado para uma futura seleção estruturada de acabamento
+GRUPO_EXTRA = "extra"                      # extras de Limpeza/Estética
+GRUPO_DESCONTO = "desconto"                # reservado para futuros descontos/promoções
+
+GRUPOS_CARRINHO = (GRUPO_SERVICO_BASE, GRUPO_TAMANHO_VEICULO, GRUPO_WRAP_TIPO,
+                    GRUPO_WRAP_COR, GRUPO_ACABAMENTO, GRUPO_EXTRA, GRUPO_DESCONTO)
+
+# Grupos "únicos": escolher um novo item do mesmo grupo substitui sempre o
+# anterior (nunca coexistem duas linhas do mesmo grupo único).
+GRUPOS_UNICOS = {GRUPO_SERVICO_BASE, GRUPO_TAMANHO_VEICULO, GRUPO_WRAP_TIPO,
+                  GRUPO_WRAP_COR, GRUPO_ACABAMENTO}
+
+# Grupos que o cliente pode retirar livremente do carrinho (itens opcionais).
+# Todos os outros são obrigatórios: só podem ser SUBSTITUÍDOS (o cliente é
+# reencaminhado para o passo onde são escolhidos), nunca simplesmente removidos.
+GRUPOS_REMOVIVEIS = {GRUPO_EXTRA, GRUPO_DESCONTO}
+
+
+def carrinho_definir_item(sessao, grupo, item_id, nome_pt, preco_centimos, quantidade=1):
+    """Adiciona ou substitui uma linha do carrinho. Para grupos únicos,
+    remove qualquer linha anterior do mesmo grupo antes de acrescentar a
+    nova (substituição). Para os restantes, substitui apenas uma linha com
+    o mesmo id, se existir."""
+    carrinho = sessao.setdefault("carrinho", [])
+    if grupo in GRUPOS_UNICOS:
+        carrinho[:] = [linha for linha in carrinho if linha["grupo"] != grupo]
+    else:
+        carrinho[:] = [linha for linha in carrinho if linha["id"] != item_id]
+    carrinho.append({
+        "id": item_id, "grupo": grupo, "nome": nome_pt,
+        "preco": int(preco_centimos), "quantidade": quantidade,
+    })
+    return carrinho
+
+
+def carrinho_remover_grupo(sessao, grupo):
+    sessao["carrinho"] = [l for l in sessao.get("carrinho", []) if l["grupo"] != grupo]
+
+
+def carrinho_remover_item(sessao, item_id):
+    sessao["carrinho"] = [l for l in sessao.get("carrinho", []) if l["id"] != item_id]
+
+
+def carrinho_esvaziar(sessao):
+    sessao["carrinho"] = []
+
+
+def carrinho_total_centimos(sessao):
+    """Soma sempre as linhas ATUAIS do carrinho — nunca acumula sobre um
+    total antigo guardado algures."""
+    return sum(l["preco"] * l.get("quantidade", 1) for l in sessao.get("carrinho", []))
+
+
+def carrinho_subtotal_centimos(sessao):
+    """Subtotal = total sem descontos (hoje é sempre igual ao total, já que
+    ainda não há nenhum fluxo que adicione linhas ao grupo "desconto")."""
+    return sum(l["preco"] * l.get("quantidade", 1) for l in sessao.get("carrinho", [])
+               if l["grupo"] != GRUPO_DESCONTO)
+
+
+def formatar_centimos(centimos, idioma="pt"):
+    """Formata um valor em cêntimos como CHF — 2 casas decimais só quando o
+    valor não corresponde a um número inteiro de CHF, mantendo o estilo
+    visual já usado no resto do bot para os casos mais comuns."""
+    if centimos is None:
+        return t("preco_a_combinar", idioma)
+    valor = centimos / 100
+    sinal = "-" if valor < 0 else ""
+    if centimos % 100 == 0:
+        return f"{sinal}CHF {abs(valor):.0f}"
+    return f"{sinal}CHF {abs(valor):.2f}"
+
+
+def _procurar_modificador_veiculo_por_nome_pt(nome_pt):
+    for catalogo in (TAMANHOS_VEICULO, ESTADO_VEICULO):
+        opcao = next((o for o in catalogo if o["titulo"]["pt"] == nome_pt), None)
+        if opcao:
+            return opcao
+    return None
+
+
+def carrinho_nome_traduzido(linha, idioma):
+    """Traduz o nome canónico (sempre em português) de uma linha do carrinho
+    para o idioma do cliente, reutilizando sempre os catálogos e funções de
+    tradução já existentes — nunca duplica esses dados nem os fluxos."""
+    grupo, nome_pt = linha["grupo"], linha["nome"]
+    if grupo == GRUPO_SERVICO_BASE:
+        return nome_servico_traduzido(nome_pt, idioma)
+    if grupo == GRUPO_TAMANHO_VEICULO:
+        opcao = _procurar_modificador_veiculo_por_nome_pt(nome_pt)
+        return tx(opcao["titulo"], idioma) if opcao else nome_pt
+    if grupo == GRUPO_WRAP_TIPO:
+        opcao = next((v for v in WRAP_NOMES.values() if v["pt"] == nome_pt), None)
+        return tx(opcao, idioma) if opcao else nome_pt
+    if grupo == GRUPO_EXTRA:
+        return nome_extra_traduzido(nome_pt, idioma)
+    # "wrap_cor", "acabamento", "desconto": texto livre ou sem catálogo
+    # próprio — mostrado tal como foi guardado, seja qual for o idioma.
+    return nome_pt
+
+
+def linhas_carrinho_traduzidas(sessao, idioma):
+    """Devolve as linhas do carrinho com o nome já traduzido para
+    apresentação (idioma só entra aqui, nunca é gravado na linha)."""
+    return [{**linha, "nome_traduzido": carrinho_nome_traduzido(linha, idioma)}
+            for linha in sessao.get("carrinho", [])]
+
+
+def linhas_discriminacao(sessao, idioma):
+    """Linhas de texto prontas a mostrar (cliente ou negócio, consoante o
+    `idioma` passado — "pt" para as notificações internas)."""
+    return [f"• {item['nome_traduzido']}: {formatar_centimos(item['preco'], idioma)}"
+            for item in linhas_carrinho_traduzidas(sessao, idioma)]
+
+
+def _preco_servico_base_centimos(sessao):
+    linha = next((l for l in sessao.get("carrinho", []) if l["grupo"] == GRUPO_SERVICO_BASE), None)
+    return linha["preco"] if linha else 0
+
+
+def carrinho_definir_servico_base(sessao, catalogo, item_id):
+    """Usa os preços já existentes de Limpeza/Estética (guardados em CHF
+    inteiros no catálogo) — apenas convertidos para cêntimos aqui."""
+    opcao = encontrar_opcao(catalogo, item_id) or {}
+    nome_pt = tx(opcao.get("titulo"), "pt")
+    preco_centimos = int(opcao.get("preco", 0)) * 100
+    carrinho_definir_item(sessao, GRUPO_SERVICO_BASE, item_id, nome_pt, preco_centimos)
+    return preco_centimos
+
+
+def carrinho_definir_modificador_veiculo(sessao, catalogo, item_id):
+    """Tamanho (Limpeza) ou estado (Estética) do veículo: aplicam um FATOR
+    multiplicativo sobre o preço base — aqui é convertido no acréscimo em
+    cêntimos correspondente, para poder ser somado como mais uma linha do
+    carrinho (nunca se multiplica um total antigo)."""
+    opcao = encontrar_opcao(catalogo, item_id) or {"fator": 1.0}
+    nome_pt = tx(opcao.get("titulo"), "pt")
+    fator = opcao.get("fator", 1.0)
+    base_centimos = _preco_servico_base_centimos(sessao)
+    delta_centimos = round(base_centimos * (fator - 1.0))
+    carrinho_definir_item(sessao, GRUPO_TAMANHO_VEICULO, item_id, nome_pt, delta_centimos)
+
+
+def carrinho_definir_extra(sessao, catalogo, item_id):
+    """Extras de Limpeza/Estética. A opção "Nenhum extra" não é uma linha do
+    carrinho — apenas remove qualquer extra anteriormente escolhido."""
+    opcao = encontrar_opcao(catalogo, item_id) or {}
+    nome_pt = tx(opcao.get("titulo"), "pt")
+    if not nome_pt or "nenhum" in nome_pt.lower():
+        carrinho_remover_grupo(sessao, GRUPO_EXTRA)
+        return
+    preco_centimos = int(opcao.get("preco", 0)) * 100
+    carrinho_definir_item(sessao, GRUPO_EXTRA, item_id, nome_pt, preco_centimos)
+
+
+def carrinho_definir_wrap_tipo(sessao, wrap_tipo_id):
+    """Wrap total/parcial: tabela de preços de demonstração própria
+    (WRAP_PRECOS_CENTIMOS), claramente separada dos catálogos de
+    Limpeza/Estética e já em cêntimos."""
+    nome_pt = WRAP_NOMES[wrap_tipo_id]["pt"]
+    preco_centimos = WRAP_PRECOS_CENTIMOS[wrap_tipo_id]
+    carrinho_definir_item(sessao, GRUPO_WRAP_TIPO, wrap_tipo_id, nome_pt, preco_centimos)
+
+
+def carrinho_definir_wrap_cor(sessao, texto_cor):
+    """Cor/acabamento é hoje um único campo de texto livre (não catalogado),
+    por isso a linha do carrinho é meramente informativa (preço 0) — o valor
+    final depende sempre da análise das fotografias pela equipa."""
+    carrinho_definir_item(sessao, GRUPO_WRAP_COR, "wrap_cor", texto_cor, 0)
+
+
+# ---------------------------------------------------------------------------
 # Passos do fluxo "Marcar" — Limpeza
 # ---------------------------------------------------------------------------
-def passo_limpeza_tipo(de, idioma):
+def passo_limpeza_tipo(de, idioma, sessao=None):
     enviar_lista(de, t("limpeza_tipo_corpo", idioma), t("limpeza_tipo_seccao", idioma), LIMPEZA_TIPOS, idioma,
-                 botao=t("limpeza_tipo_botao", idioma), com_voltar=True, rodape=t("rodape_padrao", idioma))
+                 botao=t("limpeza_tipo_botao", idioma), com_voltar=True, rodape=t("rodape_padrao", idioma), sessao=sessao)
 
 
-def passo_limpeza_tamanho(de, idioma):
+def passo_limpeza_tamanho(de, idioma, sessao=None):
     enviar_lista(de, t("limpeza_tamanho_corpo", idioma), t("tamanho_seccao", idioma), TAMANHOS_VEICULO, idioma,
-                 botao=t("tamanho_botao", idioma), com_voltar=True, rodape=t("rodape_padrao", idioma))
+                 botao=t("tamanho_botao", idioma), com_voltar=True, rodape=t("rodape_padrao", idioma), sessao=sessao)
 
 
-def passo_limpeza_extra(de, idioma):
+def passo_limpeza_extra(de, idioma, sessao=None):
     enviar_lista(de, t("extra_corpo", idioma), t("extra_seccao", idioma), EXTRAS_LIMPEZA, idioma,
-                 botao=t("extra_botao", idioma), com_voltar=True, rodape=t("rodape_padrao", idioma))
+                 botao=t("extra_botao", idioma), com_voltar=True, rodape=t("rodape_padrao", idioma), sessao=sessao)
 
 
 # ---------------------------------------------------------------------------
 # Passos do fluxo "Marcar" — Estética
 # ---------------------------------------------------------------------------
-def passo_estetica_servico(de, idioma):
+def passo_estetica_servico(de, idioma, sessao=None):
     enviar_lista(de, t("estetica_servico_corpo", idioma), t("estetica_servico_seccao", idioma), ESTETICA_SERVICOS, idioma,
-                 botao=t("estetica_servico_botao", idioma), com_voltar=True, rodape=t("rodape_padrao", idioma))
+                 botao=t("estetica_servico_botao", idioma), com_voltar=True, rodape=t("rodape_padrao", idioma), sessao=sessao)
 
 
-def passo_estetica_estado(de, idioma):
+def passo_estetica_estado(de, idioma, sessao=None):
     enviar_lista(de, t("estetica_estado_corpo", idioma), t("estado_seccao", idioma), ESTADO_VEICULO, idioma,
-                 botao=t("estado_botao", idioma), com_voltar=True, rodape=t("rodape_padrao", idioma))
+                 botao=t("estado_botao", idioma), com_voltar=True, rodape=t("rodape_padrao", idioma), sessao=sessao)
 
 
-def passo_estetica_extra(de, idioma):
+def passo_estetica_extra(de, idioma, sessao=None):
     enviar_lista(de, t("extra_corpo", idioma), t("extra_seccao", idioma), EXTRAS_ESTETICA, idioma,
-                 botao=t("extra_botao", idioma), com_voltar=True, rodape=t("rodape_padrao", idioma))
+                 botao=t("extra_botao", idioma), com_voltar=True, rodape=t("rodape_padrao", idioma), sessao=sessao)
 
 
 # ---------------------------------------------------------------------------
 # Data / hora / resumo / confirmação (comuns a limpeza e estética)
 # ---------------------------------------------------------------------------
-def passo_data(de, idioma, passo_n=4):
+def passo_data(de, idioma, passo_n=4, sessao=None):
     enviar_lista(de, t("data_corpo", idioma, n=passo_n), t("data_seccao", idioma), proximos_dias(idioma), idioma,
-                 botao=t("data_botao", idioma), com_voltar=True, rodape=t("rodape_padrao", idioma))
+                 botao=t("data_botao", idioma), com_voltar=True, rodape=t("rodape_padrao", idioma), sessao=sessao)
 
 
-def passo_hora(de, idioma, passo_n=5):
+def passo_hora(de, idioma, passo_n=5, sessao=None):
     enviar_lista(de, t("hora_corpo", idioma, n=passo_n), t("hora_seccao", idioma), HORARIOS, idioma,
-                 botao=t("hora_botao", idioma), com_voltar=True, rodape=t("rodape_padrao", idioma))
+                 botao=t("hora_botao", idioma), com_voltar=True, rodape=t("rodape_padrao", idioma), sessao=sessao)
 
 
 def calcular_preco_duracao(sessao):
@@ -976,55 +1240,56 @@ def calcular_preco_duracao(sessao):
 
 
 def passo_resumo(de, idioma, sessao):
-    preco, duracao_pt, servico_pt, extra_pt = calcular_preco_duracao(sessao)
+    # calcular_preco_duracao() continua a dar-nos a duração e os nomes
+    # canónicos (português); o PREÇO em si vem agora sempre do carrinho — a
+    # única fonte de verdade, recalculada a partir das linhas atuais.
+    _, duracao_pt, servico_pt, extra_pt = calcular_preco_duracao(sessao)
+    total_centimos = carrinho_total_centimos(sessao)
+
     # canónico (português) — é isto que fica na sessão/DB, tal como antes
     sessao["servico"] = servico_pt
     sessao["extra"] = extra_pt if extra_pt and "nenhum" not in extra_pt.lower() else None
-    sessao["preco"] = preco
+    sessao["preco"] = round(total_centimos / 100, 2)
     sessao["duracao"] = duracao_pt
     guardar_sessao(de, sessao)
 
-    # tradução só para apresentação ao cliente
-    servico_disp = nome_servico_traduzido(servico_pt, idioma)
-    extra_disp = nome_extra_traduzido(sessao["extra"], idioma)
     duracao_disp = duracao_traduzida(servico_pt, duracao_pt, idioma)
 
     nome = primeiro_nome(sessao.get("nome"))
     titulo = t("resumo_titulo", idioma) + (f", {nome}" if nome else "")
     linhas = [titulo]
-    linhas.append(t("resumo_servico", idioma, servico=servico_disp))
-    if extra_disp:
-        linhas.append(t("resumo_extra", idioma, extra=extra_disp))
     linhas.append(t("resumo_data", idioma, data=sessao["data"]))
     linhas.append(t("resumo_hora", idioma, hora=sessao["hora"]))
     linhas.append(t("resumo_duracao", idioma, duracao=duracao_disp))
-    linhas.append(t("resumo_preco", idioma, preco=preco_formatado(preco, idioma)))
+    linhas.append("")
+    linhas.append(t("resumo_discriminacao", idioma))
+    linhas.extend(linhas_discriminacao(sessao, idioma))
+    linhas.append(t("resumo_total", idioma, total=formatar_centimos(total_centimos, idioma)))
     linhas.append("\n" + t("resumo_pergunta", idioma))
 
     enviar_botoes(de, "\n".join(linhas), [
         {"id": "confirmar", "titulo": t("botao_confirmar", idioma)},
         {"id": "alterar", "titulo": t("botao_alterar", idioma)},
         {"id": ID_CANCELAR, "titulo": t("botao_cancelar", idioma)},
-    ], idioma)
+    ], idioma, rodape=t("rodape_padrao", idioma))
 
 
 def mensagem_confirmacao_final(sessao, idioma):
     nome = primeiro_nome(sessao.get("nome"))
     saudacao = t("obrigado_nome", idioma, nome=nome) if nome else t("obrigado", idioma)
 
-    servico_disp = nome_servico_traduzido(sessao["servico"], idioma)
-    extra_disp = nome_extra_traduzido(sessao.get("extra"), idioma)
     duracao_disp = duracao_traduzida(sessao["servico"], sessao.get("duracao", "-"), idioma)
     hora_curta = sessao["hora"].split(" ")[-1] if " " in sessao["hora"] else sessao["hora"]
+    total_centimos = carrinho_total_centimos(sessao)
 
     linhas = [t("confirmado_titulo", idioma, saudacao=saudacao), ""]
-    linhas.append(f"🔧 {servico_disp}")
-    if extra_disp:
-        linhas.append(f"➕ {extra_disp}")
     linhas.append(t("confirmado_data_hora", idioma, data=sessao["data"], hora=hora_curta))
     linhas.append(t("confirmado_duracao", idioma, duracao=duracao_disp))
     linhas.append(f"📍 {MORADA_OFICINA}")
-    linhas.append(t("resumo_preco", idioma, preco=preco_formatado(sessao.get("preco"), idioma)))
+    linhas.append("")
+    linhas.append(t("resumo_discriminacao", idioma))
+    linhas.extend(linhas_discriminacao(sessao, idioma))
+    linhas.append(t("resumo_total", idioma, total=formatar_centimos(total_centimos, idioma)))
     linhas.append("")
     linhas.append(t("confirmado_instrucao", idioma))
     linhas.append("")
@@ -1034,15 +1299,16 @@ def mensagem_confirmacao_final(sessao, idioma):
 
 def mensagem_notificacao_provider(de, sessao, id_agendamento):
     """Sempre em português, independentemente do idioma do cliente — é o
-    idioma de trabalho da equipa/dono do negócio."""
+    idioma de trabalho da equipa/dono do negócio. Inclui sempre a
+    discriminação completa do carrinho e o total."""
     linhas = [f"🆕📅 *Novo pedido confirmado (#{id_agendamento})*", ""]
     linhas.append(f"👤 Cliente: {sessao.get('nome') or 'sem nome'}")
     linhas.append(f"📱 Contacto: {formatar_telefone(de)}")
-    linhas.append(f"🔧 Serviço: {sessao['servico']}")
-    if sessao.get("extra"):
-        linhas.append(f"➕ Extra: {sessao['extra']}")
     linhas.append(f"📅 Data: {sessao['data']} às {sessao['hora']}")
-    linhas.append(f"💰 Preço: {preco_formatado(sessao.get('preco'))}")
+    linhas.append("")
+    linhas.append("Discriminação:")
+    linhas.extend(linhas_discriminacao(sessao, "pt"))
+    linhas.append(f"💰 Total: {formatar_centimos(carrinho_total_centimos(sessao), 'pt')}")
     linhas.append("")
     linhas.append("Responda com: CONTACTAR, REAGENDAR, CANCELAR ou CONCLUIDO seguido do número da marcação.")
     return "\n".join(linhas)
@@ -1067,29 +1333,44 @@ def passo_wrap_cor(de, idioma):
     enviar_texto(de, t("wrap_passo3", idioma) + "\n\n" + t("rodape_padrao", idioma))
 
 
-def passo_wrap_fotos_pergunta(de, idioma):
-    enviar_botoes(de, t("wrap_fotos_pergunta_corpo", idioma), [
+def passo_wrap_fotos_pergunta(de, idioma, sessao=None):
+    botoes = [
         {"id": "wrap_fotos_sim", "titulo": t("wrap_fotos_sim_botao", idioma)},
         {"id": "wrap_fotos_nao", "titulo": t("wrap_fotos_nao_botao", idioma)},
-    ], idioma, rodape=t("rodape_padrao", idioma))
+    ]
+    if sessao is not None:
+        botoes.append({"id": "ver_carrinho", "titulo": t("carrinho_botao_ver", idioma)})
+    enviar_botoes(de, t("wrap_fotos_pergunta_corpo", idioma), botoes, idioma, rodape=t("rodape_padrao", idioma))
 
 
 def finalizar_pedido_wrap(de, idioma, sessao, pedido_id=None):
-    tipo_wrap_pt = "Wrap total" if sessao.get("wrap_tipo") == "wrap_total" else "Wrap parcial"
     num_fotos = contar_fotografias(pedido_id)
+    total_centimos = carrinho_total_centimos(sessao)
+
     linhas = ["📋 *Pedido de orçamento — Wrap & Proteção*", ""]
     if pedido_id:
         linhas.append(f"🆔 Pedido #{pedido_id}")
     linhas.append(f"👤 Cliente: {sessao.get('nome') or 'sem nome'}")
     linhas.append(f"📱 Contacto: {formatar_telefone(de)}")
     linhas.append(f"🚗 Veículo: {sessao.get('wrap_veiculo', '-')}")
-    linhas.append(f"🎨 Tipo: {tipo_wrap_pt}")
-    linhas.append(f"🖌️ Cor/acabamento: {sessao.get('wrap_cor', '-')}")
+    linhas.append("")
+    linhas.append("Discriminação:")
+    linhas.extend(linhas_discriminacao(sessao, "pt"))
+    linhas.append(f"💰 Total estimado: {formatar_centimos(total_centimos, 'pt')}")
     linhas.append(f"📸 Fotografias recebidas: {num_fotos}")
     texto_provider = "\n".join(linhas)  # sempre em português, ver mensagem_notificacao_provider
 
+    if pedido_id:
+        guardar_carrinho_pedido(pedido_id, sessao.get("carrinho", []))
+
     veiculo = sessao.get("wrap_veiculo") or t("wrap_veiculo_generico", idioma)
     enviar_texto(de, t("wrap_finalizado_cliente", idioma, veiculo=veiculo))
+
+    linhas_cliente = [t("resumo_discriminacao", idioma)]
+    linhas_cliente.extend(linhas_discriminacao(sessao, idioma))
+    linhas_cliente.append(t("wrap_total_estimado", idioma, total=formatar_centimos(total_centimos, idioma)))
+    enviar_texto(de, "\n".join(linhas_cliente))
+
     if PROVIDER_WHATSAPP:
         enviar_texto(PROVIDER_WHATSAPP, texto_provider + f"\n\n💬 Responda com: CONTACTAR {formatar_telefone(de)}")
 
@@ -1097,16 +1378,18 @@ def finalizar_pedido_wrap(de, idioma, sessao, pedido_id=None):
 # ---------------------------------------------------------------------------
 # Menu principal / orçamento genérico / gerir marcação / humano / idioma
 # ---------------------------------------------------------------------------
-def enviar_menu_principal(de, idioma, saudacao=True):
+def enviar_menu_principal(de, idioma, saudacao=True, sessao=None):
     corpo = t("menu_corpo", idioma)
+    sessao_atual = sessao if sessao is not None else carregar_sessao(de)
     if saudacao:
-        nome = primeiro_nome(carregar_sessao(de).get("nome"))
+        nome = primeiro_nome(sessao_atual.get("nome"))
         if nome:
             ola = t("saudacao_volta", idioma, nome=nome, oficina=NOME_OFICINA)
         else:
             ola = t("saudacao_novo", idioma, oficina=NOME_OFICINA)
         corpo = f"{ola}\n\n{corpo}"
-    enviar_lista(de, corpo, t("menu_titulo_lista", idioma), MENU_PRINCIPAL, idioma, botao=t("menu_botao", idioma))
+    enviar_lista(de, corpo, t("menu_titulo_lista", idioma), MENU_PRINCIPAL, idioma, botao=t("menu_botao", idioma),
+                 sessao=sessao_atual)
 
 
 def enviar_seletor_idioma(de):
@@ -1118,10 +1401,86 @@ def enviar_seletor_idioma(de):
 def iniciar_escolha_categoria(de, idioma, sessao):
     """Ponto único que arranca o fluxo 'Marcar': mostra as categorias
     (Limpeza/Estética/Wrap). Reutilizado em todos os sítios que precisam de
-    (re)começar a marcação — menu principal, gestão de marcação, voltar."""
+    (re)começar a marcação — menu principal, gestão de marcação, voltar.
+    Esvazia sempre o carrinho: uma nova escolha de categoria é sempre um
+    recomeço, nunca deve arrastar linhas de uma tentativa anterior."""
+    carrinho_esvaziar(sessao)
     sessao["fluxo"] = "escolher_categoria"
     guardar_sessao(de, sessao)
     enviar_botoes(de, t("categoria_pergunta", idioma), CATEGORIAS_MARCAR, idioma, rodape=t("rodape_padrao", idioma))
+
+
+def mostrar_carrinho(de, idioma, sessao):
+    """Mostra o conteúdo atual do carrinho: cada item e preço, subtotal,
+    total (ou "total estimado", no caso do Wrap) e as ações Continuar /
+    Alterar item / Esvaziar carrinho. Acessível a qualquer momento pelos
+    comandos universais CARRINHO/CART/WARENKORB."""
+    if not sessao.get("carrinho"):
+        enviar_texto(de, t("carrinho_vazio", idioma))
+        return
+
+    estimado = sessao.get("categoria") == "cat_wrap" or sessao.get("fluxo") == "wrap"
+    subtotal_centimos = carrinho_subtotal_centimos(sessao)
+    total_centimos = carrinho_total_centimos(sessao)
+
+    linhas = [t("carrinho_titulo", idioma), ""]
+    linhas.extend(linhas_discriminacao(sessao, idioma))
+    linhas.append("")
+    linhas.append(t("carrinho_subtotal", idioma, subtotal=formatar_centimos(subtotal_centimos, idioma)))
+    chave_total = "carrinho_total_estimado" if estimado else "carrinho_total"
+    linhas.append(t(chave_total, idioma, total=formatar_centimos(total_centimos, idioma)))
+
+    enviar_botoes(de, "\n".join(linhas), [
+        {"id": "carrinho_continuar", "titulo": t("botao_continuar", idioma)},
+        {"id": "carrinho_alterar", "titulo": t("carrinho_botao_alterar", idioma)},
+        {"id": "carrinho_esvaziar", "titulo": t("carrinho_botao_esvaziar", idioma)},
+    ], idioma)
+
+
+def mostrar_alterar_carrinho(de, idioma, sessao):
+    """Lista os itens do carrinho para o cliente escolher qual alterar ou
+    remover. Itens opcionais (extras/descontos) são removidos diretamente;
+    itens obrigatórios só podem ser SUBSTITUÍDOS — a escolha reencaminha
+    para o passo onde são escolhidos (ver _reabrir_passo_para_grupo)."""
+    if not sessao.get("carrinho"):
+        enviar_texto(de, t("carrinho_vazio", idioma))
+        return
+    opcoes = []
+    for item in linhas_carrinho_traduzidas(sessao, idioma):
+        removivel = item["grupo"] in GRUPOS_REMOVIVEIS
+        acao = t("carrinho_item_remover", idioma) if removivel else t("carrinho_item_substituir", idioma)
+        # título só com o nome (pode ser truncado a 24 carateres pela lista);
+        # preço e ação ficam sempre visíveis na descrição, nunca cortados.
+        descricao = f"{formatar_centimos(item['preco'], idioma)} · {acao}"
+        opcoes.append({"id": f"carrinho_item_{item['id']}", "titulo": item["nome_traduzido"], "descricao": descricao})
+    enviar_lista(de, t("carrinho_alterar_pergunta", idioma), t("carrinho_botao_ver", idioma), opcoes, idioma,
+                 botao=t("menu_botao", idioma))
+
+
+def _reabrir_passo_para_grupo(de, idioma, sessao, grupo):
+    """Um item OBRIGATÓRIO do carrinho só pode ser substituído: leva o
+    cliente de volta ao passo onde esse item é escolhido, preservando o
+    resto da sessão (nome, idioma, etc.)."""
+    categoria = sessao.get("categoria")
+    if categoria in ("cat_limpeza", "cat_estetica"):
+        for campo in ("tipo_id", "tamanho_id", "estado_id", "extra_id", "data", "hora",
+                      "servico", "extra", "preco", "duracao"):
+            sessao.pop(campo, None)
+        carrinho_remover_grupo(sessao, GRUPO_SERVICO_BASE)
+        carrinho_remover_grupo(sessao, GRUPO_TAMANHO_VEICULO)
+        carrinho_remover_grupo(sessao, GRUPO_EXTRA)
+        guardar_sessao(de, sessao)
+        (passo_limpeza_tipo if categoria == "cat_limpeza" else passo_estetica_servico)(de, idioma, sessao)
+        return
+    if sessao.get("fluxo") == "wrap":
+        sessao.pop("wrap_tipo", None); sessao.pop("wrap_cor", None)
+        sessao.pop("pedido_id", None); sessao.pop("aguardando_fotos", None)
+        carrinho_remover_grupo(sessao, GRUPO_WRAP_TIPO)
+        carrinho_remover_grupo(sessao, GRUPO_WRAP_COR)
+        guardar_sessao(de, sessao)
+        passo_wrap_tipo(de, idioma)
+        return
+    reenviar_passo_atual(de, idioma, sessao)
 
 
 def passo_orcamento_generico(de, idioma):
@@ -1141,7 +1500,7 @@ def mostrar_gestao_marcacao(de, idioma):
         {"id": f"reagendar_{ag['id']}", "titulo": t("botao_reagendar", idioma)},
         {"id": f"cancelar_ag_{ag['id']}", "titulo": t("botao_cancelar_marcacao", idioma)},
         {"id": "mp_marcar", "titulo": t("botao_nova_marcacao", idioma)},
-    ], idioma)
+    ], idioma, rodape=t("rodape_padrao", idioma))
 
 
 def falar_com_equipa(de, idioma, sessao):
@@ -1154,8 +1513,8 @@ def falar_com_equipa(de, idioma, sessao):
 
 def mensagem_ajuda(idioma):
     linhas = [t("ajuda_header", idioma), "", t("ajuda_menu", idioma), t("ajuda_voltar", idioma),
-              t("ajuda_cancelar", idioma), t("ajuda_gerir", idioma), t("ajuda_ajuda", idioma),
-              t("ajuda_humano", idioma), t("ajuda_idioma", idioma)]
+              t("ajuda_cancelar", idioma), t("ajuda_gerir", idioma), t("ajuda_carrinho", idioma),
+              t("ajuda_ajuda", idioma), t("ajuda_humano", idioma), t("ajuda_idioma", idioma)]
     return "\n".join(linhas)
 
 
@@ -1481,8 +1840,8 @@ def processar_comando_texto(de, idioma, sessao, comando):
         enviar_seletor_idioma(de)
         return True
     if comando == "menu":
-        reiniciar_sessao(de)
-        enviar_menu_principal(de, idioma, saudacao=True)
+        nova = reiniciar_sessao(de)
+        enviar_menu_principal(de, idioma, saudacao=True, sessao=nova)
         return True
     if comando == "ajuda":
         enviar_texto(de, mensagem_ajuda(idioma))
@@ -1493,6 +1852,9 @@ def processar_comando_texto(de, idioma, sessao, comando):
         return True
     if comando == "gerir":
         mostrar_gestao_marcacao(de, idioma)
+        return True
+    if comando in COMANDOS_CARRINHO:
+        mostrar_carrinho(de, idioma, sessao)
         return True
     if comando == "cancelar":
         reiniciar_sessao(de)
@@ -1510,38 +1872,48 @@ def voltar_um_passo(de, idioma, sessao):
 
     if fluxo == "wrap":
         if sessao.get("aguardando_fotos"):
-            sessao.pop("aguardando_fotos", None); guardar_sessao(de, sessao); passo_wrap_fotos_pergunta(de, idioma)
+            sessao.pop("aguardando_fotos", None); guardar_sessao(de, sessao); passo_wrap_fotos_pergunta(de, idioma, sessao)
         elif "wrap_cor" in sessao:
-            sessao.pop("wrap_cor", None); sessao.pop("pedido_id", None); guardar_sessao(de, sessao); passo_wrap_cor(de, idioma)
+            sessao.pop("wrap_cor", None); sessao.pop("pedido_id", None)
+            carrinho_remover_grupo(sessao, GRUPO_WRAP_COR)
+            guardar_sessao(de, sessao); passo_wrap_cor(de, idioma)
         elif "wrap_tipo" in sessao:
-            sessao.pop("wrap_tipo", None); guardar_sessao(de, sessao); passo_wrap_tipo(de, idioma)
+            sessao.pop("wrap_tipo", None)
+            carrinho_remover_grupo(sessao, GRUPO_WRAP_TIPO)
+            guardar_sessao(de, sessao); passo_wrap_tipo(de, idioma)
         elif "wrap_veiculo" in sessao:
             sessao.pop("wrap_veiculo", None); guardar_sessao(de, sessao); passo_wrap_veiculo(de, idioma)
         else:
-            reiniciar_sessao(de); enviar_menu_principal(de, idioma, saudacao=False)
+            nova = reiniciar_sessao(de); enviar_menu_principal(de, idioma, saudacao=False, sessao=nova)
         return
 
     if categoria in ("cat_limpeza", "cat_estetica"):
         if "hora" in sessao:
-            sessao.pop("hora", None); guardar_sessao(de, sessao); passo_hora(de, idioma)
+            sessao.pop("hora", None); guardar_sessao(de, sessao); passo_hora(de, idioma, sessao=sessao)
         elif "data" in sessao:
-            sessao.pop("data", None); guardar_sessao(de, sessao); passo_data(de, idioma)
+            sessao.pop("data", None); guardar_sessao(de, sessao); passo_data(de, idioma, sessao=sessao)
         elif "extra_id" in sessao:
-            sessao.pop("extra_id", None); guardar_sessao(de, sessao)
-            (passo_limpeza_extra if categoria == "cat_limpeza" else passo_estetica_extra)(de, idioma)
+            sessao.pop("extra_id", None)
+            carrinho_remover_grupo(sessao, GRUPO_EXTRA)
+            guardar_sessao(de, sessao)
+            (passo_limpeza_extra if categoria == "cat_limpeza" else passo_estetica_extra)(de, idioma, sessao)
         elif categoria == "cat_limpeza" and "tamanho_id" in sessao:
-            sessao.pop("tamanho_id", None); guardar_sessao(de, sessao); passo_limpeza_tamanho(de, idioma)
+            sessao.pop("tamanho_id", None)
+            carrinho_remover_grupo(sessao, GRUPO_TAMANHO_VEICULO)
+            guardar_sessao(de, sessao); passo_limpeza_tamanho(de, idioma, sessao)
         elif categoria == "cat_estetica" and "estado_id" in sessao:
-            sessao.pop("estado_id", None); guardar_sessao(de, sessao); passo_estetica_estado(de, idioma)
+            sessao.pop("estado_id", None)
+            carrinho_remover_grupo(sessao, GRUPO_TAMANHO_VEICULO)
+            guardar_sessao(de, sessao); passo_estetica_estado(de, idioma, sessao)
         elif "tipo_id" in sessao:
             sessao.pop("tipo_id", None); sessao.pop("categoria", None)
             iniciar_escolha_categoria(de, idioma, sessao)
         else:
-            reiniciar_sessao(de); enviar_menu_principal(de, idioma, saudacao=False)
+            nova = reiniciar_sessao(de); enviar_menu_principal(de, idioma, saudacao=False, sessao=nova)
         return
 
-    reiniciar_sessao(de)
-    enviar_menu_principal(de, idioma, saudacao=False)
+    nova = reiniciar_sessao(de)
+    enviar_menu_principal(de, idioma, saudacao=False, sessao=nova)
 
 
 @app.route("/webhook", methods=["POST"])
@@ -1576,7 +1948,7 @@ def receber_mensagem():
                 novo_idioma = LANG_IDS[msg["interactive"]["button_reply"]["id"]]
                 sessao["idioma"] = novo_idioma
                 guardar_sessao(de, sessao)
-                enviar_menu_principal(de, novo_idioma, saudacao=True)
+                enviar_menu_principal(de, novo_idioma, saudacao=True, sessao=sessao)
             else:
                 enviar_seletor_idioma(de)
             return jsonify(status="ok"), 200
@@ -1597,8 +1969,8 @@ def receber_mensagem():
                     guardar_sessao(de, sessao)
                     reenviar_passo_atual(de, idioma, sessao)
                 else:
-                    reiniciar_sessao(de)
-                    enviar_menu_principal(de, idioma, saudacao=True)
+                    nova = reiniciar_sessao(de)
+                    enviar_menu_principal(de, idioma, saudacao=True, sessao=nova)
                 return jsonify(status="ok"), 200
 
             if sessao.get("fluxo") == "wrap" and "wrap_veiculo" not in sessao:
@@ -1609,10 +1981,11 @@ def receber_mensagem():
 
             if sessao.get("fluxo") == "wrap" and "wrap_tipo" in sessao and "wrap_cor" not in sessao:
                 sessao["wrap_cor"] = msg["text"]["body"].strip()
+                carrinho_definir_wrap_cor(sessao, sessao["wrap_cor"])
                 pedido_id = criar_pedido_orcamento(de, sessao)
                 sessao["pedido_id"] = pedido_id
                 guardar_sessao(de, sessao)
-                passo_wrap_fotos_pergunta(de, idioma)
+                passo_wrap_fotos_pergunta(de, idioma, sessao)
                 return jsonify(status="ok"), 200
 
             if sessao.get("fluxo") == "wrap" and sessao.get("aguardando_fotos"):
@@ -1636,14 +2009,17 @@ def receber_mensagem():
             if sessao_em_curso(sessao):
                 sessao["_a_confirmar_retomar"] = True
                 guardar_sessao(de, sessao)
-                enviar_botoes(de, t("retomar_pergunta", idioma), [
+                botoes_retomar = [
                     {"id": "retomar_continuar", "titulo": t("botao_continuar", idioma)},
                     {"id": "retomar_recomecar", "titulo": t("botao_recomecar", idioma)},
-                ], idioma)
+                ]
+                if sessao.get("carrinho"):
+                    botoes_retomar.append({"id": "ver_carrinho", "titulo": t("carrinho_botao_ver", idioma)})
+                enviar_botoes(de, t("retomar_pergunta", idioma), botoes_retomar, idioma)
                 return jsonify(status="ok"), 200
 
             # primeira mensagem / sem sessão em curso -> menu principal
-            enviar_menu_principal(de, idioma, saudacao=True)
+            enviar_menu_principal(de, idioma, saudacao=True, sessao=sessao)
             return jsonify(status="ok"), 200
 
         # --- Botões -----------------------------------------------------
@@ -1658,7 +2034,7 @@ def receber_mensagem():
                 sessao = sessao_preservando_perfil(sessao)
                 sessao["idioma"] = novo_idioma
                 guardar_sessao(de, sessao)
-                enviar_menu_principal(de, novo_idioma, saudacao=True)
+                enviar_menu_principal(de, novo_idioma, saudacao=True, sessao=sessao)
                 return jsonify(status="ok"), 200
 
             if id_botao == ID_CANCELAR:
@@ -1672,8 +2048,8 @@ def receber_mensagem():
                     guardar_sessao(de, sessao)
                     reenviar_passo_atual(de, idioma, sessao)
                 else:
-                    reiniciar_sessao(de)
-                    enviar_menu_principal(de, idioma, saudacao=True)
+                    nova = reiniciar_sessao(de)
+                    enviar_menu_principal(de, idioma, saudacao=True, sessao=nova)
                 return jsonify(status="ok"), 200
 
             if id_botao == "mp_marcar":  # ex.: botão "Nova marcação" em "Gerir a minha marcação"
@@ -1688,11 +2064,12 @@ def receber_mensagem():
                 else:
                     sessao.update({"fluxo": "marcar", "categoria": id_botao})
                     guardar_sessao(de, sessao)
-                    (passo_limpeza_tipo if id_botao == "cat_limpeza" else passo_estetica_servico)(de, idioma)
+                    (passo_limpeza_tipo if id_botao == "cat_limpeza" else passo_estetica_servico)(de, idioma, sessao)
                 return jsonify(status="ok"), 200
 
             if id_botao in ("wrap_total", "wrap_parcial"):
                 sessao["wrap_tipo"] = id_botao
+                carrinho_definir_wrap_tipo(sessao, id_botao)
                 guardar_sessao(de, sessao)
                 passo_wrap_cor(de, idioma)
                 return jsonify(status="ok"), 200
@@ -1709,6 +2086,24 @@ def receber_mensagem():
                 reiniciar_sessao(de)
                 return jsonify(status="ok"), 200
 
+            if id_botao == "ver_carrinho":
+                mostrar_carrinho(de, idioma, sessao)
+                return jsonify(status="ok"), 200
+
+            if id_botao == "carrinho_continuar":
+                reenviar_passo_atual(de, idioma, sessao)
+                return jsonify(status="ok"), 200
+
+            if id_botao == "carrinho_alterar":
+                mostrar_alterar_carrinho(de, idioma, sessao)
+                return jsonify(status="ok"), 200
+
+            if id_botao == "carrinho_esvaziar":
+                nova = reiniciar_sessao(de)
+                enviar_texto(de, t("carrinho_esvaziado", idioma))
+                enviar_menu_principal(de, idioma, saudacao=False, sessao=nova)
+                return jsonify(status="ok"), 200
+
             if id_botao == "confirmar":
                 id_ag = guardar_agendamento(de, sessao)
                 enviar_texto(de, mensagem_confirmacao_final(sessao, idioma))
@@ -1722,8 +2117,11 @@ def receber_mensagem():
                 for campo in ("tipo_id", "tamanho_id", "estado_id", "extra_id", "data", "hora",
                               "servico", "extra", "preco", "duracao"):
                     sessao.pop(campo, None)
+                carrinho_remover_grupo(sessao, GRUPO_SERVICO_BASE)
+                carrinho_remover_grupo(sessao, GRUPO_TAMANHO_VEICULO)
+                carrinho_remover_grupo(sessao, GRUPO_EXTRA)
                 guardar_sessao(de, sessao)
-                (passo_limpeza_tipo if categoria == "cat_limpeza" else passo_estetica_servico)(de, idioma)
+                (passo_limpeza_tipo if categoria == "cat_limpeza" else passo_estetica_servico)(de, idioma, sessao)
                 return jsonify(status="ok"), 200
 
             if id_botao.startswith("reagendar_"):
@@ -1778,18 +2176,43 @@ def receber_mensagem():
                 enviar_seletor_idioma(de)
                 return jsonify(status="ok"), 200
 
+            if id_escolhido == "ver_carrinho":
+                mostrar_carrinho(de, idioma, sessao)
+                return jsonify(status="ok"), 200
+
+            if id_escolhido.startswith("carrinho_item_"):
+                item_id = id_escolhido[len("carrinho_item_"):]
+                linha_item = next((l for l in sessao.get("carrinho", []) if l["id"] == item_id), None)
+                if not linha_item:
+                    enviar_texto(de, mensagem_nao_entendi(idioma))
+                    return jsonify(status="ok"), 200
+                if linha_item["grupo"] in GRUPOS_REMOVIVEIS:
+                    carrinho_remover_item(sessao, item_id)
+                    guardar_sessao(de, sessao)
+                    enviar_texto(de, t("carrinho_item_removido", idioma))
+                    mostrar_carrinho(de, idioma, sessao)
+                else:
+                    _reabrir_passo_para_grupo(de, idioma, sessao, linha_item["grupo"])
+                return jsonify(status="ok"), 200
+
             categoria = sessao.get("categoria")
 
             # Limpeza
             if categoria == "cat_limpeza":
                 if "tipo_id" not in sessao:
-                    sessao["tipo_id"] = id_escolhido; guardar_sessao(de, sessao); passo_limpeza_tamanho(de, idioma)
+                    sessao["tipo_id"] = id_escolhido
+                    carrinho_definir_servico_base(sessao, LIMPEZA_TIPOS, id_escolhido)
+                    guardar_sessao(de, sessao); passo_limpeza_tamanho(de, idioma, sessao)
                 elif "tamanho_id" not in sessao:
-                    sessao["tamanho_id"] = id_escolhido; guardar_sessao(de, sessao); passo_limpeza_extra(de, idioma)
+                    sessao["tamanho_id"] = id_escolhido
+                    carrinho_definir_modificador_veiculo(sessao, TAMANHOS_VEICULO, id_escolhido)
+                    guardar_sessao(de, sessao); passo_limpeza_extra(de, idioma, sessao)
                 elif "extra_id" not in sessao:
-                    sessao["extra_id"] = id_escolhido; guardar_sessao(de, sessao); passo_data(de, idioma)
+                    sessao["extra_id"] = id_escolhido
+                    carrinho_definir_extra(sessao, EXTRAS_LIMPEZA, id_escolhido)
+                    guardar_sessao(de, sessao); passo_data(de, idioma, sessao=sessao)
                 elif "data" not in sessao:
-                    sessao["data"] = msg["interactive"]["list_reply"]["title"]; guardar_sessao(de, sessao); passo_hora(de, idioma)
+                    sessao["data"] = msg["interactive"]["list_reply"]["title"]; guardar_sessao(de, sessao); passo_hora(de, idioma, sessao=sessao)
                 elif "hora" not in sessao:
                     sessao["hora"] = msg["interactive"]["list_reply"]["title"]; guardar_sessao(de, sessao)
                     passo_resumo(de, idioma, sessao)
@@ -1798,13 +2221,19 @@ def receber_mensagem():
             # Estética
             if categoria == "cat_estetica":
                 if "tipo_id" not in sessao:
-                    sessao["tipo_id"] = id_escolhido; guardar_sessao(de, sessao); passo_estetica_estado(de, idioma)
+                    sessao["tipo_id"] = id_escolhido
+                    carrinho_definir_servico_base(sessao, ESTETICA_SERVICOS, id_escolhido)
+                    guardar_sessao(de, sessao); passo_estetica_estado(de, idioma, sessao)
                 elif "estado_id" not in sessao:
-                    sessao["estado_id"] = id_escolhido; guardar_sessao(de, sessao); passo_estetica_extra(de, idioma)
+                    sessao["estado_id"] = id_escolhido
+                    carrinho_definir_modificador_veiculo(sessao, ESTADO_VEICULO, id_escolhido)
+                    guardar_sessao(de, sessao); passo_estetica_extra(de, idioma, sessao)
                 elif "extra_id" not in sessao:
-                    sessao["extra_id"] = id_escolhido; guardar_sessao(de, sessao); passo_data(de, idioma)
+                    sessao["extra_id"] = id_escolhido
+                    carrinho_definir_extra(sessao, EXTRAS_ESTETICA, id_escolhido)
+                    guardar_sessao(de, sessao); passo_data(de, idioma, sessao=sessao)
                 elif "data" not in sessao:
-                    sessao["data"] = msg["interactive"]["list_reply"]["title"]; guardar_sessao(de, sessao); passo_hora(de, idioma)
+                    sessao["data"] = msg["interactive"]["list_reply"]["title"]; guardar_sessao(de, sessao); passo_hora(de, idioma, sessao=sessao)
                 elif "hora" not in sessao:
                     sessao["hora"] = msg["interactive"]["list_reply"]["title"]; guardar_sessao(de, sessao)
                     passo_resumo(de, idioma, sessao)
@@ -1843,6 +2272,7 @@ def receber_mensagem():
                 enviar_texto(de, t("wrap_foto_recebida_contagem", idioma, atual=total_fotos, total=5))
                 enviar_botoes(de, t("wrap_fotos_mais_ou_concluir", idioma), [
                     {"id": "wrap_fotos_concluir", "titulo": t("wrap_fotos_concluir_botao", idioma)},
+                    {"id": "ver_carrinho", "titulo": t("carrinho_botao_ver", idioma)},
                 ], idioma)
             return jsonify(status="ok"), 200
 
@@ -1864,7 +2294,7 @@ def reenviar_passo_atual(de, idioma, sessao):
         if sessao.get("aguardando_fotos"):
             enviar_texto(de, t("wrap_fotos_pedir", idioma))
         elif "wrap_cor" in sessao:
-            passo_wrap_fotos_pergunta(de, idioma)
+            passo_wrap_fotos_pergunta(de, idioma, sessao)
         elif "wrap_tipo" in sessao:
             passo_wrap_cor(de, idioma)
         elif "wrap_veiculo" in sessao:
@@ -1877,33 +2307,33 @@ def reenviar_passo_atual(de, idioma, sessao):
         if "hora" in sessao:
             passo_resumo(de, idioma, sessao)
         elif "data" in sessao:
-            passo_hora(de, idioma)
+            passo_hora(de, idioma, sessao=sessao)
         elif "extra_id" in sessao:
-            passo_data(de, idioma)
+            passo_data(de, idioma, sessao=sessao)
         elif "tamanho_id" in sessao:
-            passo_limpeza_extra(de, idioma)
+            passo_limpeza_extra(de, idioma, sessao)
         elif "tipo_id" in sessao:
-            passo_limpeza_tamanho(de, idioma)
+            passo_limpeza_tamanho(de, idioma, sessao)
         else:
-            passo_limpeza_tipo(de, idioma)
+            passo_limpeza_tipo(de, idioma, sessao)
         return
 
     if categoria == "cat_estetica":
         if "hora" in sessao:
             passo_resumo(de, idioma, sessao)
         elif "data" in sessao:
-            passo_hora(de, idioma)
+            passo_hora(de, idioma, sessao=sessao)
         elif "extra_id" in sessao:
-            passo_data(de, idioma)
+            passo_data(de, idioma, sessao=sessao)
         elif "estado_id" in sessao:
-            passo_estetica_extra(de, idioma)
+            passo_estetica_extra(de, idioma, sessao)
         elif "tipo_id" in sessao:
-            passo_estetica_estado(de, idioma)
+            passo_estetica_estado(de, idioma, sessao)
         else:
-            passo_estetica_servico(de, idioma)
+            passo_estetica_servico(de, idioma, sessao)
         return
 
-    enviar_menu_principal(de, idioma, saudacao=False)
+    enviar_menu_principal(de, idioma, saudacao=False, sessao=sessao)
 
 
 if __name__ == "__main__":
