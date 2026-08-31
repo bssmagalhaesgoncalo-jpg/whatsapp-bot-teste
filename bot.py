@@ -85,6 +85,10 @@ ACAO_IDIOMA = "acao_idioma"
 ACAO_HUMANO = "acao_humano"
 ACAO_RAPIDO = "acao_rapido"
 ACAO_MAIS = "acao_mais"  # "⚙️ Mais ações" — submenu quando uma lista está perto do limite
+# "⬅️ Voltar" DENTRO do carrinho: o carrinho não é um passo do fluxo, por isso
+# aqui Voltar não desfaz nada — regressa exatamente ao ecrã onde o cliente
+# estava antes de o abrir (ver reenviar_passo_atual).
+ID_VOLTAR_CARRINHO = "carrinho_voltar"
 
 # Limites impostos pela API do WhatsApp em mensagens interativas. Aplicados
 # defensivamente em enviar_lista()/enviar_botoes(), para que nenhum texto
@@ -675,6 +679,32 @@ TEXTOS = {
     "carrinho_marcacao_nao_encontrada": {"pt": "Não encontrei essa marcação confirmada.",
                                           "de": "Diese bestätigte Buchung wurde nicht gefunden.",
                                           "en": "I couldn't find that confirmed booking."},
+
+    # --- Preços visíveis nas opções + navegação visual -----------------------
+    "preco_desde": {"pt": "desde {preco}", "de": "ab {preco}", "en": "from {preco}"},
+    "preco_estimado": {"pt": "estimado {preco}", "de": "geschätzt {preco}", "en": "estimated {preco}"},
+    "preco_estimativa_desde": {"pt": "estimativa desde {preco}", "de": "Schätzung ab {preco}",
+                                "en": "estimate from {preco}"},
+    "preco_incluido": {"pt": "Incluído", "de": "Inbegriffen", "en": "Included"},
+    "preco_sob_analise_curto": {"pt": "sob análise", "de": "wird geprüft", "en": "under review"},
+    "botao_voltar": {"pt": "⬅️ Voltar", "de": "⬅️ Zurück", "en": "⬅️ Back"},
+    "pag_mais_opcoes": {"pt": "➡️ Mais opções", "de": "➡️ Weitere Optionen", "en": "➡️ More options"},
+    "pag_opcoes_anteriores": {"pt": "⬅️ Opções anteriores", "de": "⬅️ Vorherige Optionen",
+                               "en": "⬅️ Previous options"},
+    "pag_desc_mais": {"pt": "Ver as opções seguintes", "de": "Nächste Optionen ansehen",
+                       "en": "See the next options"},
+    "pag_desc_anteriores": {"pt": "Ver as opções anteriores", "de": "Vorherige Optionen ansehen",
+                             "en": "See the previous options"},
+    "pag_indicador": {"pt": "Página {pagina} de {total}", "de": "Seite {pagina} von {total}",
+                       "en": "Page {pagina} of {total}"},
+    "resumo_seccao": {"pt": "Resumo do pedido", "de": "Zusammenfassung", "en": "Request summary"},
+    "acoes_seccao": {"pt": "Ações", "de": "Aktionen", "en": "Actions"},
+    "wrap_modo_seccao": {"pt": "Como avançar", "de": "Wie fortfahren", "en": "How to proceed"},
+    "wrap_fotos_seccao": {"pt": "Fotografias", "de": "Fotos", "en": "Photos"},
+    "carrinho_seccao": {"pt": "Carrinho", "de": "Warenkorb", "en": "Cart"},
+    "gerir_seccao": {"pt": "A sua marcação", "de": "Ihre Buchung", "en": "Your booking"},
+    "categoria_seccao": {"pt": "Categorias", "de": "Kategorien", "en": "Categories"},
+    "idioma_seccao": {"pt": "Idioma", "de": "Sprache", "en": "Language"},
 
     # --- Marcação cancelada pela equipa: aviso ao cliente --------------------
     "marcacao_cancelada_equipa_cliente": {
@@ -1746,6 +1776,40 @@ def titulo_linha_carrinho(telefone, idioma, sessao):
     return f"🛒 Carrinho · {formatar_centimos(0, idioma)}"
 
 
+ID_PAG_SEGUINTE = "pag_seguinte_"
+ID_PAG_ANTERIOR = "pag_anterior_"
+
+
+def _chave_conjunto_opcoes(rows):
+    """Assinatura do conjunto de opções de uma lista. Serve só para detetar
+    que se mudou de passo e repor a paginação na primeira página."""
+    return "|".join(r["id"] for r in rows)[:200]
+
+
+def _pagina_atual_lista(destinatario, sessao, rows, total_paginas):
+    """Página a mostrar. Guardada na sessão, mas reposta a 0 assim que o
+    conjunto de opções muda — assim cada passo começa sempre no início, sem
+    nenhum call site ter de se lembrar de limpar nada."""
+    if sessao is None:
+        return 0
+    chave = _chave_conjunto_opcoes(rows)
+    if sessao.get("_pagina_chave") != chave:
+        sessao["_pagina_chave"] = chave
+        sessao["_pagina_lista"] = 0
+        guardar_sessao(destinatario, sessao)
+        return 0
+    return max(0, min(int(sessao.get("_pagina_lista", 0) or 0), total_paginas - 1))
+
+
+def mudar_pagina_lista(de, idioma, sessao, pagina):
+    """Handler das linhas "➡️ Mais opções" / "⬅️ Opções anteriores": guarda a
+    nova página e volta a desenhar EXATAMENTE o mesmo passo (nunca avança
+    nem reinicia o processo)."""
+    sessao["_pagina_lista"] = max(0, pagina)
+    guardar_sessao(de, sessao)
+    reenviar_passo_atual(de, idioma, sessao)
+
+
 def enviar_lista(destinatario, corpo, titulo_seccao, opcoes, idioma, botao="👉 Escolher", com_voltar=False,
                   com_cancelar=None, rodape=None, sessao=None, com_rapido=False):
     """`opcoes`: lista de dicts {"id","titulo","descricao"?} (titulo/descricao
@@ -1758,40 +1822,73 @@ def enviar_lista(destinatario, corpo, titulo_seccao, opcoes, idioma, botao="👉
     só há espaço para Voltar, mantendo CANCELAR disponível pelo rodapé (ver
     limite de 10 linhas por lista da API do WhatsApp).
     `com_rapido` acrescenta o atalho "⚡ Pedido rápido" apenas se ainda houver
-    espaço dentro dessas 10 linhas."""
+    espaço dentro dessas 10 linhas.
+
+    PAGINAÇÃO: quando as opções mais Carrinho/Voltar/Cancelar ultrapassam as
+    10 linhas da API, a lista é dividida em páginas e ganha as linhas
+    "➡️ Mais opções" / "⬅️ Opções anteriores" — o cliente navega sempre por
+    toque, nunca por comando escrito. A página atual fica guardada na sessão
+    e é reposta a zero automaticamente sempre que o conjunto de opções muda
+    (ou seja, sempre que se entra noutro passo)."""
     if com_cancelar is None:
         com_cancelar = com_voltar
-    rows = []
-    for i, opc in enumerate(opcoes):
+
+    def linha_de(opc, i):
         if isinstance(opc, dict):
             titulo = tx(opc["titulo"], idioma)
             row = {"id": opc.get("id", f"opt_{i}"), "title": titulo[:MAX_TITULO_LINHA]}
             desc = tx(opc.get("descricao"), idioma)
             if desc:
                 row["description"] = desc[:72]
-        else:
-            row = {"id": f"opt_{i}", "title": str(opc)[:MAX_TITULO_LINHA]}
-        rows.append(row)
+            return row
+        return {"id": f"opt_{i}", "title": str(opc)[:MAX_TITULO_LINHA]}
 
+    todas = [linha_de(opc, i) for i, opc in enumerate(opcoes)]
+
+    # Linhas fixas que ocupam espaço no fim da lista.
+    fixas = []
     if sessao is not None:
-        rows.append({"id": "ver_carrinho",
-                     "title": titulo_linha_carrinho(destinatario, idioma, sessao)[:MAX_TITULO_LINHA]})
-
-    # "⚡ Pedido rápido" só entra quando SOBRA espaço dentro do limite de 10
-    # linhas por lista da API do WhatsApp (contando Carrinho, Voltar e
-    # Cancelar). Nas listas já cheias, o atalho continua disponível pelo
-    # comando RAPIDO indicado no rodapé.
-    linhas_finais = (1 if com_voltar else 0) + (1 if com_cancelar else 0)
-    if com_rapido and len(rows) + linhas_finais + 1 <= MAX_LINHAS_LISTA:
-        rows.append({"id": "modo_rapido", "title": t("rapido_linha_lista", idioma)[:MAX_TITULO_LINHA]})
-
+        fixas.append({"id": "ver_carrinho",
+                      "title": titulo_linha_carrinho(destinatario, idioma, sessao)[:MAX_TITULO_LINHA]})
     if com_voltar:
-        rows.append({"id": ID_VOLTAR, "title": t("voltar_titulo", idioma), "description": t("voltar_desc", idioma)})
+        fixas.append({"id": ID_VOLTAR, "title": t("voltar_titulo", idioma), "description": t("voltar_desc", idioma)})
     if com_cancelar:
-        rows.append({"id": ID_CANCELAR, "title": t("cancelar_titulo", idioma), "description": t("cancelar_desc", idioma)})
+        fixas.append({"id": ID_CANCELAR, "title": t("cancelar_titulo", idioma),
+                      "description": t("cancelar_desc", idioma)})
+
+    # Cabe tudo? Caminho normal, sem paginação (comportamento de sempre).
+    espaco_opcoes = MAX_LINHAS_LISTA - len(fixas)
+    paginar = len(todas) > espaco_opcoes and espaco_opcoes > 1
+
+    rows, indicador = [], ""
+    if not paginar:
+        rows = todas[:espaco_opcoes]
+        if com_rapido and len(rows) + len(fixas) + 1 <= MAX_LINHAS_LISTA:
+            rows.append({"id": "modo_rapido", "title": t("rapido_linha_lista", idioma)[:MAX_TITULO_LINHA]})
+        rows.extend(fixas)
+    else:
+        # Uma linha de navegação no fim (e outra no início, a partir da 2ª
+        # página) — por isso o tamanho útil da página desconta-as.
+        por_pagina = max(1, espaco_opcoes - 1)
+        total_paginas = (len(todas) + por_pagina - 1) // por_pagina
+        pagina = _pagina_atual_lista(destinatario, sessao, todas, total_paginas)
+        inicio = pagina * por_pagina
+        rows = list(todas[inicio:inicio + por_pagina])
+        if pagina > 0:
+            rows.insert(0, {"id": f"{ID_PAG_ANTERIOR}{pagina - 1}",
+                            "title": t("pag_opcoes_anteriores", idioma)[:MAX_TITULO_LINHA],
+                            "description": t("pag_desc_anteriores", idioma)})
+        if pagina < total_paginas - 1:
+            rows.append({"id": f"{ID_PAG_SEGUINTE}{pagina + 1}",
+                         "title": t("pag_mais_opcoes", idioma)[:MAX_TITULO_LINHA],
+                         "description": t("pag_desc_mais", idioma)})
+        rows.extend(fixas)
+        indicador = t("pag_indicador", idioma, pagina=pagina + 1, total=total_paginas)
 
     # Rede de segurança: a API rejeita listas com mais de 10 linhas.
     rows = rows[:MAX_LINHAS_LISTA]
+    if indicador:
+        corpo = f"{corpo}\n\n{indicador}"
 
     interactive = {
         "type": "list",
@@ -1809,13 +1906,36 @@ def enviar_lista(destinatario, corpo, titulo_seccao, opcoes, idioma, botao="👉
     })
 
 
-def enviar_botoes(destinatario, corpo, botoes, idioma, rodape=None):
+def enviar_botoes(destinatario, corpo, botoes, idioma, rodape=None, com_voltar=False, com_cancelar=False,
+                   sessao=None, titulo_seccao=None, botao_lista=None):
+    """Botões de resposta rápida (máximo de 3, imposto pela API do WhatsApp).
+
+    `com_voltar`/`com_cancelar`/`sessao` acrescentam as saídas visuais Voltar,
+    Cancelar e Carrinho. Quando essas saídas já não cabem nos 3 botões, a
+    mensagem é PROMOVIDA automaticamente a lista (10 linhas) — é a única
+    forma de o cliente ter sempre um ⬅️ Voltar clicável sem perder nenhuma
+    das opções do passo. Os IDs são exatamente os mesmos nos dois formatos,
+    e o webhook trata botões e listas pela mesma cadeia, por isso a promoção
+    é transparente para o resto do fluxo."""
+    extras = (1 if com_voltar else 0) + (1 if com_cancelar else 0) + (1 if sessao is not None else 0)
+    if len(botoes) + extras > MAX_BOTOES:
+        enviar_lista(destinatario, corpo, titulo_seccao or t("mais_acoes_seccao", idioma), botoes, idioma,
+                     botao=botao_lista or t("menu_botao", idioma), com_voltar=com_voltar,
+                     com_cancelar=com_cancelar, rodape=rodape, sessao=sessao)
+        return
+
+    lista_botoes = list(botoes)
+    if com_voltar:
+        lista_botoes.append({"id": ACAO_VOLTAR, "titulo": t("botao_voltar", idioma)})
+    if com_cancelar:
+        lista_botoes.append({"id": ACAO_CANCELAR, "titulo": t("botao_cancelar", idioma)})
+
     interactive = {
         "type": "button",
         "body": {"text": corpo},
         "action": {"buttons": [
             {"type": "reply", "reply": {"id": b["id"], "title": tx(b["titulo"], idioma)[:MAX_TITULO_BOTAO]}}
-            for b in botoes[:MAX_BOTOES]
+            for b in lista_botoes[:MAX_BOTOES]
         ]},
     }
     if rodape:
@@ -2095,6 +2215,125 @@ def formatar_centimos(centimos, idioma="pt"):
     return f"{sinal}CHF {abs(valor):.2f}"
 
 
+# ---------------------------------------------------------------------------
+# Apresentação central de PREÇOS nas opções dos menus
+# ---------------------------------------------------------------------------
+# Ponto único onde um preço se transforma em texto visível. Os valores vêm
+# SEMPRE das tabelas centrais já existentes (LIMPEZA_TIPOS, ESTETICA_SERVICOS,
+# EXTRAS_*, TAMANHOS_VEICULO/ESTADO_VEICULO via fator, WRAP_*_PRECOS_CENTIMOS)
+# — nunca são reescritos à mão nos textos nem na lógica dos menus. Alterar um
+# preço na tabela central atualiza automaticamente menus, carrinho, resumo e
+# notificações, porque todos passam por aqui ou por formatar_centimos().
+#
+# Estilos:
+#   "base"      -> CHF X        (serviço base)
+#   "acrescimo" -> +CHF X       (acréscimo/extra; 0 -> "Incluído")
+#   "desconto"  -> -CHF X
+#   "desde"     -> desde CHF X  (mínimo de uma categoria)
+#   "estimado"  -> estimado CHF X (Wrap — o valor final depende da análise)
+# ---------------------------------------------------------------------------
+SEPARADOR_PRECO = " · "
+
+
+def rotulo_preco(centimos, idioma, estilo="base"):
+    """Texto do preço de uma opção, já traduzido e no MESMO formato monetário
+    usado no carrinho (ver formatar_centimos). Devolve "" quando não há preço
+    nenhum a mostrar (centimos None)."""
+    if centimos is None:
+        return ""
+    if estilo == "acrescimo":
+        if centimos == 0:
+            return t("preco_incluido", idioma)
+        return f"+{formatar_centimos(centimos, idioma)}"
+    if estilo == "desconto":
+        return f"-{formatar_centimos(abs(centimos), idioma)}"
+    if estilo == "desde":
+        return t("preco_desde", idioma, preco=formatar_centimos(centimos, idioma))
+    if estilo == "estimado":
+        return t("preco_estimado", idioma, preco=formatar_centimos(centimos, idioma))
+    return formatar_centimos(centimos, idioma)
+
+
+def nome_com_preco(nome, centimos, idioma, estilo="base"):
+    """Nome traduzido + preço formatado — a forma canónica de apresentar uma
+    opção com preço em qualquer menu."""
+    rotulo = rotulo_preco(centimos, idioma, estilo)
+    return f"{nome}{SEPARADOR_PRECO}{rotulo}" if rotulo else nome
+
+
+def opcao_com_preco(opcao, centimos, idioma, estilo="base"):
+    """Devolve uma CÓPIA da opção de catálogo com o preço visível, sem nunca
+    tocar no catálogo original (os nomes canónicos em português, gravados no
+    carrinho e na base de dados, têm de continuar sem preço).
+
+    O preço vai no título quando cabe no limite de 24 caracteres da API; se
+    não couber, o título fica só com o nome e o preço passa para o início da
+    descrição — assim o preço nunca aparece cortado a meio."""
+    nome = tx(opcao.get("titulo"), idioma)
+    rotulo = rotulo_preco(centimos, idioma, estilo)
+    nova = dict(opcao)
+    if not rotulo:
+        nova["titulo"] = nome
+        nova["descricao"] = tx(opcao.get("descricao"), idioma) or None
+        return nova
+    titulo_com_preco = f"{nome}{SEPARADOR_PRECO}{rotulo}"
+    descricao = tx(opcao.get("descricao"), idioma) or ""
+    if len(titulo_com_preco) <= MAX_TITULO_LINHA:
+        nova["titulo"] = titulo_com_preco
+        nova["descricao"] = descricao or None
+    else:
+        nova["titulo"] = nome
+        nova["descricao"] = f"{rotulo}{SEPARADOR_PRECO}{descricao}" if descricao else rotulo
+    return nova
+
+
+def opcoes_com_precos(opcoes, idioma, precos_centimos, estilo="base"):
+    """Aplica opcao_com_preco() a um catálogo inteiro. `precos_centimos` é
+    uma função id -> cêntimos (ou None, para não mostrar preço nessa opção)."""
+    return [opcao_com_preco(o, precos_centimos(o["id"]), idioma, estilo) for o in opcoes]
+
+
+def _preco_catalogo_centimos(catalogo, item_id):
+    """Preço em cêntimos de uma opção de Limpeza/Estética/Extras — os
+    catálogos guardam CHF inteiros, tal como carrinho_definir_servico_base()
+    e carrinho_definir_extra() fazem a conversão."""
+    opcao = encontrar_opcao(catalogo, item_id) or {}
+    return int(opcao.get("preco", 0)) * 100
+
+
+def preco_minimo_categoria_centimos(categoria_id):
+    """Preço mais baixo de uma categoria, para o "desde CHF X" do primeiro
+    menu. Lido diretamente das tabelas centrais — nunca escrito à mão."""
+    if categoria_id == "cat_limpeza":
+        return min(int(o["preco"]) * 100 for o in LIMPEZA_TIPOS)
+    if categoria_id == "cat_estetica":
+        return min(int(o["preco"]) * 100 for o in ESTETICA_SERVICOS)
+    if categoria_id == "cat_wrap":
+        return min(WRAP_PRECOS_CENTIMOS.values())
+    return None
+
+
+def opcoes_categorias_com_precos(idioma):
+    """Categorias do primeiro menu com o preço mínimo de cada uma. O Wrap usa
+    o estilo "estimado desde", porque o valor final depende sempre da análise
+    das fotografias pela equipa."""
+    opcoes = []
+    for cat in CATEGORIAS_MARCAR:
+        minimo = preco_minimo_categoria_centimos(cat["id"])
+        estilo = "estimado" if cat["id"] == "cat_wrap" else "desde"
+        if cat["id"] == "cat_wrap" and minimo is not None:
+            # "estimativa desde CHF X": no Wrap o total é sempre estimado E o
+            # mínimo é apenas um ponto de partida.
+            nova = dict(cat)
+            nova["titulo"] = tx(cat["titulo"], idioma)
+            nova["descricao"] = t("preco_estimativa_desde", idioma,
+                                  preco=formatar_centimos(minimo, idioma))
+            opcoes.append(nova)
+        else:
+            opcoes.append(opcao_com_preco(cat, minimo, idioma, estilo))
+    return opcoes
+
+
 def _procurar_modificador_veiculo_por_nome_pt(nome_pt):
     for catalogo in (TAMANHOS_VEICULO, ESTADO_VEICULO):
         opcao = next((o for o in catalogo if o["titulo"]["pt"] == nome_pt), None)
@@ -2170,6 +2409,15 @@ def _preco_servico_base_centimos(sessao):
     return linha["preco"] if linha else 0
 
 
+def delta_modificador_veiculo_centimos(sessao, catalogo, item_id):
+    """Acréscimo, em cêntimos, que um tamanho/estado de veículo vai somar ao
+    carrinho. É EXATAMENTE a mesma conta de carrinho_definir_modificador_
+    veiculo() — partilhada aqui para o preço mostrado na opção ser sempre
+    idêntico ao que depois aparece no carrinho e no resumo."""
+    opcao = encontrar_opcao(catalogo, item_id) or {"fator": 1.0}
+    return round(_preco_servico_base_centimos(sessao) * (opcao.get("fator", 1.0) - 1.0))
+
+
 def carrinho_definir_servico_base(sessao, catalogo, item_id):
     """Usa os preços já existentes de Limpeza/Estética (guardados em CHF
     inteiros no catálogo) — apenas convertidos para cêntimos aqui."""
@@ -2187,9 +2435,7 @@ def carrinho_definir_modificador_veiculo(sessao, catalogo, item_id):
     carrinho (nunca se multiplica um total antigo)."""
     opcao = encontrar_opcao(catalogo, item_id) or {"fator": 1.0}
     nome_pt = tx(opcao.get("titulo"), "pt")
-    fator = opcao.get("fator", 1.0)
-    base_centimos = _preco_servico_base_centimos(sessao)
-    delta_centimos = round(base_centimos * (fator - 1.0))
+    delta_centimos = delta_modificador_veiculo_centimos(sessao, catalogo, item_id)
     carrinho_definir_item(sessao, GRUPO_TAMANHO_VEICULO, item_id, nome_pt, delta_centimos)
 
 
@@ -2250,18 +2496,31 @@ def carrinho_definir_wrap_acabamento(sessao, item_id):
 # ---------------------------------------------------------------------------
 # Passos do fluxo "Marcar" — Limpeza
 # ---------------------------------------------------------------------------
+# Todos os passos mostram o preço na própria opção (ver opcoes_com_precos, que
+# lê sempre as tabelas centrais) e têm sempre ⬅️ Voltar e ❌ Cancelar
+# clicáveis, além do 🛒 Carrinho.
+# ---------------------------------------------------------------------------
 def passo_limpeza_tipo(de, idioma, sessao=None):
-    enviar_lista(de, t("limpeza_tipo_corpo", idioma), t("limpeza_tipo_seccao", idioma), LIMPEZA_TIPOS, idioma,
+    opcoes = opcoes_com_precos(LIMPEZA_TIPOS, idioma,
+                               lambda i: _preco_catalogo_centimos(LIMPEZA_TIPOS, i), "base")
+    enviar_lista(de, t("limpeza_tipo_corpo", idioma), t("limpeza_tipo_seccao", idioma), opcoes, idioma,
                  botao=t("limpeza_tipo_botao", idioma), com_voltar=True, rodape=t("rodape_padrao", idioma), sessao=sessao)
 
 
 def passo_limpeza_tamanho(de, idioma, sessao=None):
-    enviar_lista(de, t("limpeza_tamanho_corpo", idioma), t("tamanho_seccao", idioma), TAMANHOS_VEICULO, idioma,
+    # O acréscimo depende do serviço base já escolhido — usa exatamente a
+    # mesma conta que o carrinho (ver delta_modificador_veiculo_centimos).
+    opcoes = opcoes_com_precos(TAMANHOS_VEICULO, idioma,
+                               lambda i: delta_modificador_veiculo_centimos(sessao or {}, TAMANHOS_VEICULO, i),
+                               "acrescimo")
+    enviar_lista(de, t("limpeza_tamanho_corpo", idioma), t("tamanho_seccao", idioma), opcoes, idioma,
                  botao=t("tamanho_botao", idioma), com_voltar=True, rodape=t("rodape_padrao", idioma), sessao=sessao)
 
 
 def passo_limpeza_extra(de, idioma, sessao=None):
-    enviar_lista(de, t("extra_corpo", idioma), t("extra_seccao", idioma), EXTRAS_LIMPEZA, idioma,
+    opcoes = opcoes_com_precos(EXTRAS_LIMPEZA, idioma,
+                               lambda i: _preco_catalogo_centimos(EXTRAS_LIMPEZA, i), "acrescimo")
+    enviar_lista(de, t("extra_corpo", idioma), t("extra_seccao", idioma), opcoes, idioma,
                  botao=t("extra_botao", idioma), com_voltar=True, rodape=t("rodape_padrao", idioma), sessao=sessao)
 
 
@@ -2269,17 +2528,24 @@ def passo_limpeza_extra(de, idioma, sessao=None):
 # Passos do fluxo "Marcar" — Estética
 # ---------------------------------------------------------------------------
 def passo_estetica_servico(de, idioma, sessao=None):
-    enviar_lista(de, t("estetica_servico_corpo", idioma), t("estetica_servico_seccao", idioma), ESTETICA_SERVICOS, idioma,
+    opcoes = opcoes_com_precos(ESTETICA_SERVICOS, idioma,
+                               lambda i: _preco_catalogo_centimos(ESTETICA_SERVICOS, i), "base")
+    enviar_lista(de, t("estetica_servico_corpo", idioma), t("estetica_servico_seccao", idioma), opcoes, idioma,
                  botao=t("estetica_servico_botao", idioma), com_voltar=True, rodape=t("rodape_padrao", idioma), sessao=sessao)
 
 
 def passo_estetica_estado(de, idioma, sessao=None):
-    enviar_lista(de, t("estetica_estado_corpo", idioma), t("estado_seccao", idioma), ESTADO_VEICULO, idioma,
+    opcoes = opcoes_com_precos(ESTADO_VEICULO, idioma,
+                               lambda i: delta_modificador_veiculo_centimos(sessao or {}, ESTADO_VEICULO, i),
+                               "acrescimo")
+    enviar_lista(de, t("estetica_estado_corpo", idioma), t("estado_seccao", idioma), opcoes, idioma,
                  botao=t("estado_botao", idioma), com_voltar=True, rodape=t("rodape_padrao", idioma), sessao=sessao)
 
 
 def passo_estetica_extra(de, idioma, sessao=None):
-    enviar_lista(de, t("extra_corpo", idioma), t("extra_seccao", idioma), EXTRAS_ESTETICA, idioma,
+    opcoes = opcoes_com_precos(EXTRAS_ESTETICA, idioma,
+                               lambda i: _preco_catalogo_centimos(EXTRAS_ESTETICA, i), "acrescimo")
+    enviar_lista(de, t("extra_corpo", idioma), t("extra_seccao", idioma), opcoes, idioma,
                  botao=t("extra_botao", idioma), com_voltar=True, rodape=t("rodape_padrao", idioma), sessao=sessao)
 
 
@@ -2348,11 +2614,14 @@ def passo_resumo(de, idioma, sessao):
     linhas.append(t("resumo_total", idioma, total=formatar_centimos(total_centimos, idioma)))
     linhas.append("\n" + t("resumo_pergunta", idioma))
 
+    # com_voltar promove esta mensagem a lista, para caber o ⬅️ Voltar (que
+    # regressa ao passo da hora) sem perder Confirmar/Alterar/Cancelar.
     enviar_botoes(de, "\n".join(linhas), [
         {"id": "confirmar", "titulo": t("botao_confirmar", idioma)},
         {"id": "alterar", "titulo": t("botao_alterar", idioma)},
         {"id": ID_CANCELAR, "titulo": t("botao_cancelar", idioma)},
-    ], idioma, rodape=t("rodape_padrao", idioma))
+    ], idioma, rodape=t("rodape_padrao", idioma), com_voltar=True,
+        titulo_seccao=t("resumo_seccao", idioma), botao_lista=t("menu_botao", idioma))
 
 
 def mensagem_confirmacao_final(sessao, idioma):
@@ -2707,6 +2976,7 @@ def mostrar_lista_alteracao_orcamento(de, idioma, orcamento_id):
         {"id": f"orcamento_alt_outra_{orcamento_id}", "titulo": t("alteracao_opcao_outra", idioma)},
         {"id": f"orcamento_alt_equipa_{orcamento_id}", "titulo": t("alteracao_opcao_equipa", idioma)},
     ]
+    opcoes.append({"id": ACAO_VOLTAR, "titulo": t("botao_voltar", idioma)})
     enviar_lista(de, t("alteracao_pergunta", idioma), t("alteracao_seccao", idioma), opcoes, idioma,
                  botao=t("alteracao_botao", idioma))
 
@@ -2812,7 +3082,8 @@ def passo_wrap_modo(de, idioma, sessao=None):
         {"id": "modo_rapido", "titulo": t("wrap_modo_rapido_botao", idioma)},
         {"id": "modo_detalhe", "titulo": t("wrap_modo_detalhe_botao", idioma)},
         {"id": "modo_especialista", "titulo": t("wrap_modo_especialista_botao", idioma)},
-    ], idioma, rodape=t("rodape_padrao", idioma))
+    ], idioma, rodape=t("rodape_padrao", idioma), com_voltar=True, com_cancelar=True,
+        titulo_seccao=t("wrap_modo_seccao", idioma))
 
 
 # ---------------------------------------------------------------------------
@@ -2829,7 +3100,8 @@ def passo_rapido_interesse(de, idioma, sessao=None):
         {"id": "rapido_wrap_total", "titulo": t("wrap_total_botao", idioma)},
         {"id": "rapido_wrap_parcial", "titulo": t("wrap_parcial_botao", idioma)},
         {"id": "rapido_nao_sei", "titulo": t("rapido_nao_sei_botao", idioma)},
-    ], idioma, rodape=t("rodape_wrap", idioma))
+    ], idioma, rodape=t("rodape_wrap", idioma), com_voltar=True, com_cancelar=True,
+        titulo_seccao=t("wrap_tipo_seccao", idioma))
 
 
 def passo_rapido_fotos(de, idioma, sessao=None):
@@ -2837,7 +3109,8 @@ def passo_rapido_fotos(de, idioma, sessao=None):
         {"id": "wrap_fotos_sim", "titulo": t("wrap_fotos_sim_botao", idioma)},
         {"id": "wrap_fotos_nao", "titulo": t("wrap_fotos_nao_botao", idioma)},
         {"id": "ver_carrinho", "titulo": t("rapido_ver_pedido_botao", idioma)},
-    ], idioma, rodape=t("rodape_wrap", idioma))
+    ], idioma, rodape=t("rodape_wrap", idioma), com_voltar=True, com_cancelar=True,
+        titulo_seccao=t("wrap_fotos_seccao", idioma))
 
 
 def rapido_interesse_traduzido(sessao, idioma):
@@ -2866,7 +3139,8 @@ def passo_rapido_resumo(de, idioma, sessao):
         {"id": "rapido_confirmar", "titulo": t("botao_confirmar", idioma)},
         {"id": "rapido_alterar", "titulo": t("botao_alterar", idioma)},
         {"id": ID_CANCELAR, "titulo": t("botao_cancelar", idioma)},
-    ], idioma, rodape=t("rodape_wrap", idioma))
+    ], idioma, rodape=t("rodape_wrap", idioma), com_voltar=True,
+        titulo_seccao=t("resumo_seccao", idioma))
 
 
 def enviar_notificacao_interna_pedido(pedido_id, texto_provider):
@@ -3038,11 +3312,12 @@ def pedido_falar_especialista(de, idioma, sessao):
 # cor, 5) cor, 6) acabamento, 7) fotografias, 8) resumo e confirmação.
 # ---------------------------------------------------------------------------
 def passo_wrap_veiculo(de, idioma, sessao=None):
-    # 8 opções de catálogo: com o Carrinho, já preenche as 10 linhas
-    # possíveis numa lista — por isso aqui só há Voltar (Cancelar continua
-    # disponível pelo rodapé, como em qualquer outro passo).
-    enviar_lista(de, t("wrap_veiculo_corpo", idioma), t("wrap_veiculo_seccao", idioma), WRAP_TIPOS_VEICULO, idioma,
-                 botao=t("wrap_veiculo_botao", idioma), com_voltar=True, com_cancelar=False,
+    # 8 opções + Carrinho + Voltar + Cancelar passam das 10 linhas da API —
+    # a lista pagina-se sozinha (ver enviar_lista), sem perder nenhuma saída.
+    opcoes = opcoes_com_precos(WRAP_TIPOS_VEICULO, idioma,
+                               lambda i: WRAP_VEICULO_PRECOS_CENTIMOS.get(i, 0), "acrescimo")
+    enviar_lista(de, t("wrap_veiculo_corpo", idioma), t("wrap_veiculo_seccao", idioma), opcoes, idioma,
+                 botao=t("wrap_veiculo_botao", idioma), com_voltar=True, com_cancelar=True,
                  rodape=t("rodape_wrap", idioma), sessao=sessao, com_rapido=True)
 
 
@@ -3061,10 +3336,10 @@ def passo_wrap_ano_outro(de, idioma):
 
 
 def passo_wrap_tipo(de, idioma, sessao=None):
-    opcoes = [
+    opcoes = opcoes_com_precos([
         {"id": "wrap_total", "titulo": t("wrap_total_botao", idioma)},
         {"id": "wrap_parcial", "titulo": t("wrap_parcial_botao", idioma)},
-    ]
+    ], idioma, lambda i: WRAP_PRECOS_CENTIMOS.get(i), "estimado")
     enviar_lista(de, t("wrap_tipo_corpo", idioma), t("wrap_tipo_seccao", idioma), opcoes, idioma,
                  botao=t("wrap_tipo_botao", idioma), com_voltar=True, rodape=t("rodape_wrap", idioma),
                  sessao=sessao, com_rapido=True)
@@ -3074,13 +3349,14 @@ def passo_wrap_cor_familia(de, idioma, sessao=None):
     # 8 opções (7 famílias + "Criar a minha cor"): mesma lógica do passo 1 —
     # só Voltar na lista, Cancelar continua disponível pelo rodapé.
     enviar_lista(de, t("wrap_cor_familia_corpo", idioma), t("wrap_cor_familia_seccao", idioma), WRAP_FAMILIAS_COR,
-                 idioma, botao=t("wrap_cor_familia_botao", idioma), com_voltar=True, com_cancelar=False,
+                 idioma, botao=t("wrap_cor_familia_botao", idioma), com_voltar=True, com_cancelar=True,
                  rodape=t("rodape_wrap", idioma), sessao=sessao, com_rapido=True)
 
 
 def passo_wrap_cor(de, idioma, sessao=None):
     familia_id = sessao.get("wrap_cor_familia_id") if sessao else None
-    cores = WRAP_CORES_POR_FAMILIA.get(familia_id, [])
+    cores = opcoes_com_precos(WRAP_CORES_POR_FAMILIA.get(familia_id, []), idioma,
+                              lambda i: WRAP_COR_PRECOS_CENTIMOS.get(i, 0), "acrescimo")
     enviar_lista(de, t("wrap_cor_corpo", idioma), t("wrap_cor_seccao", idioma), cores, idioma,
                  botao=t("wrap_cor_botao", idioma), com_voltar=True, rodape=t("rodape_wrap", idioma),
                  sessao=sessao, com_rapido=True)
@@ -3091,9 +3367,11 @@ def passo_wrap_cor_personalizada(de, idioma):
 
 
 def passo_wrap_acabamento(de, idioma, sessao=None):
-    # 8 opções: mesma lógica dos passos 1 e 4 — só Voltar na lista.
-    enviar_lista(de, t("wrap_acabamento_corpo", idioma), t("wrap_acabamento_seccao", idioma), WRAP_ACABAMENTOS,
-                 idioma, botao=t("wrap_acabamento_botao", idioma), com_voltar=True, com_cancelar=False,
+    # 8 opções: com Carrinho/Voltar/Cancelar a lista pagina-se sozinha.
+    opcoes = opcoes_com_precos(WRAP_ACABAMENTOS, idioma,
+                               lambda i: WRAP_ACABAMENTO_PRECOS_CENTIMOS.get(i, 0), "acrescimo")
+    enviar_lista(de, t("wrap_acabamento_corpo", idioma), t("wrap_acabamento_seccao", idioma), opcoes,
+                 idioma, botao=t("wrap_acabamento_botao", idioma), com_voltar=True, com_cancelar=True,
                  rodape=t("rodape_wrap", idioma), sessao=sessao, com_rapido=True)
 
 
@@ -3104,7 +3382,8 @@ def passo_wrap_fotos_pergunta(de, idioma, sessao=None):
     ]
     if sessao is not None:
         botoes.append({"id": "ver_carrinho", "titulo": t("carrinho_botao_ver", idioma)})
-    enviar_botoes(de, t("wrap_fotos_pergunta_corpo", idioma), botoes, idioma, rodape=t("rodape_wrap", idioma))
+    enviar_botoes(de, t("wrap_fotos_pergunta_corpo", idioma), botoes, idioma, rodape=t("rodape_wrap", idioma),
+                  com_voltar=True, com_cancelar=True, titulo_seccao=t("wrap_fotos_seccao", idioma))
 
 
 def passo_wrap_resumo(de, idioma, sessao):
@@ -3144,7 +3423,8 @@ def passo_wrap_resumo(de, idioma, sessao):
         {"id": "wrap_confirmar", "titulo": t("botao_confirmar", idioma)},
         {"id": "wrap_alterar", "titulo": t("botao_alterar", idioma)},
         {"id": ID_CANCELAR, "titulo": t("botao_cancelar", idioma)},
-    ], idioma, rodape=t("rodape_padrao", idioma))
+    ], idioma, rodape=t("rodape_padrao", idioma), com_voltar=True,
+        titulo_seccao=t("resumo_seccao", idioma))
 
 
 def finalizar_pedido_wrap(de, idioma, sessao, pedido_id=None):
@@ -3202,9 +3482,19 @@ def enviar_menu_principal(de, idioma, saudacao=True, sessao=None):
                  sessao=sessao_atual)
 
 
-def enviar_seletor_idioma(de):
-    """Mensagem fixa nos 3 idiomas ao mesmo tempo + botões para escolher —
-    não depende de nenhum idioma já escolhido, porque é isso que resolve."""
+def enviar_seletor_idioma(de, idioma_atual=None):
+    """Mensagem fixa nos 3 idiomas ao mesmo tempo + opções para escolher —
+    não depende de nenhum idioma já escolhido, porque é isso que resolve.
+
+    `idioma_atual` só é passado quando o cliente JÁ tem idioma e está a
+    trocá-lo a meio: nesse caso a mensagem ganha um ⬅️ Voltar clicável (e
+    passa a lista, para lhe caber). Na PRIMEIRA escolha de um cliente novo
+    não há passo anterior, por isso continua a ser só os 3 botões."""
+    if idioma_atual in IDIOMAS_VALIDOS:
+        opcoes = list(BOTOES_IDIOMA) + [{"id": ACAO_VOLTAR, "titulo": t("botao_voltar", idioma_atual)}]
+        enviar_lista(de, TEXTO_SELETOR_IDIOMA, t("idioma_seccao", idioma_atual), opcoes, idioma_atual,
+                     botao=t("menu_botao", idioma_atual))
+        return
     enviar_botoes(de, TEXTO_SELETOR_IDIOMA, BOTOES_IDIOMA, "pt")  # idioma aqui só afeta tx(), que já são strings simples
 
 
@@ -3221,7 +3511,8 @@ def _wrap_limpar_escolhas(sessao):
                   "wrap_acabamento", "wrap_acabamento_id",
                   "_wrap_aguardando_veiculo_texto", "_wrap_aguardando_ano_texto",
                   "_wrap_aguardando_cor_texto", "_wrap_etapa_resumo",
-                  "rapido_interesse", "_rapido_etapa_resumo"):
+                  "rapido_interesse", "_rapido_etapa_resumo",
+                  "_pagina_lista", "_pagina_chave"):
         sessao.pop(campo, None)
     sessao.pop("aguardando_fotos", None)
     for grupo in (GRUPO_WRAP_VEICULO, GRUPO_WRAP_TIPO, GRUPO_WRAP_COR, GRUPO_ACABAMENTO):
@@ -3316,7 +3607,12 @@ def iniciar_escolha_categoria(de, idioma, sessao):
     sessao.pop("preco_sob_analise", None)
     sessao["fluxo"] = "escolher_categoria"
     guardar_sessao(de, sessao)
-    enviar_botoes(de, t("categoria_pergunta", idioma), CATEGORIAS_MARCAR, idioma, rodape=t("rodape_padrao", idioma))
+    # Preço mínimo de cada categoria, lido das tabelas centrais (ver
+    # preco_minimo_categoria_centimos). Com Voltar + Cancelar já são 5
+    # opções, por isso isto vai como lista.
+    enviar_botoes(de, t("categoria_pergunta", idioma), opcoes_categorias_com_precos(idioma), idioma,
+                  rodape=t("rodape_padrao", idioma), com_voltar=True, com_cancelar=True,
+                  titulo_seccao=t("categoria_seccao", idioma))
 
 
 def mostrar_carrinho(de, idioma, sessao):
@@ -3335,7 +3631,9 @@ def mostrar_carrinho(de, idioma, sessao):
             {"id": "carrinho_continuar", "titulo": t("botao_continuar", idioma)},
             {"id": "carrinho_alterar", "titulo": t("carrinho_botao_alterar", idioma)},
             {"id": "carrinho_esvaziar", "titulo": t("carrinho_botao_esvaziar", idioma)},
-        ], idioma, rodape=t("rodape_wrap", idioma))
+            {"id": ID_VOLTAR_CARRINHO, "titulo": t("botao_voltar", idioma)},
+        ], idioma, rodape=t("rodape_wrap", idioma),
+            titulo_seccao=t("carrinho_seccao", idioma), botao_lista=t("menu_botao", idioma))
         return
 
     if not sessao.get("carrinho"):
@@ -3378,11 +3676,14 @@ def mostrar_carrinho(de, idioma, sessao):
     chave_total = "carrinho_total_estimado" if estimado else "carrinho_total"
     linhas.append(t(chave_total, idioma, total=formatar_centimos(total_centimos, idioma)))
 
+    # ⬅️ Voltar aqui regressa EXATAMENTE ao passo onde o cliente estava
+    # antes de abrir o carrinho (ver voltar_um_passo/reenviar_passo_atual).
     enviar_botoes(de, "\n".join(linhas), [
         {"id": "carrinho_continuar", "titulo": t("botao_continuar", idioma)},
         {"id": "carrinho_alterar", "titulo": t("carrinho_botao_alterar", idioma)},
         {"id": "carrinho_esvaziar", "titulo": t("carrinho_botao_esvaziar", idioma)},
-    ], idioma)
+        {"id": ID_VOLTAR_CARRINHO, "titulo": t("botao_voltar", idioma)},
+    ], idioma, titulo_seccao=t("carrinho_seccao", idioma), botao_lista=t("menu_botao", idioma))
 
 
 def linhas_detalhe_marcacao(agendamento, idioma):
@@ -3430,7 +3731,8 @@ def mostrar_marcacao_carrinho(de, idioma, agendamento):
     copiada de volta para o carrinho da sessão — seria a forma mais fácil de
     a duplicar; este ecrã lê sempre diretamente da base de dados."""
     enviar_botoes(de, "\n".join(linhas_detalhe_marcacao(agendamento, idioma)),
-                  botoes_marcacao_carrinho(agendamento, idioma), idioma)
+                  botoes_marcacao_carrinho(agendamento, idioma), idioma, com_voltar=True,
+                  titulo_seccao=t("carrinho_seccao", idioma))
 
 
 def mostrar_lista_marcacoes_carrinho(de, idioma, agendamentos):
@@ -3447,7 +3749,8 @@ def mostrar_lista_marcacoes_carrinho(de, idioma, agendamentos):
     opcoes.append({"id": ACAO_NOVA_MARCACAO, "titulo": t("botao_nova_marcacao", idioma)})
     opcoes.append({"id": ACAO_MENU, "titulo": t("botao_menu_principal", idioma)})
     enviar_lista(de, t("carrinho_marcacoes_pergunta", idioma, n=len(agendamentos)),
-                 t("carrinho_marcacoes_seccao", idioma), opcoes, idioma, botao=t("menu_botao", idioma))
+                 t("carrinho_marcacoes_seccao", idioma), opcoes, idioma, botao=t("menu_botao", idioma),
+                 com_voltar=True, com_cancelar=False)
 
 
 def abrir_marcacao_do_carrinho(de, idioma, id_agendamento):
@@ -3517,7 +3820,8 @@ def mostrar_pedido_pendente_carrinho(de, idioma, pedido, agendamentos=None):
     opcoes.append({"id": "carrinho_continuar", "titulo": t("botao_continuar", idioma)})
     opcoes.append({"id": ACAO_MENU, "titulo": t("botao_menu_principal", idioma)})
 
-    enviar_lista(de, "\n".join(linhas), t("mais_acoes_seccao", idioma), opcoes, idioma, botao=t("menu_botao", idioma))
+    enviar_lista(de, "\n".join(linhas), t("mais_acoes_seccao", idioma), opcoes, idioma,
+                 botao=t("menu_botao", idioma), com_voltar=True, com_cancelar=False)
 
 
 def mostrar_alterar_carrinho(de, idioma, sessao):
@@ -3542,7 +3846,7 @@ def mostrar_alterar_carrinho(de, idioma, sessao):
         descricao = f"{formatar_centimos(item['preco'], idioma)} · {acao}"
         opcoes.append({"id": f"carrinho_item_{item['id']}", "titulo": item["nome_traduzido"], "descricao": descricao})
     enviar_lista(de, t("carrinho_alterar_pergunta", idioma), t("carrinho_botao_ver", idioma), opcoes, idioma,
-                 botao=t("menu_botao", idioma))
+                 botao=t("menu_botao", idioma), com_voltar=True, com_cancelar=True)
 
 
 def _reabrir_passo_para_grupo(de, idioma, sessao, grupo):
@@ -3606,7 +3910,8 @@ def mostrar_gestao_marcacao(de, idioma, id_agendamento=None):
         {"id": f"reagendar_{ag['id']}", "titulo": t("botao_reagendar", idioma)},
         {"id": f"cancelar_ag_{ag['id']}", "titulo": t("botao_cancelar_marcacao", idioma)},
         {"id": "mp_marcar", "titulo": t("botao_nova_marcacao", idioma)},
-    ], idioma, rodape=t("rodape_padrao", idioma))
+    ], idioma, rodape=t("rodape_padrao", idioma), com_voltar=True,
+        titulo_seccao=t("gerir_seccao", idioma))
 
 
 def mostrar_mais_acoes(de, idioma, sessao):
@@ -4304,7 +4609,7 @@ abrirPedidoPeloHash();
 
 @app.route("/versao", methods=["GET"])
 def versao():
-    return jsonify(versao="v5.2-acoes-equipa", fluxos=["limpeza", "estetica", "wrap"],
+    return jsonify(versao="v5.3-voltar-precos", fluxos=["limpeza", "estetica", "wrap"],
                    idiomas=list(IDIOMAS_VALIDOS)), 200
 
 
@@ -4347,7 +4652,7 @@ def sessao_em_curso(sessao):
 
 def processar_comando_texto(de, idioma, sessao, comando):
     if comando in COMANDOS_IDIOMA:
-        enviar_seletor_idioma(de)
+        enviar_seletor_idioma(de, idioma)
         return True
     if comando == "menu":
         nova = reiniciar_sessao(de)
@@ -4465,10 +4770,19 @@ def voltar_um_passo(de, idioma, sessao):
             carrinho_remover_grupo(sessao, GRUPO_TAMANHO_VEICULO)
             guardar_sessao(de, sessao); passo_estetica_estado(de, idioma, sessao)
         elif "tipo_id" in sessao:
-            sessao.pop("tipo_id", None); sessao.pop("categoria", None)
-            iniciar_escolha_categoria(de, idioma, sessao)
+            # Do passo do tamanho/estado, VOLTAR regressa à escolha do
+            # SERVIÇO (não salta já para as categorias). Remove a linha do
+            # serviço base e, por dependência, o acréscimo de tamanho/estado
+            # — que é calculado a partir dela.
+            sessao.pop("tipo_id", None)
+            carrinho_remover_grupo(sessao, GRUPO_SERVICO_BASE)
+            carrinho_remover_grupo(sessao, GRUPO_TAMANHO_VEICULO)
+            guardar_sessao(de, sessao)
+            (passo_limpeza_tipo if categoria == "cat_limpeza" else passo_estetica_servico)(de, idioma, sessao)
         else:
-            nova = reiniciar_sessao(de); enviar_menu_principal(de, idioma, saudacao=False, sessao=nova)
+            # Do passo do SERVIÇO, VOLTAR regressa à escolha da categoria.
+            sessao.pop("categoria", None)
+            iniciar_escolha_categoria(de, idioma, sessao)
         return
 
     nova = reiniciar_sessao(de)
@@ -4633,9 +4947,15 @@ def receber_mensagem():
             enviar_menu_principal(de, idioma, saudacao=True, sessao=sessao)
             return jsonify(status="ok"), 200
 
-        # --- Botões -----------------------------------------------------
-        if tipo == "interactive" and msg["interactive"]["type"] == "button_reply":
-            id_botao = msg["interactive"]["button_reply"]["id"]
+        # --- Respostas interativas (botões E listas) ----------------------
+        # Uma só cadeia para os dois formatos: qualquer ID funciona tanto num
+        # botão como numa linha de lista. É isto que permite promover um ecrã
+        # de botões a lista (ver enviar_botoes) para lhe caber o ⬅️ Voltar,
+        # sem ter de duplicar handlers. Um ID de lista que não seja
+        # reconhecido aqui segue para a cadeia das listas, mais abaixo, que
+        # trata os passos dependentes da posição no fluxo.
+        if tipo == "interactive" and id_interativo is not None:
+            id_botao = id_interativo
 
             # --- Aliases dos IDs canónicos "acao_*" (ver constantes ACAO_*) -
             # Botões NOVOS usam sempre estes IDs; os antigos equivalentes
@@ -4654,6 +4974,12 @@ def receber_mensagem():
                 voltar_um_passo(de, idioma, sessao)
                 return jsonify(status="ok"), 200
 
+            if id_botao == ID_VOLTAR_CARRINHO:
+                # Voltar a partir do carrinho: regressa ao passo onde o
+                # cliente estava, sem desfazer nenhuma escolha.
+                reenviar_passo_atual(de, idioma, sessao)
+                return jsonify(status="ok"), 200
+
             if id_botao == ACAO_GERIR:
                 mostrar_gestao_marcacao(de, idioma)
                 return jsonify(status="ok"), 200
@@ -4664,11 +4990,20 @@ def receber_mensagem():
                 return jsonify(status="ok"), 200
 
             if id_botao == ACAO_IDIOMA:
-                enviar_seletor_idioma(de)
+                enviar_seletor_idioma(de, idioma)
                 return jsonify(status="ok"), 200
 
             if id_botao == ACAO_MAIS:
                 mostrar_mais_acoes(de, idioma, sessao)
+                return jsonify(status="ok"), 200
+
+            # --- Paginação visual de uma lista longa ----------------------
+            if id_botao.startswith((ID_PAG_SEGUINTE, ID_PAG_ANTERIOR)):
+                prefixo = ID_PAG_SEGUINTE if id_botao.startswith(ID_PAG_SEGUINTE) else ID_PAG_ANTERIOR
+                try:
+                    mudar_pagina_lista(de, idioma, sessao, int(id_botao[len(prefixo):]))
+                except ValueError:
+                    nao_entendi_com_opcoes(de, idioma, sessao)
                 return jsonify(status="ok"), 200
 
             if id_botao in LANG_IDS:  # "Alterar idioma" com sessão já ativa
@@ -4904,10 +5239,14 @@ def receber_mensagem():
                 pedido_cliente_cancelar_confirmar(de, idioma, int(id_botao.split("_")[-1]))
                 return jsonify(status="ok"), 200
 
-            nao_entendi_com_opcoes(de, idioma, sessao)
-            return jsonify(status="ok"), 200
+            # Um BOTÃO que chegue aqui é mesmo desconhecido. Uma LISTA segue
+            # para a cadeia seguinte, que trata os passos do fluxo (onde o
+            # significado do ID depende do ponto em que a sessão está).
+            if msg["interactive"]["type"] == "button_reply":
+                nao_entendi_com_opcoes(de, idioma, sessao)
+                return jsonify(status="ok"), 200
 
-        # --- Listas -------------------------------------------------------
+        # --- Listas: passos do fluxo (dependentes da posição na sessão) -----
         if tipo == "interactive" and msg["interactive"]["type"] == "list_reply":
             id_escolhido = msg["interactive"]["list_reply"]["id"]
 
@@ -4945,7 +5284,7 @@ def receber_mensagem():
                 return jsonify(status="ok"), 200
 
             if id_escolhido == ACAO_IDIOMA:
-                enviar_seletor_idioma(de)
+                enviar_seletor_idioma(de, idioma)
                 return jsonify(status="ok"), 200
 
             if id_escolhido == ACAO_MAIS:
@@ -4969,7 +5308,7 @@ def receber_mensagem():
                 reiniciar_sessao(de)
                 return jsonify(status="ok"), 200
             if id_escolhido == "mp_idioma":
-                enviar_seletor_idioma(de)
+                enviar_seletor_idioma(de, idioma)
                 return jsonify(status="ok"), 200
 
             if id_escolhido == "ver_carrinho":
@@ -5204,6 +5543,14 @@ def reenviar_passo_atual(de, idioma, sessao):
     """Reenvia o ecrã correspondente ao ponto exato onde a sessão ficou."""
     categoria = sessao.get("categoria")
     fluxo = sessao.get("fluxo")
+
+    # Ecrã de escolha da categoria: é aqui que o cliente estava se abriu o
+    # carrinho logo no início (ver ID_VOLTAR_CARRINHO).
+    if fluxo == "escolher_categoria" and not categoria:
+        enviar_lista(de, t("categoria_pergunta", idioma), t("categoria_seccao", idioma),
+                     opcoes_categorias_com_precos(idioma), idioma, botao=t("menu_botao", idioma),
+                     com_voltar=True, com_cancelar=True, rodape=t("rodape_padrao", idioma))
+        return
 
     if fluxo == "wrap" and sessao.get("wrap_modo") == MODO_RAPIDO:
         if sessao.get("_rapido_etapa_resumo"):
