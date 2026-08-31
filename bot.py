@@ -5043,17 +5043,30 @@ DASHBOARD_HTML = r"""
   }
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;}
-  header{padding:24px 28px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;}
-  header h1{margin:0;font-size:20px;letter-spacing:.3px;}
-  header h1 span{color:var(--gold);}
-  header .sub{color:var(--muted);font-size:13px;margin-top:4px;}
-  .wrap{padding:24px 28px;max-width:1200px;margin:0 auto;}
-  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:22px;}
-  .card{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:16px 18px;}
-  .card .n{font-size:26px;font-weight:700;color:var(--gold);}
-  .card .l{color:var(--muted);font-size:12.5px;margin-top:4px;}
+  /* Sem cabeçalho próprio: esta página é apresentada dentro de outra
+     aplicação, que já tem o seu. O conteúdo começa logo no calendário. */
+  .wrap{padding:12px 14px 22px;max-width:1680px;margin:0 auto;}
+
+  /* --- Topo: calendário (flexível) + coluna de reservas (fixa) ----------- */
+  .topo{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:14px;align-items:start;}
+  .topo > .lista{min-width:0;}
+
+  /* estatísticas compactas, no topo da coluna de reservas */
+  .stats{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--border);
+         border-bottom:1px solid var(--border);}
+  .card{background:var(--panel);padding:8px 10px;}
+  .card .n{font-size:17px;font-weight:700;color:var(--gold);line-height:1.2;}
+  .card .l{color:var(--muted);font-size:10.5px;margin-top:1px;line-height:1.25;}
+
+  /* coluna de reservas em cascata */
+  .col-reservas{display:flex;flex-direction:column;max-height:calc(100vh - 26px);}
+  .col-reservas h2{flex:0 0 auto;}
+  .cascata{flex:1 1 auto;overflow-y:auto;padding:10px 12px 14px;min-height:120px;}
+  .cascata .cal-agenda-dia{margin-bottom:10px;}
+  .cascata .cal-agenda-dia h4{position:sticky;top:-10px;background:var(--panel);padding:4px 0;margin:0 0 5px;z-index:1;}
+  .cal-nota{padding:26px 16px;text-align:center;color:var(--muted);font-size:12.5px;line-height:1.6;}
   .lista{background:var(--panel);border:1px solid var(--border);border-radius:12px;overflow:hidden;}
-  .lista h2{font-size:15px;margin:0;padding:16px 18px;border-bottom:1px solid var(--border);color:var(--muted);font-weight:600;letter-spacing:.3px;text-transform:uppercase;}
+  .lista h2{font-size:12.5px;margin:0;padding:9px 12px;border-bottom:1px solid var(--border);color:var(--muted);font-weight:600;letter-spacing:.4px;text-transform:uppercase;}
   table{width:100%;border-collapse:collapse;}
   th,td{text-align:left;padding:12px 18px;font-size:14px;border-bottom:1px solid var(--border);}
   th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.4px;}
@@ -5093,7 +5106,7 @@ DASHBOARD_HTML = r"""
   .orc-mini{background:transparent;border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:3px 8px;font-size:12px;cursor:pointer;}
 
   /* --- Calendário ------------------------------------------------------- */
-  .cal-barra{display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:12px 18px;border-bottom:1px solid var(--border);}
+  .cal-barra{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--border);}
   .cal-barra-filtros{gap:14px;}
   .cal-grupo{display:flex;gap:6px;flex-wrap:wrap;}
   .cal-btn{background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:8px;
@@ -5111,7 +5124,7 @@ DASHBOARD_HTML = r"""
              background:rgba(232,185,35,.12);color:var(--gold);border:1px solid rgba(232,185,35,.35);}
   .cal-erro{margin:10px 18px 0;padding:8px 12px;border-radius:8px;font-size:12.5px;
             background:rgba(224,82,82,.12);color:#e88;border:1px solid rgba(224,82,82,.35);}
-  .cal-conteudo{padding:14px 18px 18px;overflow-x:auto;}
+  .cal-conteudo{padding:10px 12px 12px;overflow-x:auto;overflow-y:auto;}
   .cal-carregando{color:var(--muted);font-size:12.5px;padding:6px 0;}
 
   /* A COR do evento vem do SERVIÇO (inline, ver cor_do_servico em bot.py).
@@ -5161,22 +5174,32 @@ DASHBOARD_HTML = r"""
   /* grelha semana/dia */
   .cal-grelha{display:grid;position:relative;min-width:680px;border:1px solid var(--border);border-radius:10px;overflow:hidden;}
   .cal-grelha.dia{min-width:320px;}
-  .cal-cab{background:var(--panel2);padding:8px 6px;text-align:center;font-size:12.5px;border-bottom:1px solid var(--border);
-           position:sticky;top:0;z-index:2;}
+  .cal-cab{background:var(--panel2);padding:5px 6px;text-align:center;font-size:12px;border-bottom:1px solid var(--border);
+           position:sticky;top:0;z-index:2;line-height:1.25;}
   .cal-cab.hoje{color:var(--gold);font-weight:700;}
   .cal-cab-hora{background:var(--panel2);border-bottom:1px solid var(--border);border-right:1px solid var(--border);}
   .cal-horas{border-right:1px solid var(--border);position:relative;}
-  .cal-hora{height:28px;font-size:11px;color:var(--muted);text-align:right;padding-right:6px;
-            border-bottom:1px dashed rgba(255,255,255,.05);box-sizing:border-box;}
+  /* --faixa é recalculada em JavaScript para a semana inteira caber no ecrã
+     sem scroll (ver calAjustarAlturaFaixa). O 28px é só o valor de arranque. */
+  .cal-hora{height:var(--faixa,28px);font-size:10.5px;color:var(--muted);text-align:right;padding-right:6px;
+            border-bottom:1px dashed rgba(255,255,255,.05);box-sizing:border-box;
+            overflow:hidden;line-height:1.1;}
   .cal-coluna{position:relative;border-right:1px solid var(--border);}
   .cal-coluna:last-child{border-right:none;}
-  .cal-faixa{height:28px;border-bottom:1px dashed rgba(255,255,255,.05);box-sizing:border-box;}
+  .cal-faixa{height:var(--faixa,28px);border-bottom:1px dashed rgba(255,255,255,.05);box-sizing:border-box;}
   .cal-faixa.hora-cheia{border-bottom-color:rgba(255,255,255,.12);}
   .cal-evento{position:absolute;border-radius:6px;padding:3px 6px;font-size:11.5px;line-height:1.28;overflow:hidden;
               cursor:pointer;box-sizing:border-box;color:var(--text);}
   .cal-evento:hover{filter:brightness(1.25);}
   .cal-evento .ev-t{font-weight:700;}
   .cal-evento .ev-s{color:var(--muted);}
+  /* com a grelha comprimida o texto encurta com reticências — nunca fica
+     cortado a meio de uma palavra nem transborda o cartão */
+  .cal-evento .ev-t,.cal-evento .ev-s,.cal-evento .ev-disp{
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .cal-evento.compacto{padding:1px 5px;line-height:1.18;}
+  .cal-evento.compacto .ev-t{font-size:10px;}
+  .cal-agenda-ev .ev-t,.cal-agenda-ev .ev-s,.cal-agenda-ev .ev-disp{white-space:normal;}
   .cal-dia-inteiro{margin:0 0 6px;}
   /* --- Indicador da hora atual ------------------------------------------
      Linha FINA a toda a largura da coluna do dia de hoje, com uma etiqueta
@@ -5228,8 +5251,8 @@ DASHBOARD_HTML = r"""
                    border-radius:7px;padding:5px 9px;font-size:11.5px;white-space:nowrap;}
   .pv-acoes button:hover{border-color:var(--gold);}
   .pv-acoes button.perigo{background:#3a1a1a;color:#f2a3a3;border-color:#5a2a2a;}
-  .cal-legenda-servicos{display:flex;gap:10px;flex-wrap:wrap;font-size:11.5px;color:var(--muted);
-                        padding:0 18px 12px;}
+  .cal-legenda-servicos{display:flex;gap:9px;flex-wrap:wrap;font-size:11px;color:var(--muted);
+                        padding:7px 12px;border-bottom:1px solid var(--border);}
   /* diálogo de confirmação (cancelar / reagendar) */
   .dlg-fundo{display:none;position:fixed;inset:0;background:rgba(0,0,0,.62);z-index:90;
              align-items:center;justify-content:center;padding:16px;}
@@ -5306,32 +5329,70 @@ DASHBOARD_HTML = r"""
                   font-size:12.5px;font-weight:700;}
   .estado-chip{display:inline-block;padding:2px 9px;border-radius:20px;font-size:11.5px;font-weight:700;}
 
+  /* Abaixo de 1100px passa a uma coluna só: primeiro o calendário, logo a
+     seguir a coluna de reservas em cascata. */
+  @media (max-width: 1100px){
+    .topo{grid-template-columns:minmax(0,1fr);}
+    .col-reservas{max-height:none;}
+    .cascata{max-height:70vh;}
+    .stats{grid-template-columns:repeat(4,1fr);}
+  }
   @media (max-width: 720px){
+    .wrap{padding:10px 10px 20px;}
     .cal-periodo{margin-left:0;width:100%;}
     .cal-legenda{margin-left:0;}
-    .cal-conteudo{padding:12px;}
+    .cal-conteudo{padding:10px;}
+    .stats{grid-template-columns:1fr 1fr;}
     .painel{width:100%;}
   }
 </style>
 </head>
 <body>
-<header>
-  <div>
-    <h1><span>COVER</span>LAB — Painel de Agendamentos</h1>
-    <div class="sub">Marcações recebidas automaticamente via WhatsApp</div>
-  </div>
-  <a class="btn" href="javascript:location.reload()">🔄 Atualizar</a>
-</header>
-
 <div class="wrap">
-  <div class="stats">
-    <div class="card"><div class="n" id="st-total">0</div><div class="l">Total de agendamentos</div></div>
-    <div class="card"><div class="n" id="st-hoje">0</div><div class="l">Marcados hoje (por criação)</div></div>
-    <div class="card"><div class="n" id="st-clientes">0</div><div class="l">Clientes únicos</div></div>
-    <div class="card"><div class="n" id="st-receita">CHF 0</div><div class="l">Receita estimada (confirmados)</div></div>
+  <div class="topo">
+    <div class="lista">
+      <h2>📅 Calendário</h2>
+      <div class="cal-barra">
+        <div class="cal-grupo">
+          <button class="cal-btn" onclick="calHoje()">Hoje</button>
+          <button class="cal-btn" onclick="calNavegar(-1)" aria-label="Anterior">‹ Anterior</button>
+          <button class="cal-btn" onclick="calNavegar(1)" aria-label="Seguinte">Seguinte ›</button>
+        </div>
+        <div class="cal-grupo" id="cal-vistas">
+          <button class="cal-btn" data-vista="dia" onclick="calMudarVista('dia')">Dia</button>
+          <button class="cal-btn" data-vista="semana" onclick="calMudarVista('semana')">Semana</button>
+          <button class="cal-btn" data-vista="mes" onclick="calMudarVista('mes')">Mês</button>
+        </div>
+        <div class="cal-grupo">
+          <button class="cal-btn" onclick="calCarregar(true)">🔄 Atualizar</button>
+        </div>
+        <div class="cal-periodo" id="cal-periodo">—</div>
+      </div>
+
+      <div class="cal-barra cal-barra-filtros">
+        <div class="cal-grupo" id="cal-filtros"></div>
+        <div class="cal-legenda" id="cal-legenda"></div>
+      </div>
+      <div class="cal-legenda-servicos" id="cal-legenda-servicos"></div>
+
+      <div id="cal-aviso" class="cal-aviso" hidden></div>
+      <div id="cal-erro" class="cal-erro" hidden></div>
+      <div id="cal-conteudo" class="cal-conteudo"><div class="vazio">A carregar…</div></div>
+    </div>
+
+    <aside class="lista col-reservas">
+      <div class="stats">
+        <div class="card"><div class="n" id="st-total">0</div><div class="l">Agendamentos</div></div>
+        <div class="card"><div class="n" id="st-hoje">0</div><div class="l">Marcados hoje</div></div>
+        <div class="card"><div class="n" id="st-clientes">0</div><div class="l">Clientes únicos</div></div>
+        <div class="card"><div class="n" id="st-receita">CHF 0</div><div class="l">Receita estimada</div></div>
+      </div>
+      <h2>🧾 Reservas do período</h2>
+      <div id="cascata" class="cascata"><div class="vazio">A carregar…</div></div>
+    </aside>
   </div>
 
-  <div class="lista">
+  <div class="lista" style="margin-top:14px;">
     <h2>⚙️ Definições</h2>
     <div class="def-linha">
       <div class="def-texto">
@@ -5349,42 +5410,12 @@ DASHBOARD_HTML = r"""
     <div class="def-estado" id="def-estado">A carregar as definições…</div>
   </div>
 
-  <div class="lista" style="margin-top:22px;">
-    <h2>📅 Calendário</h2>
-    <div class="cal-barra">
-      <div class="cal-grupo">
-        <button class="cal-btn" onclick="calHoje()">Hoje</button>
-        <button class="cal-btn" onclick="calNavegar(-1)" aria-label="Anterior">‹ Anterior</button>
-        <button class="cal-btn" onclick="calNavegar(1)" aria-label="Seguinte">Seguinte ›</button>
-      </div>
-      <div class="cal-grupo" id="cal-vistas">
-        <button class="cal-btn" data-vista="dia" onclick="calMudarVista('dia')">Dia</button>
-        <button class="cal-btn" data-vista="semana" onclick="calMudarVista('semana')">Semana</button>
-        <button class="cal-btn" data-vista="mes" onclick="calMudarVista('mes')">Mês</button>
-      </div>
-      <div class="cal-grupo">
-        <button class="cal-btn" onclick="calCarregar(true)">🔄 Atualizar</button>
-      </div>
-      <div class="cal-periodo" id="cal-periodo">—</div>
-    </div>
-
-    <div class="cal-barra cal-barra-filtros">
-      <div class="cal-grupo" id="cal-filtros"></div>
-      <div class="cal-legenda" id="cal-legenda"></div>
-    </div>
-    <div class="cal-legenda-servicos" id="cal-legenda-servicos"></div>
-
-    <div id="cal-aviso" class="cal-aviso" hidden></div>
-    <div id="cal-erro" class="cal-erro" hidden></div>
-    <div id="cal-conteudo" class="cal-conteudo"><div class="vazio">A carregar…</div></div>
-  </div>
-
-  <div class="lista" style="margin-top:22px;">
+  <div class="lista" style="margin-top:14px;">
     <h2>Agendamentos</h2>
     <div id="conteudo"><div class="vazio">A carregar…</div></div>
   </div>
 
-  <div class="lista" style="margin-top:22px;">
+  <div class="lista" style="margin-top:14px;">
     <h2>Pedidos de orçamento (Wrap &amp; Proteção)</h2>
     <div id="conteudo-pedidos"><div class="vazio">A carregar…</div></div>
   </div>
@@ -5765,8 +5796,47 @@ function abrirLightbox(src){
 // Os valores da grelha vêm do servidor (CALENDARIO_HORA_INICIO/FIM/INTERVALO
 // em bot.py), com estes como reserva caso a API ainda não tenha respondido.
 let CAL_INICIO = 8, CAL_FIM = 19, CAL_PASSO = 30;
-const CAL_ALTURA_FAIXA = 28;                     // px por intervalo
+
+// ---------------------------------------------------------------------------
+// Altura de cada intervalo da grelha — JÁ NÃO É FIXA.
+// A semana inteira (08:00–19:00, de segunda a domingo) tem de caber no ecrã
+// sem obrigar a fazer scroll: a altura de cada faixa é calculada a partir do
+// espaço que sobra realmente abaixo da barra do calendário, e recalculada
+// sempre que a janela muda de tamanho ou se muda de vista.
+// ---------------------------------------------------------------------------
+const CAL_ALTURA_FAIXA_OMISSAO = 28;   // valor de arranque, antes de medir
+const CAL_ALTURA_FAIXA_MIN = 14;       // abaixo disto deixa de ser legível
+const CAL_ALTURA_FAIXA_MAX = 34;       // acima disto só ficava esticado
+let CAL_ALTURA_FAIXA = CAL_ALTURA_FAIXA_OMISSAO;
 const alturaPorMinuto = () => CAL_ALTURA_FAIXA / CAL_PASSO;
+const calNumeroDeFaixas = () => Math.round((CAL_FIM - CAL_INICIO) * 60 / CAL_PASSO);
+
+// Ajusta a altura das faixas ao espaço disponível. Devolve true quando a
+// grelha teve mesmo de ficar mais apertada do que o mínimo legível — nesse
+// caso (janela muito baixa) é a GRELHA que ganha scroll interno, nunca a
+// página inteira é que passa a ser preciso percorrer para ver a semana.
+function calAjustarAlturaFaixa(){
+  const cont = document.getElementById('cal-conteudo');
+  if(!cont){ return false; }
+  if(calVista === 'mes'){
+    CAL_ALTURA_FAIXA = CAL_ALTURA_FAIXA_OMISSAO;
+    cont.style.maxHeight = '';
+    document.documentElement.style.setProperty('--faixa', CAL_ALTURA_FAIXA + 'px');
+    return false;
+  }
+  const faixas = calNumeroDeFaixas();
+  const topo = cont.getBoundingClientRect().top;      // já em coordenadas do ecrã
+  const cabecalhoDias = 28;                           // linha "seg 31/08 · hoje"
+  const respiro = 24;                                 // padding do cartão + folga
+  const disponivel = window.innerHeight - topo - cabecalhoDias - respiro;
+  const alvo = Math.floor(disponivel / faixas);
+  const apertado = alvo < CAL_ALTURA_FAIXA_MIN;
+  CAL_ALTURA_FAIXA = Math.max(CAL_ALTURA_FAIXA_MIN, Math.min(CAL_ALTURA_FAIXA_MAX, alvo || CAL_ALTURA_FAIXA_OMISSAO));
+  document.documentElement.style.setProperty('--faixa', CAL_ALTURA_FAIXA + 'px');
+  // Só quando nem o mínimo cabe é que a grelha passa a ter scroll próprio.
+  cont.style.maxHeight = apertado ? Math.max(220, disponivel + cabecalhoDias) + 'px' : '';
+  return apertado;
+}
 
 // O ESTADO nunca é comunicado só pela cor (a cor identifica o SERVIÇO):
 // cada evento leva sempre o nome do estado em texto, em todas as vistas.
@@ -6115,15 +6185,36 @@ function calDesenhar(){
   const conteudo = document.getElementById('cal-conteudo');
   const visiveis = calEventosVisiveis();
   if(calVista === 'mes'){
+    calAjustarAlturaFaixa();
     conteudo.innerHTML = calHtmlMes(visiveis);
-  } else if(ecraPequeno()){
-    // telemóvel: agenda vertical legível, sem deslocação horizontal
-    conteudo.innerHTML = calHtmlAgenda(visiveis);
+  } else if(ecraPequeno() && calVista === 'semana'){
+    // No telemóvel a semana em grelha seria ilegível — e já não é preciso
+    // repeti-la aqui em lista, porque a coluna de reservas (que num ecrã
+    // estreito fica logo por baixo) mostra exatamente as mesmas marcações,
+    // em cascata. Evita-se assim ter a mesma lista duas vezes na página.
+    conteudo.style.maxHeight = '';
+    conteudo.innerHTML = '<div class="cal-nota">Semana em lista, na coluna de reservas aqui abaixo.<br>'
+                       + 'Toque em <strong>Dia</strong> para ver a grelha horária.</div>';
   } else {
+    calAjustarAlturaFaixa();
     conteudo.innerHTML = calHtmlGrelha(visiveis);
   }
+  desenharCascata(visiveis);
   calLigarEventos();
   calDesenharLinhaAgora();
+}
+
+// --- coluna de reservas (cartões em cascata), sempre presente --------------
+// Mesmos eventos, mesmos filtros e as mesmas regras visuais da grelha: cor do
+// serviço nas ativas, cartão vermelho com cadeado nas canceladas que
+// bloqueiam, cartão vermelho tracejado nas libertadas. O scroll é interno à
+// coluna — a página nunca cresce por causa dela.
+function desenharCascata(visiveis){
+  const alvo = document.getElementById('cascata');
+  if(!alvo) return;
+  const posicao = alvo.scrollTop;        // não perder o sítio ao redesenhar
+  alvo.innerHTML = calHtmlAgenda(visiveis || calEventosVisiveis());
+  alvo.scrollTop = posicao;
 }
 
 // --- vista semana / dia (grelha horária) -----------------------------------
@@ -6159,29 +6250,50 @@ function calDisporSobrepostos(eventos){
   return postos;
 }
 
-function calHtmlEvento(ev, estilo, classeExtra){
+// `altura` é a altura real do cartão em px na grelha (undefined na cascata,
+// onde a altura é livre). Com a grelha comprimida para a semana caber no
+// ecrã, um bloco de 45min pode ficar com poucos pixels: em vez de deixar o
+// texto transbordar ou ser cortado a meio, o cartão mostra menos linhas —
+// mas a HORA, o NOME e o SERVIÇO estão sempre lá, nem que seja tudo na
+// mesma linha.
+function calHtmlEvento(ev, estilo, classeExtra, altura){
   const info = infoEstado(ev.estado);
   const disp = classeDisponibilidade(ev);
-  // nos cartões em cascata (telemóvel) a altura é livre -> cabe a frase toda
+  // nos cartões em cascata a altura é livre -> cabe a frase toda
   const cascata = (classeExtra || '').indexOf('cal-agenda-ev') !== -1;
   const total = ev.total_centimos ? formatarCentimos(ev.total_centimos) : '';
-  // O nome do SERVIÇO fica sempre visível, mesmo num cartão cancelado.
-  const linha2 = [esc(ev.servico || ''), esc(ev.duracao || '')].filter(Boolean).join(' · ');
-  return '<div class="cal-evento ' + info.classe + ' ' + disp + ' ' + (classeExtra || '') + '" style="'
+  const hora = esc(ev.dia_inteiro ? 'Dia inteiro' : hhmmDeIso(ev.inicio));
+  const quem = esc(ev.primeiro_nome || ev.telefone || '');
+  const servico = esc(ev.servico || '');
+  const linha2 = [servico, esc(ev.duracao || '')].filter(Boolean).join(' · ');
+  const cadeado = disp === 'bloqueado' ? '🔒 ' : disp === 'livre' ? '🔓 ' : '';
+
+  const abre = '<div class="cal-evento ' + info.classe + ' ' + disp + ' ' + (classeExtra || '')
+       + (!cascata && altura !== undefined && altura < 34 ? ' compacto' : '') + '" style="'
        + estiloCorEvento(ev) + (estilo || '') + '"'
        + ' data-id="' + esc(ev.id) + '" tabindex="0" role="button"'
-       + ' title="' + esc((ev.servico || '') + ' · ' + info.nome
-                          + (disp ? ' · ' + textoDisponibilidade(ev).replace(/^\S+\s/, '') : '')) + '">'
-       + '<div class="ev-t">' + esc(ev.dia_inteiro ? 'Dia inteiro' : hhmmDeIso(ev.inicio))
-       + ' · ' + esc(ev.primeiro_nome || ev.telefone || '')
+       + ' title="' + esc(hhmmDeIso(ev.inicio) + ' · ' + (ev.nome || ev.telefone || '') + ' · '
+                          + (ev.servico || '') + ' · ' + (ev.duracao || '') + ' · ' + info.nome
+                          + (disp ? ' · ' + textoDisponibilidade(ev).replace(/^\S+\s/, '') : '')) + '">';
+
+  // muito baixo: uma linha só, com hora + nome + serviço
+  if(!cascata && altura !== undefined && altura < 34){
+    return abre + '<div class="ev-t">' + cadeado + hora + ' · ' + quem
+         + (servico ? ' · ' + servico : '') + '</div></div>';
+  }
+  // baixo: hora + nome (com estado) e o serviço
+  const cabeca = '<div class="ev-t">' + hora + ' · ' + quem
        + '<span class="ev-badge">' + esc(info.nome) + '</span></div>'
-       // O SERVIÇO vem sempre antes da linha de disponibilidade: num cartão
-       // baixo (45min/1h) é o que tem de sobrar, nunca pode ser cortado. Num
-       // cartão cancelado o total é omitido pela mesma razão — continua no
-       // painel de detalhes e na pré-visualização.
-       + '<div class="ev-s">' + linha2 + '</div>'
+       + '<div class="ev-s">' + (cadeado && altura !== undefined && altura < 52 ? cadeado : '') + linha2 + '</div>';
+  if(!cascata && altura !== undefined && altura < 52){
+    return abre + cabeca + '</div>';
+  }
+  // altura normal: o SERVIÇO vem sempre antes da linha de disponibilidade, e
+  // num cartão cancelado o total é omitido — continua no painel de detalhes
+  // e na pré-visualização.
+  return abre + cabeca
        + (disp ? '<div class="ev-disp">' + esc(cascata ? textoDisponibilidade(ev)
-                                                        : textoDisponibilidadeCurto(ev)) + '</div>' : '')
+                                                       : textoDisponibilidadeCurto(ev)) + '</div>' : '')
        + (total && !disp ? '<div class="ev-s">' + esc(total) + '</div>' : '')
        + '</div>';
 }
@@ -6228,7 +6340,8 @@ function calHtmlGrelha(eventos){
     const geometria = (ini, fim) => {
       const topo = Math.max(0, (ini - CAL_INICIO * 60)) * alturaPorMinuto();
       const alturaMax = faixas * CAL_ALTURA_FAIXA - topo;
-      const altura = Math.max(24, Math.min((fim - Math.max(ini, CAL_INICIO * 60)) * alturaPorMinuto(), alturaMax));
+      const altura = Math.max(Math.min(24, CAL_ALTURA_FAIXA),
+        Math.min((fim - Math.max(ini, CAL_INICIO * 60)) * alturaPorMinuto(), alturaMax));
       return {topo: topo, altura: altura};
     };
     let blocos = '';
@@ -6237,13 +6350,13 @@ function calHtmlGrelha(eventos){
       const largura = 100 / p.total;
       blocos += calHtmlEvento(p.ev,
         'top:' + g.topo.toFixed(1) + 'px;height:' + g.altura.toFixed(1) + 'px;left:calc(' + (largura * p.coluna).toFixed(3)
-        + '% + 2px);width:calc(' + largura.toFixed(3) + '% - 4px);');
+        + '% + 2px);width:calc(' + largura.toFixed(3) + '% - 4px);', '', g.altura);
     });
     libertados.forEach(ev => {
       const ini = minutosDeIso(ev.inicio);
       const g = geometria(ini, Math.max(ini + 15, minutosDeIso(ev.fim)));
       blocos += calHtmlEvento(ev, 'top:' + g.topo.toFixed(1) + 'px;height:' + g.altura.toFixed(1)
-        + 'px;right:2px;width:44%;z-index:4;');
+        + 'px;right:2px;width:44%;z-index:4;', '', g.altura);
     });
     colunas += '<div class="cal-coluna" data-dia="' + chave + '">' + celulas + blocos + '</div>';
   });
@@ -6354,7 +6467,7 @@ function htmlAgoraAgenda(){
   return '<div class="cal-agora-agenda">Agora · ' + esc(horaAgoraTexto()) + '</div>';
 }
 function limparLinhaAgora(){
-  document.querySelectorAll('#cal-conteudo .cal-agora').forEach(el => el.remove());
+  document.querySelectorAll('#cal-conteudo .cal-agora, #cascata .cal-agora').forEach(el => el.remove());
 }
 
 function calDesenharLinhaAgora(){
@@ -6377,23 +6490,21 @@ function calDesenharLinhaAgora(){
 // A cada minuto: reposiciona a linha (sem recarregar a página nem ir à rede)
 // e, no telemóvel, redesenha a agenda para o separador "Agora" acompanhar.
 function calTicAgora(){
-  if(ecraPequeno()){
-    // Redesenha a agenda só quando há mesmo um "Agora" em jogo: ou já está
-    // um separador no ecrã (que pode ter de sair), ou hoje está à vista e
-    // dentro do horário. Caso contrário não se mexe em nada.
-    const marcador = document.querySelector('#cal-conteudo .cal-agora-agenda');
-    const hojeAVista = agoraDentroDaGrelha()
-      && calEventosVisiveis().some(ev => ev.dia === ymd(new Date()));
-    if(marcador || hojeAVista) calDesenhar();
-    return;
-  }
-  calDesenharLinhaAgora();
+  calDesenharLinhaAgora();                 // grelha (não faz nada se não se aplica)
+  // A coluna de reservas leva o mesmo separador "Agora · HH:MM"; só se
+  // redesenha quando há mesmo um "Agora" em jogo — ou já lá está um
+  // separador (que pode ter de sair), ou hoje está à vista e dentro do
+  // horário. Caso contrário não se mexe em nada.
+  const marcador = document.querySelector('.cal-agora-agenda');
+  const hojeAVista = agoraDentroDaGrelha()
+    && calEventosVisiveis().some(ev => ev.dia === ymd(new Date()));
+  if(marcador || hojeAVista) desenharCascata();
 }
 setInterval(calTicAgora, 60000);
 
 // --- interação: hover (computador) e clique/toque ---------------------------
 function calLigarEventos(){
-  document.querySelectorAll('#cal-conteudo [data-id]').forEach(el => {
+  document.querySelectorAll('#cal-conteudo [data-id], #cascata [data-id]').forEach(el => {
     el.addEventListener('click', () => abrirPainelAgendamento(el.dataset.id));
     el.addEventListener('keydown', e => {
       if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); abrirPainelAgendamento(el.dataset.id); }
@@ -6495,7 +6606,8 @@ function posicionarPreview(elemento){
 document.addEventListener('click', e => {
   const caixa = document.getElementById('cal-preview');
   if(caixa.hidden) return;
-  if(!caixa.contains(e.target) && !e.target.closest('#cal-conteudo [data-id]')) esconderPreview();
+  if(!caixa.contains(e.target)
+     && !e.target.closest('#cal-conteudo [data-id], #cascata [data-id]')) esconderPreview();
 });
 document.addEventListener('scroll', esconderPreview, true);
 window.addEventListener('blur', esconderPreview);
@@ -6811,8 +6923,14 @@ calCarregar(true).then(abrirAgendamentoPeloHash);
 setInterval(carregar, 20000);
 setInterval(carregarPedidos, 20000);
 setInterval(() => calCarregar(false), 30000);
-// o layout muda entre grelha (computador/tablet) e agenda vertical (telemóvel)
-window.addEventListener('resize', () => calDesenhar());
+// Ao redimensionar, a altura das faixas é recalculada para a semana continuar
+// a caber no ecrã (e o layout muda entre grelha e coluna única). Com um
+// pequeno atraso, para não redesenhar a cada pixel arrastado.
+let calRedimensionar = null;
+window.addEventListener('resize', () => {
+  clearTimeout(calRedimensionar);
+  calRedimensionar = setTimeout(() => calDesenhar(), 120);
+});
 
 // Abre automaticamente o dossiê de um pedido quando se chega a esta página
 // por uma ligação #pedido-<id> (ver link_dossie_pedido, usado na notificação
@@ -6832,7 +6950,7 @@ abrirPedidoPeloHash();
 
 @app.route("/versao", methods=["GET"])
 def versao():
-    return jsonify(versao="v5.6-horarios-cancelados", fluxos=["limpeza", "estetica", "wrap"],
+    return jsonify(versao="v5.7-layout-calendario", fluxos=["limpeza", "estetica", "wrap"],
                    idiomas=list(IDIOMAS_VALIDOS)), 200
 
 
