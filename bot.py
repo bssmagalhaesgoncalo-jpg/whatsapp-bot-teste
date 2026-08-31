@@ -709,6 +709,15 @@ TEXTOS = {
     "categoria_seccao": {"pt": "Categorias", "de": "Kategorien", "en": "Categories"},
     "idioma_seccao": {"pt": "Idioma", "de": "Sprache", "en": "Language"},
 
+    # --- Marcação reagendada pela equipa: aviso ao cliente -------------------
+    "marcacao_reagendada_cliente": {
+        "pt": "📅 A sua marcação #{id} foi alterada.\n\nAntes: {antes}\nAgora: *{agora}*\n\n"
+              "Se este novo horário não lhe der jeito, é só dizer.",
+        "de": "📅 Ihre Buchung #{id} wurde geändert.\n\nVorher: {antes}\nJetzt: *{agora}*\n\n"
+              "Falls dieser neue Termin nicht passt, sagen Sie uns einfach Bescheid.",
+        "en": "📅 Your booking #{id} has been changed.\n\nBefore: {antes}\nNow: *{agora}*\n\n"
+              "If this new time doesn't suit you, just let us know."},
+
     # --- Marcação cancelada pela equipa: aviso ao cliente --------------------
     "marcacao_cancelada_equipa_cliente": {
         "pt": "❌ A sua marcação #{id} foi cancelada. Lamentamos o incómodo — estamos à disposição "
@@ -1238,6 +1247,20 @@ def obter_bd():
         "telefone TEXT PRIMARY KEY, "
         "ultima_mensagem_em TEXT NOT NULL)"
     )
+    # Histórico de reagendamentos feitos pelo painel. Tabela NOVA e à parte:
+    # a migração é automática e não destrutiva (CREATE TABLE IF NOT EXISTS),
+    # por isso bases de dados antigas continuam a funcionar tal e qual.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS agendamento_historico ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "agendamento_id INTEGER NOT NULL, "
+        "data_anterior TEXT, "
+        "hora_anterior TEXT, "
+        "data_nova TEXT, "
+        "hora_nova TEXT, "
+        "origem TEXT NOT NULL DEFAULT 'dashboard', "
+        "alterado_em TEXT NOT NULL)"
+    )
     return conn
 
 
@@ -1375,8 +1398,48 @@ def atualizar_estado_agendamento(id_agendamento, estado):
 CALENDARIO_HORA_INICIO = 8      # 08:00 — início da grelha horária
 CALENDARIO_HORA_FIM = 19        # 19:00 — fim da grelha horária
 CALENDARIO_INTERVALO_MIN = 30   # intervalos de 30 minutos
-CALENDARIO_DURACAO_OMISSAO_MIN = 60   # quando a duração não é interpretável
 DURACAO_DIA_INTEIRO_MIN = (CALENDARIO_HORA_FIM - CALENDARIO_HORA_INICIO) * 60
+
+# ---------------------------------------------------------------------------
+# Cor de cada SERVIÇO no calendário — mapa central, fácil de editar.
+# A chave é sempre o nome CANÓNICO em português (o que fica gravado na coluna
+# `servico`), nunca o texto traduzido nem uma cor gerada ao acaso: assim a cor
+# de um serviço é estável entre sessões, idiomas e atualizações da página.
+# A COR identifica o serviço; o ESTADO (confirmado/concluído/reagendado/
+# cancelado) é sempre comunicado à parte, por texto (ver ESTADO_CALENDARIO).
+# ---------------------------------------------------------------------------
+CORES_SERVICOS = {
+    "Interior": "#3878e8",              # azul
+    "Exterior": "#20a4b8",              # turquesa
+    "Interior + Exterior": "#6f5ae0",   # violeta-azulado
+    "Polimento": "#e8963c",             # laranja
+    "Proteção cerâmica": "#2ea05a",     # verde
+    "Polimento de faróis": "#d4c23a",   # amarelo-mostarda
+    "Wrap total": "#d1478f",            # magenta
+    "Wrap parcial": "#a45cc4",          # roxo
+}
+COR_SERVICO_OMISSAO = "#8b95a6"         # cinzento-azulado, para serviços desconhecidos
+
+
+def cor_do_servico(servico_pt):
+    """Cor estável de um serviço, a partir do nome canónico em português."""
+    return CORES_SERVICOS.get((servico_pt or "").strip(), COR_SERVICO_OMISSAO)
+
+
+def cores_servicos_legenda():
+    """Mapa nome -> cor para a legenda "Cores dos serviços" do painel,
+    incluindo a entrada de reserva para serviços fora do catálogo."""
+    return {**CORES_SERVICOS, "Outro serviço": COR_SERVICO_OMISSAO}
+
+
+# Estados de uma marcação tal como aparecem no calendário (texto sempre
+# visível, além da cor do serviço).
+ESTADO_CALENDARIO = {
+    "confirmado": "Confirmado",
+    "concluido": "Concluído",
+    "reagendado": "Reagendado",
+    "cancelado": "Cancelado",
+}
 
 
 def data_iso_de_texto(texto):
@@ -1432,8 +1495,10 @@ def duracao_para_minutos(texto):
 
 
 def evento_calendario(agendamento, pedido=None):
-    """Transforma uma marcação num evento de calendário (ou None, se a data
-    ou a hora não forem interpretáveis — nunca inventa um horário).
+    """Transforma uma marcação num evento de calendário, ou None quando a
+    data, a hora OU a duração não forem interpretáveis — o calendário nunca
+    inventa um horário nem uma duração. Quem chama conta estes casos e
+    mostra um aviso; a marcação continua visível na tabela normal.
 
     `pedido` é o pedido de orçamento associado (pedidos_orcamento.
     agendamento_id), quando existir: é dele que vêm veículo, ano, wrap,
@@ -1443,10 +1508,12 @@ def evento_calendario(agendamento, pedido=None):
     if not data_iso or not hora:
         return None
 
+    # recuperar_duracao() ainda recupera a duração de marcações antigas cujo
+    # serviço esteja no catálogo; se mesmo assim não der, o evento é rejeitado.
     duracao_texto = recuperar_duracao(agendamento.get("servico"), agendamento.get("duracao"))
     minutos, dia_inteiro = duracao_para_minutos(duracao_texto)
     if minutos is None:
-        minutos = CALENDARIO_DURACAO_OMISSAO_MIN
+        return None
 
     inicio = datetime.fromisoformat(f"{data_iso}T{hora}:00")
     if dia_inteiro:
@@ -1471,6 +1538,7 @@ def evento_calendario(agendamento, pedido=None):
         "hora_hhmm": hora,
         "duracao": duracao_texto,
         "preco": agendamento.get("preco"),
+        "cor": cor_do_servico(agendamento.get("servico")),
         "total_centimos": total_centimos_agendamento(agendamento),
         "carrinho": linhas_carrinho_agendamento(agendamento),
         "criado_em": agendamento.get("criado_em"),
@@ -2874,15 +2942,174 @@ def _responder_equipa(texto):
         enviar_texto(PROVIDER_WHATSAPP, texto)
 
 
+def idioma_do_cliente(telefone):
+    idioma = carregar_sessao(telefone).get("idioma")
+    return idioma if idioma in IDIOMAS_VALIDOS else "pt"
+
+
 def _avisar_cliente_marcacao_cancelada(agendamento):
+    """Avisa o cliente do cancelamento, no idioma guardado. Devolve True só
+    quando o aviso pôde MESMO seguir: fora da janela de 24h da Meta, e sem
+    template aprovado para este caso, a mensagem seria recusada — o painel
+    tem de saber disso para nunca dizer que o cliente foi notificado.
+    (A tentativa de envio é feita na mesma, para não alterar o comportamento
+    já existente do fluxo de WhatsApp.)"""
     telefone = agendamento["telefone"]
-    sessao_cliente = carregar_sessao(telefone)
-    idioma = sessao_cliente.get("idioma") if sessao_cliente.get("idioma") in IDIOMAS_VALIDOS else "pt"
-    enviar_botoes(telefone, t("marcacao_cancelada_equipa_cliente", idioma, id=agendamento["id"]), [
-        {"id": ACAO_NOVA_MARCACAO, "titulo": t("botao_nova_marcacao", idioma)},
-        {"id": ACAO_MENU, "titulo": t("botao_menu_principal", idioma)},
-        {"id": ACAO_HUMANO, "titulo": t("botao_falar_equipa", idioma)},
-    ], idioma)
+    idioma = idioma_do_cliente(telefone)
+    dentro_janela = dentro_da_janela_24h(telefone)
+    try:
+        enviar_botoes(telefone, t("marcacao_cancelada_equipa_cliente", idioma, id=agendamento["id"]), [
+            {"id": ACAO_NOVA_MARCACAO, "titulo": t("botao_nova_marcacao", idioma)},
+            {"id": ACAO_MENU, "titulo": t("botao_menu_principal", idioma)},
+            {"id": ACAO_HUMANO, "titulo": t("botao_falar_equipa", idioma)},
+        ], idioma)
+    except Exception:
+        return False
+    return dentro_janela
+
+
+def _avisar_cliente_marcacao_reagendada(agendamento, antes, agora):
+    """Mesma regra do cancelamento: devolve True só quando o aviso podia
+    mesmo seguir (dentro da janela de 24h) e o envio não falhou."""
+    telefone = agendamento["telefone"]
+    idioma = idioma_do_cliente(telefone)
+    dentro_janela = dentro_da_janela_24h(telefone)
+    try:
+        enviar_botoes(telefone, t("marcacao_reagendada_cliente", idioma, id=agendamento["id"],
+                                  antes=antes, agora=agora), [
+            {"id": ACAO_GERIR, "titulo": t("botao_gerir_marcacao", idioma)},
+            {"id": ACAO_MENU, "titulo": t("botao_menu_principal", idioma)},
+            {"id": ACAO_HUMANO, "titulo": t("botao_falar_equipa", idioma)},
+        ], idioma)
+    except Exception:
+        return False
+    return dentro_janela
+
+
+# ---------------------------------------------------------------------------
+# Cancelar / reagendar uma marcação — lógica CENTRAL, partilhada pelas ações
+# internas do WhatsApp e pelas rotas do painel. As duas únicas ações de
+# escrita permitidas no calendário (ver v5.5).
+# ---------------------------------------------------------------------------
+class EstadoInvalido(Exception):
+    """A marcação já não está no estado exigido (409 no painel)."""
+
+
+class HorarioOcupado(Exception):
+    """Já existe outra marcação confirmada nesse intervalo (409 no painel)."""
+
+
+def cancelar_agendamento(id_agendamento):
+    """Cancela uma marcação CONFIRMADA e tenta avisar o cliente. Devolve
+    (agendamento_atualizado, cliente_notificado). Levanta EstadoInvalido se
+    já estiver cancelada, concluída ou reagendada — nunca cancela duas vezes.
+
+    A mudança de estado corre numa transação: ou fica gravada, ou não muda
+    nada (a verificação do estado e a escrita ficam na mesma transação, para
+    dois pedidos simultâneos não cancelarem os dois)."""
+    with obter_bd() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        linha = conn.execute("SELECT estado FROM agendamentos WHERE id = ?", (id_agendamento,)).fetchone()
+        if not linha:
+            raise LookupError("Marcação não encontrada.")
+        if linha[0] != "confirmado":
+            raise EstadoInvalido(linha[0])
+        conn.execute("UPDATE agendamentos SET estado = 'cancelado' WHERE id = ?", (id_agendamento,))
+
+    agendamento = obter_agendamento(id_agendamento)
+    notificado = _avisar_cliente_marcacao_cancelada(agendamento)
+    return agendamento, notificado
+
+
+def _intervalo_agendamento(agendamento, data_iso=None, hora=None):
+    """(início, fim) em datetime de uma marcação, opcionalmente já com a
+    data/hora NOVAS — usa exatamente a mesma duração do calendário."""
+    dia = data_iso or data_iso_de_texto(agendamento.get("data"))
+    hhmm = hora or hora_hhmm_de_texto(agendamento.get("hora"))
+    if not dia or not hhmm:
+        return None, None
+    minutos, dia_inteiro = duracao_para_minutos(
+        recuperar_duracao(agendamento.get("servico"), agendamento.get("duracao")))
+    if minutos is None:
+        return None, None
+    inicio = datetime.fromisoformat(f"{dia}T{hhmm}:00")
+    if dia_inteiro:
+        inicio = inicio.replace(hour=CALENDARIO_HORA_INICIO, minute=0)
+    return inicio, inicio + timedelta(minutes=minutos)
+
+
+def conflitos_de_horario(id_agendamento, data_iso, hora):
+    """Marcações CONFIRMADAS que se sobrepõem ao novo intervalo (a própria
+    marcação é sempre ignorada). A sobreposição considera a duração dos dois
+    lados, não apenas a hora de início."""
+    alvo = obter_agendamento(id_agendamento)
+    if not alvo:
+        return []
+    novo_inicio, novo_fim = _intervalo_agendamento(alvo, data_iso, hora)
+    if not novo_inicio:
+        return []
+    conflitos = []
+    for outro in listar_agendamentos():
+        if outro["id"] == id_agendamento or outro["estado"] != "confirmado":
+            continue
+        if data_iso_de_texto(outro.get("data")) != data_iso:
+            continue
+        inicio, fim = _intervalo_agendamento(outro)
+        if inicio and novo_inicio < fim and inicio < novo_fim:
+            conflitos.append(outro)
+    return conflitos
+
+
+def reagendar_agendamento(id_agendamento, data_iso, hora, origem="dashboard"):
+    """Move uma marcação CONFIRMADA para uma nova data/hora, preservando
+    serviço, extras, duração, preço, carrinho, cliente e fotografias — só as
+    colunas `data` e `hora` mudam. Guarda o histórico e tenta avisar o
+    cliente. Devolve (agendamento_atualizado, cliente_notificado).
+
+    Levanta EstadoInvalido (marcação já não confirmada) ou HorarioOcupado
+    (sobreposição real com outra marcação confirmada)."""
+    alvo = obter_agendamento(id_agendamento)
+    if not alvo:
+        raise LookupError("Marcação não encontrada.")
+    if alvo["estado"] != "confirmado":
+        raise EstadoInvalido(alvo["estado"])
+    if conflitos_de_horario(id_agendamento, data_iso, hora):
+        raise HorarioOcupado(f"{data_iso} {hora}")
+
+    d = date.fromisoformat(data_iso)
+    dias = DIAS_SEMANA["pt"]
+    data_texto = f"{d.strftime('%d.%m.%Y')} ({dias[d.weekday()]})"
+    hora_texto = f"🕘 {hora}"
+    data_antiga, hora_antiga = alvo.get("data"), alvo.get("hora")
+
+    with obter_bd() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        linha = conn.execute("SELECT estado FROM agendamentos WHERE id = ?", (id_agendamento,)).fetchone()
+        if not linha or linha[0] != "confirmado":
+            raise EstadoInvalido(linha[0] if linha else "inexistente")
+        # a marcação continua ATIVA e confirmada, apenas na nova data/hora
+        conn.execute("UPDATE agendamentos SET data = ?, hora = ? WHERE id = ?",
+                     (data_texto, hora_texto, id_agendamento))
+        conn.execute(
+            "INSERT INTO agendamento_historico (agendamento_id, data_anterior, hora_anterior, "
+            "data_nova, hora_nova, origem, alterado_em) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (id_agendamento, data_antiga, hora_antiga, data_texto, hora_texto, origem, _agora_iso()))
+
+    agendamento = obter_agendamento(id_agendamento)
+    notificado = _avisar_cliente_marcacao_reagendada(
+        agendamento, f"{data_antiga} {hora_antiga}".strip(), f"{data_texto} {hora_texto}")
+    return agendamento, notificado
+
+
+def historico_agendamento(id_agendamento):
+    campos = ["id", "agendamento_id", "data_anterior", "hora_anterior", "data_nova", "hora_nova",
+              "origem", "alterado_em"]
+    with obter_bd() as conn:
+        linhas = conn.execute(
+            "SELECT id, agendamento_id, data_anterior, hora_anterior, data_nova, hora_nova, origem, "
+            "alterado_em FROM agendamento_historico WHERE agendamento_id = ? ORDER BY id ASC",
+            (id_agendamento,)).fetchall()
+    return [dict(zip(campos, l)) for l in linhas]
 
 
 def processar_acao_equipa_marcacao(de, id_botao):
@@ -2963,13 +3190,16 @@ def processar_acao_equipa_marcacao(de, id_botao):
         return True
 
     if acao == "cancelar_sim":
-        if ag["estado"] != "confirmado":
+        # Mesma lógica central usada pelo painel (ver cancelar_agendamento).
+        try:
+            _, notificado = cancelar_agendamento(id_agendamento)
+        except (EstadoInvalido, LookupError):
             _responder_equipa(f"ℹ️ A marcação #{id_agendamento} já não está confirmada "
-                              f"(estado atual: {ag['estado']}).")
+                              f"(estado atual: {obter_agendamento(id_agendamento)['estado']}).")
             return True
-        atualizar_estado_agendamento(id_agendamento, "cancelado")
-        _avisar_cliente_marcacao_cancelada(ag)
-        _responder_equipa(f"❌ Marcação {resumo} cancelada — cliente avisado.")
+        _responder_equipa(f"❌ Marcação {resumo} cancelada — "
+                          + ("cliente avisado." if notificado
+                             else "NÃO foi possível avisar o cliente automaticamente."))
         return True
 
     if acao == "concluir":
@@ -4375,7 +4605,78 @@ def api_calendario():
         fim=fim,
         grelha={"hora_inicio": CALENDARIO_HORA_INICIO, "hora_fim": CALENDARIO_HORA_FIM,
                 "intervalo_min": CALENDARIO_INTERVALO_MIN},
+        cores_servicos=cores_servicos_legenda(),
+        cor_omissao=COR_SERVICO_OMISSAO,
+        estados=ESTADO_CALENDARIO,
     ), 200
+
+
+# ---------------------------------------------------------------------------
+# Ações de escrita do calendário — só CANCELAR e REAGENDAR (ver v5.5).
+# Ambas protegidas pela autenticação do painel e revalidadas no servidor: o
+# frontend nunca é fonte de verdade para o estado nem para o horário.
+# ---------------------------------------------------------------------------
+def _resposta_evento(id_agendamento, notificado, extra=None):
+    ag = obter_agendamento(id_agendamento)
+    pedido = pedidos_por_agendamento().get(id_agendamento)
+    corpo = {
+        "ok": True,
+        "cliente_notificado": bool(notificado),
+        "agendamento": ag,
+        "evento": evento_calendario(ag, pedido) if ag else None,
+        "historico": historico_agendamento(id_agendamento),
+    }
+    if extra:
+        corpo.update(extra)
+    return jsonify(corpo), 200
+
+
+@app.route("/api/agendamentos/<int:id_agendamento>/cancelar", methods=["POST"])
+@requer_autenticacao
+def api_agendamento_cancelar(id_agendamento):
+    """Cancela uma marcação a partir do painel. Só aceita marcações ainda
+    CONFIRMADAS — um segundo pedido devolve 409, nunca cancela duas vezes."""
+    try:
+        _, notificado = cancelar_agendamento(id_agendamento)
+    except LookupError:
+        return jsonify(erro="Marcação não encontrada."), 404
+    except EstadoInvalido as e:
+        return jsonify(erro=f"Esta marcação já não está confirmada (estado atual: {e}).",
+                       estado=str(e)), 409
+    return _resposta_evento(id_agendamento, notificado)
+
+
+@app.route("/api/agendamentos/<int:id_agendamento>/reagendar", methods=["POST"])
+@requer_autenticacao
+def api_agendamento_reagendar(id_agendamento):
+    """Move uma marcação confirmada para outra data/hora. A data e a hora são
+    sempre revalidadas aqui, e os conflitos são verificados contando com a
+    duração — o que vier do frontend nunca é aceite sem validação."""
+    dados = request.get_json(force=True, silent=True) or {}
+    data_iso = str(dados.get("data") or "").strip()
+    hora = str(dados.get("hora") or "").strip()
+
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", data_iso):
+        return jsonify(erro="Data inválida (esperado YYYY-MM-DD)."), 400
+    try:
+        date.fromisoformat(data_iso)
+    except ValueError:
+        return jsonify(erro="Data inexistente no calendário."), 400
+    if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", hora):
+        return jsonify(erro="Hora inválida (esperado HH:MM entre 00:00 e 23:59)."), 400
+
+    try:
+        _, notificado = reagendar_agendamento(id_agendamento, data_iso, hora, origem="dashboard")
+    except LookupError:
+        return jsonify(erro="Marcação não encontrada."), 404
+    except EstadoInvalido as e:
+        return jsonify(erro=f"Esta marcação já não está confirmada (estado atual: {e}).",
+                       estado=str(e)), 409
+    except HorarioOcupado:
+        ocupados = conflitos_de_horario(id_agendamento, data_iso, hora)
+        nomes = ", ".join(f"#{o['id']} {o.get('nome') or ''}".strip() for o in ocupados)
+        return jsonify(erro=f"Esse horário já está ocupado ({nomes}).", conflitos=nomes), 409
+    return _resposta_evento(id_agendamento, notificado)
 
 
 @app.route("/media/<path:nome_ficheiro>", methods=["GET"])
@@ -4479,12 +4780,13 @@ DASHBOARD_HTML = r"""
   .cal-conteudo{padding:14px 18px 18px;overflow-x:auto;}
   .cal-carregando{color:var(--muted);font-size:12.5px;padding:6px 0;}
 
-  /* estados */
-  .ev-confirmado{background:rgba(56,120,232,.20);border-left:3px solid #3878e8;}
-  .ev-concluido{background:rgba(46,160,90,.20);border-left:3px solid #2ea05a;}
-  .ev-reagendado{background:rgba(150,120,200,.20);border-left:3px solid #9678c8;}
-  .ev-cancelado{background:rgba(224,82,82,.18);border-left:3px solid #e05252;}
-  .ev-cancelado .ev-t,.ev-reagendado .ev-t{text-decoration:line-through;}
+  /* A COR do evento vem do SERVIÇO (inline, ver cor_do_servico em bot.py).
+     Estas classes tratam só do ESTADO — nunca da cor identificadora. */
+  .est-cancelado,.est-reagendado{opacity:.62;}
+  .est-cancelado .ev-t,.est-reagendado .ev-t{text-decoration:line-through;}
+  .ev-badge{display:inline-block;padding:0 4px;border-radius:4px;font-size:9.5px;font-weight:700;
+            background:rgba(255,255,255,.16);color:var(--text);margin-left:4px;vertical-align:middle;
+            letter-spacing:.2px;max-width:100%;overflow:hidden;text-overflow:ellipsis;}
 
   /* grelha semana/dia */
   .cal-grelha{display:grid;position:relative;min-width:680px;border:1px solid var(--border);border-radius:10px;overflow:hidden;}
@@ -4528,11 +4830,46 @@ DASHBOARD_HTML = r"""
   .cal-agenda-ev{border-radius:8px;padding:8px 10px;margin-bottom:6px;font-size:13px;cursor:pointer;}
 
   /* pré-visualização (hover, só em ecrãs com rato) */
-  .cal-preview{position:fixed;z-index:70;max-width:290px;background:var(--panel);border:1px solid var(--border);
+  /* pointer-events:auto -> os botões da pré-visualização são mesmo clicáveis */
+  .cal-preview{position:fixed;z-index:70;max-width:300px;background:var(--panel);border:1px solid var(--border);
                border-radius:10px;padding:11px 13px;font-size:12.5px;line-height:1.55;
-               box-shadow:0 10px 30px rgba(0,0,0,.55);pointer-events:none;}
+               box-shadow:0 10px 30px rgba(0,0,0,.55);pointer-events:auto;}
   .cal-preview img{width:100%;height:78px;object-fit:cover;border-radius:6px;margin-top:7px;}
   .cal-preview .pv-t{font-weight:700;margin-bottom:3px;}
+  .pv-acoes{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;padding-top:9px;border-top:1px solid var(--border);}
+  .pv-acoes button{cursor:pointer;border:1px solid var(--border);background:var(--panel2);color:var(--text);
+                   border-radius:7px;padding:5px 9px;font-size:11.5px;white-space:nowrap;}
+  .pv-acoes button:hover{border-color:var(--gold);}
+  .pv-acoes button.perigo{background:#3a1a1a;color:#f2a3a3;border-color:#5a2a2a;}
+  .cal-legenda-servicos{display:flex;gap:10px;flex-wrap:wrap;font-size:11.5px;color:var(--muted);
+                        padding:0 18px 12px;}
+  /* diálogo de confirmação (cancelar / reagendar) */
+  .dlg-fundo{display:none;position:fixed;inset:0;background:rgba(0,0,0,.62);z-index:90;
+             align-items:center;justify-content:center;padding:16px;}
+  .dlg-fundo.aberto{display:flex;}
+  .dlg{background:var(--panel);border:1px solid var(--border);border-radius:12px;max-width:440px;width:100%;
+       max-height:88vh;overflow-y:auto;}
+  .dlg-cab{display:flex;justify-content:space-between;align-items:center;padding:14px 18px;
+           border-bottom:1px solid var(--border);}
+  .dlg-cab h3{margin:0;font-size:15px;}
+  .dlg-corpo{padding:16px 18px;font-size:13.5px;line-height:1.7;}
+  .dlg-corpo .linha{margin-bottom:5px;}
+  .dlg-corpo label{display:block;color:var(--muted);font-size:12px;margin:10px 0 4px;}
+  .dlg-corpo input{background:var(--panel2);border:1px solid var(--border);color:var(--text);
+                   border-radius:7px;padding:7px 9px;font-size:14px;width:100%;}
+  .dlg-aviso{margin-top:12px;padding:8px 11px;border-radius:8px;font-size:12.5px;
+             background:rgba(232,185,35,.12);color:var(--gold);border:1px solid rgba(232,185,35,.35);}
+  .dlg-erro{margin-top:10px;color:#e88;font-size:12.5px;}
+  .dlg-acoes{display:flex;gap:8px;justify-content:flex-end;padding:0 18px 18px;flex-wrap:wrap;}
+  .dlg-acoes button{cursor:pointer;border:1px solid var(--border);border-radius:8px;padding:8px 14px;
+                    font-size:13px;background:var(--panel2);color:var(--text);}
+  .dlg-acoes button.principal{background:var(--gold);color:#1a1400;border-color:var(--gold);font-weight:700;}
+  .dlg-acoes button.perigo{background:#e05252;color:#fff;border-color:#e05252;font-weight:700;}
+  .toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);z-index:95;padding:11px 16px;
+         border-radius:10px;font-size:13px;max-width:92vw;box-shadow:0 8px 26px rgba(0,0,0,.5);}
+  .toast.ok{background:#173a26;color:#9fe0b8;border:1px solid #2ea05a;}
+  .toast.aviso{background:#3a3417;color:#ecd98a;border:1px solid #e8b923;}
+  .toast.erro{background:#3a1a1a;color:#f2a3a3;border:1px solid #e05252;}
 
   /* painel lateral (dossiê da marcação) */
   .painel-fundo{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:80;}
@@ -4601,6 +4938,7 @@ DASHBOARD_HTML = r"""
       <div class="cal-grupo" id="cal-filtros"></div>
       <div class="cal-legenda" id="cal-legenda"></div>
     </div>
+    <div class="cal-legenda-servicos" id="cal-legenda-servicos"></div>
 
     <div id="cal-aviso" class="cal-aviso" hidden></div>
     <div id="cal-erro" class="cal-erro" hidden></div>
@@ -4640,6 +4978,17 @@ DASHBOARD_HTML = r"""
 </aside>
 
 <div id="cal-preview" class="cal-preview" hidden></div>
+
+<div id="dlg-fundo" class="dlg-fundo" onclick="fecharDialogoSeExterior(event)">
+  <div class="dlg">
+    <div class="dlg-cab">
+      <h3 id="dlg-titulo">Confirmar</h3>
+      <span class="modal-fechar" onclick="fecharDialogo()">✕</span>
+    </div>
+    <div id="dlg-corpo" class="dlg-corpo"></div>
+    <div id="dlg-acoes" class="dlg-acoes"></div>
+  </div>
+</div>
 
 <div id="lightbox" class="lightbox" onclick="this.classList.remove('aberto')">
   <img id="lightbox-img" src="">
@@ -4979,12 +5328,27 @@ let CAL_INICIO = 8, CAL_FIM = 19, CAL_PASSO = 30;
 const CAL_ALTURA_FAIXA = 28;                     // px por intervalo
 const alturaPorMinuto = () => CAL_ALTURA_FAIXA / CAL_PASSO;
 
+// O ESTADO nunca é comunicado só pela cor (a cor identifica o SERVIÇO):
+// cada evento leva sempre o nome do estado em texto, em todas as vistas.
 const CAL_ESTADOS = [
-  {id: 'confirmado', nome: 'Confirmado', cor: '#3878e8', classe: 'ev-confirmado'},
-  {id: 'concluido',  nome: 'Concluído',  cor: '#2ea05a', classe: 'ev-concluido'},
-  {id: 'reagendado', nome: 'Reagendado', cor: '#9678c8', classe: 'ev-reagendado'},
-  {id: 'cancelado',  nome: 'Cancelado',  cor: '#e05252', classe: 'ev-cancelado'},
+  {id: 'confirmado', nome: 'Confirmado', cor: '#3878e8', classe: 'est-confirmado'},
+  {id: 'concluido',  nome: 'Concluído',  cor: '#2ea05a', classe: 'est-concluido'},
+  {id: 'reagendado', nome: 'Reagendado', cor: '#9678c8', classe: 'est-reagendado'},
+  {id: 'cancelado',  nome: 'Cancelado',  cor: '#e05252', classe: 'est-cancelado'},
 ];
+// Preenchido a partir da API (mapa central CORES_SERVICOS em bot.py) — nunca
+// gerado ao acaso, por isso a cor de um serviço é sempre a mesma.
+let CAL_CORES_SERVICOS = {};
+let CAL_COR_OMISSAO = '#8b95a6';
+function corDoEvento(ev){
+  return ev.cor || CAL_CORES_SERVICOS[ev.servico] || CAL_COR_OMISSAO;
+}
+// fundo translúcido + barra sólida: bom contraste no tema escuro, com o
+// texto (hora, cliente, serviço, preço) sempre legível por cima.
+function estiloCorEvento(ev){
+  const cor = corDoEvento(ev);
+  return 'background:' + cor + '33;border-left:3px solid ' + cor + ';';
+}
 const DIAS_CURTOS = ['seg', 'ter', 'qua', 'qui', 'sex', 'sáb', 'dom'];
 const MESES = ['janeiro','fevereiro','março','abril','maio','junho',
                'julho','agosto','setembro','outubro','novembro','dezembro'];
@@ -4994,7 +5358,6 @@ let calAncora = new Date();
 let calFiltros = {confirmado: true, concluido: true, reagendado: false, cancelado: false};
 let calEventos = [];                              // eventos do intervalo atual
 const calPorId = new Map();                       // cache id -> evento (dossiê)
-let calAFazerPedido = false;
 
 // "concluído" chega da BD com acento; a chave dos filtros/classes não tem.
 function chaveEstado(estado){
@@ -5112,11 +5475,31 @@ function calDesenharControlos(){
   }
 }
 
+function desenharLegendaServicos(){
+  const alvo = document.getElementById('cal-legenda-servicos');
+  const nomes = Object.keys(CAL_CORES_SERVICOS);
+  if(!nomes.length){ alvo.innerHTML = ''; return; }
+  alvo.innerHTML = '<strong style="color:var(--text);">Cores dos serviços:</strong> '
+    + nomes.map(nome => '<span><i class="cal-ponto" style="background:'
+        + esc(CAL_CORES_SERVICOS[nome]) + '"></i>' + esc(nome) + '</span>').join('');
+}
+
 // --- carregamento ----------------------------------------------------------
+// Uma navegação NUNCA é ignorada por já haver outro pedido a decorrer: cada
+// pedido leva um número de sequência e o anterior é abortado. Só a resposta
+// mais recente pode escrever no título, nos eventos, na grelha, no calPorId
+// e no painel — assim o refresh automático nunca substitui uma navegação
+// mais recente por dados antigos.
+let calSequencia = 0;
+let calPedidoEmCurso = null;
+
 async function calCarregar(manual){
-  calDesenharControlos();
-  if(calAFazerPedido) return;
-  calAFazerPedido = true;
+  calDesenharControlos();          // o título muda já, sem esperar pela rede
+  const meuNumero = ++calSequencia;
+  if(calPedidoEmCurso) calPedidoEmCurso.abort();
+  const controlador = new AbortController();
+  calPedidoEmCurso = controlador;
+
   const conteudo = document.getElementById('cal-conteudo');
   const erro = document.getElementById('cal-erro');
   if(manual || !calEventos.length){
@@ -5124,13 +5507,20 @@ async function calCarregar(manual){
   }
   const {inicio, fim} = calIntervalo();
   try {
-    const resp = await fetch('/api/calendario?inicio=' + inicio + '&fim=' + fim);
+    const resp = await fetch('/api/calendario?inicio=' + inicio + '&fim=' + fim,
+                             {signal: controlador.signal});
     if(!resp.ok) throw new Error('HTTP ' + resp.status);
     const dados = await resp.json();
+    if(meuNumero !== calSequencia) return;      // chegou tarde: já há navegação mais recente
     if(dados.grelha){
       CAL_INICIO = dados.grelha.hora_inicio;
       CAL_FIM = dados.grelha.hora_fim;
       CAL_PASSO = dados.grelha.intervalo_min;
+    }
+    if(dados.cores_servicos){
+      CAL_CORES_SERVICOS = dados.cores_servicos;
+      CAL_COR_OMISSAO = dados.cor_omissao || CAL_COR_OMISSAO;
+      desenharLegendaServicos();
     }
     // substitui sempre a lista inteira -> nunca duplica ao atualizar
     calEventos = dados.eventos || [];
@@ -5146,11 +5536,12 @@ async function calCarregar(manual){
     }
     calDesenhar();
   } catch(e){
+    if(e.name === 'AbortError' || meuNumero !== calSequencia) return;   // substituído: silêncio
     erro.textContent = '❌ Não foi possível carregar o calendário (' + e.message + '). Tente Atualizar.';
     erro.hidden = false;
     if(!calEventos.length) conteudo.innerHTML = '<div class="vazio">Sem dados para mostrar.</div>';
   } finally {
-    calAFazerPedido = false;
+    if(calPedidoEmCurso === controlador) calPedidoEmCurso = null;
   }
 }
 
@@ -5211,10 +5602,12 @@ function calHtmlEvento(ev, estilo, classeExtra){
   const info = infoEstado(ev.estado);
   const total = ev.total_centimos ? formatarCentimos(ev.total_centimos) : '';
   const linha2 = [esc(ev.servico || ''), esc(ev.duracao || '')].filter(Boolean).join(' · ');
-  return '<div class="cal-evento ' + info.classe + ' ' + (classeExtra || '') + '" style="' + estilo + '"'
+  return '<div class="cal-evento ' + info.classe + ' ' + (classeExtra || '') + '" style="'
+       + estiloCorEvento(ev) + (estilo || '') + '"'
        + ' data-id="' + esc(ev.id) + '" tabindex="0" role="button">'
        + '<div class="ev-t">' + esc(ev.dia_inteiro ? 'Dia inteiro' : hhmmDeIso(ev.inicio))
-       + ' · ' + esc(ev.primeiro_nome || ev.telefone || '') + '</div>'
+       + ' · ' + esc(ev.primeiro_nome || ev.telefone || '')
+       + '<span class="ev-badge">' + esc(info.nome) + '</span></div>'
        + '<div class="ev-s">' + linha2 + '</div>'
        + (total ? '<div class="ev-s">' + esc(total) + '</div>' : '')
        + '</div>';
@@ -5289,10 +5682,12 @@ function calHtmlMes(eventos){
     const visiveis = doDia.slice(0, 3);
     html += '<div class="cal-mes-cel' + (fora ? ' fora' : '') + (chave === hojeYmd ? ' hoje' : '') + '">'
           + '<div class="cal-mes-num">' + d.getDate() + '</div>'
-          + visiveis.map(ev => '<div class="cal-mes-ev ' + infoEstado(ev.estado).classe + '" data-id="'
-              + esc(ev.id) + '" tabindex="0" role="button">'
+          + visiveis.map(ev => '<div class="cal-mes-ev ' + infoEstado(ev.estado).classe + '" style="'
+              + estiloCorEvento(ev) + '" data-id="' + esc(ev.id) + '" tabindex="0" role="button" title="'
+              + esc((ev.servico || '') + ' · ' + infoEstado(ev.estado).nome) + '">'
               + esc(ev.dia_inteiro ? '' : hhmmDeIso(ev.inicio) + ' ')
-              + esc(ev.primeiro_nome || ev.telefone || '') + '</div>').join('')
+              + esc(ev.primeiro_nome || ev.telefone || '')
+              + '<span class="ev-badge">' + esc(infoEstado(ev.estado).nome) + '</span></div>').join('')
           + (doDia.length > 3 ? '<div class="cal-mes-mais">+' + (doDia.length - 3) + '</div>' : '')
           + '</div>';
   }
@@ -5337,48 +5732,101 @@ function calLigarEventos(){
       if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); abrirPainelAgendamento(el.dataset.id); }
     });
     if(temHover()){
-      el.addEventListener('mouseenter', e => mostrarPreview(el.dataset.id, e));
-      el.addEventListener('mousemove', moverPreview);
-      el.addEventListener('mouseleave', esconderPreview);
+      el.addEventListener('mouseenter', () => mostrarPreview(el.dataset.id, el));
+      el.addEventListener('mouseleave', fecharPreviewComAtraso);
     }
   });
 }
 
-function mostrarPreview(id, evento){
+// A pré-visualização é clicável (pointer-events:auto no CSS) e faz "ponte":
+// só fecha com um pequeno atraso DEPOIS de o cursor sair do evento E da
+// própria janela — caso contrário era impossível chegar aos botões.
+let previewTemporizador = null;
+let previewId = null;
+
+function cancelarFechoPreview(){
+  if(previewTemporizador){ clearTimeout(previewTemporizador); previewTemporizador = null; }
+}
+function fecharPreviewComAtraso(){
+  cancelarFechoPreview();
+  previewTemporizador = setTimeout(esconderPreview, 320);
+}
+function esconderPreview(){
+  cancelarFechoPreview();
+  previewId = null;
+  document.getElementById('cal-preview').hidden = true;
+}
+
+function mostrarPreview(id, elemento){
   const ev = calPorId.get(String(id));
   if(!ev) return;
+  cancelarFechoPreview();
+  previewId = String(id);
   const caixa = document.getElementById('cal-preview');
   const info = infoEstado(ev.estado);
+  const cor = corDoEvento(ev);
   const p = ev.pedido || {};
   const foto = (p.fotografias && p.fotografias.length)
     ? '<img src="/media/' + encodeURIComponent(p.fotografias[0].nome_ficheiro) + '" alt="">' : '';
-  const veiculo = p.veiculo ? '<div>🚗 ' + esc(p.veiculo) + (p.ano_veiculo ? ' (' + esc(p.ano_veiculo) + ')' : '') + '</div>' : '';
+  const veiculo = p.veiculo
+    ? '<div>🚗 ' + esc(p.veiculo) + (p.ano_veiculo ? ' (' + esc(p.ano_veiculo) + ')' : '') + '</div>' : '';
+  const podeAgir = chaveEstado(ev.estado) === 'confirmado';
   caixa.innerHTML =
-      '<div class="pv-t">' + esc(ev.nome || ev.telefone || '') + '</div>'
+      '<div class="pv-t"><i class="cal-ponto" style="background:' + esc(cor) + '"></i> '
+    + esc(ev.nome || ev.telefone || '') + '</div>'
     + '<div>' + esc(ev.servico || '-') + (ev.extra ? ' + ' + esc(ev.extra) : '') + '</div>'
     + '<div>📅 ' + esc(ev.data || '') + ' · ' + esc(ev.hora_hhmm || ev.hora || '') + '</div>'
     + '<div>⏱️ ' + esc(ev.duracao || '-') + '</div>'
     + '<div>💰 ' + esc(formatarCentimos(ev.total_centimos)) + '</div>'
     + '<div><span class="estado-chip" style="background:' + info.cor + '33;color:' + info.cor + '">'
-    + esc(info.nome) + '</span></div>' + veiculo + foto;
+    + esc(info.nome) + '</span></div>' + veiculo + foto
+    + '<div class="pv-acoes">'
+    + '<button data-acao="detalhes">📋 Ver detalhes</button>'
+    + (podeAgir ? '<button data-acao="reagendar">✏️ Alterar/Reagendar</button>'
+                + '<button class="perigo" data-acao="cancelar">❌ Cancelar marcação</button>' : '')
+    + '</div>';
+  // Os botões param a propagação para não dispararem o clique do evento.
+  caixa.querySelectorAll('.pv-acoes button').forEach(b => {
+    b.addEventListener('click', e => {
+      e.preventDefault(); e.stopPropagation();
+      const acao = b.dataset.acao;
+      esconderPreview();
+      if(acao === 'detalhes') abrirPainelAgendamento(id);
+      else if(acao === 'reagendar') abrirDialogoReagendar(id);
+      else if(acao === 'cancelar') abrirDialogoCancelar(id);
+    });
+  });
   caixa.hidden = false;
-  moverPreview(evento);
+  posicionarPreview(elemento);
 }
-function moverPreview(evento){
+
+// Posicionada JUNTO ao evento (não segue o cursor), para o rato conseguir
+// chegar lá sem a janela fugir.
+function posicionarPreview(elemento){
   const caixa = document.getElementById('cal-preview');
-  if(caixa.hidden) return;
-  const margem = 14;
-  const largura = caixa.offsetWidth || 280, altura = caixa.offsetHeight || 160;
-  let x = evento.clientX + margem, y = evento.clientY + margem;
-  if(x + largura > window.innerWidth - 8) x = evento.clientX - largura - margem;
-  if(y + altura > window.innerHeight - 8) y = Math.max(8, evento.clientY - altura - margem);
+  const r = elemento.getBoundingClientRect();
+  const margem = 10;
+  const largura = caixa.offsetWidth || 300, altura = caixa.offsetHeight || 200;
+  let x = r.right + margem, y = r.top;
+  if(x + largura > window.innerWidth - 8) x = Math.max(8, r.left - largura - margem);
+  if(y + altura > window.innerHeight - 8) y = Math.max(8, window.innerHeight - altura - 8);
   caixa.style.left = x + 'px';
   caixa.style.top = y + 'px';
 }
-function esconderPreview(){
-  document.getElementById('cal-preview').hidden = true;
-}
-// Rede de segurança: a pré-visualização nunca pode ficar presa no ecrã.
+
+(function ligarPonteHoverPreview(){
+  const caixa = document.getElementById('cal-preview');
+  caixa.addEventListener('mouseenter', cancelarFechoPreview);
+  caixa.addEventListener('mouseleave', fecharPreviewComAtraso);
+})();
+
+// Fecha com Escape ou com um clique fora (a rede de segurança do scroll
+// mantém-se: a janela nunca pode ficar presa no ecrã).
+document.addEventListener('click', e => {
+  const caixa = document.getElementById('cal-preview');
+  if(caixa.hidden) return;
+  if(!caixa.contains(e.target) && !e.target.closest('#cal-conteudo [data-id]')) esconderPreview();
+});
 document.addEventListener('scroll', esconderPreview, true);
 window.addEventListener('blur', esconderPreview);
 
@@ -5423,6 +5871,14 @@ async function abrirPainelAgendamento(id){
   html += '<div class="linha">📱 <a href="tel:+' + esc(tel) + '">+' + esc(tel) + '</a></div>';
   html += '<div class="painel-acoes"><a href="https://wa.me/' + esc(tel) + '" target="_blank" rel="noopener">'
         + '💬 Contactar no WhatsApp</a></div>';
+  // As MESMAS ações da pré-visualização, aqui sempre disponíveis — é assim
+  // que telemóvel e tablet lhes chegam, sem depender de hover.
+  if(chaveEstado(ev.estado) === 'confirmado'){
+    html += '<div class="pv-acoes" id="painel-acoes-marcacao">'
+          + '<button data-acao="reagendar">✏️ Alterar/Reagendar</button>'
+          + '<button class="perigo" data-acao="cancelar">❌ Cancelar marcação</button>'
+          + '</div>';
+  }
   html += '<h4>Marcação</h4>';
   html += '<div class="linha">📅 ' + esc(ev.data || '-') + '</div>';
   html += '<div class="linha">🕘 ' + esc(ev.hora_hhmm || ev.hora || '-') + '</div>';
@@ -5459,6 +5915,13 @@ async function abrirPainelAgendamento(id){
     html += '</div>';
   }
   corpo.innerHTML = html;
+  const acoes = document.getElementById('painel-acoes-marcacao');
+  if(acoes){
+    acoes.querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
+      if(b.dataset.acao === 'reagendar') abrirDialogoReagendar(ev.id);
+      else abrirDialogoCancelar(ev.id);
+    }));
+  }
 }
 
 function fecharPainel(){
@@ -5468,7 +5931,153 @@ function fecharPainel(){
   document.getElementById('painel-fundo').classList.remove('aberto');
   if(location.hash.indexOf('#agendamento-') === 0) history.replaceState(null, '', location.pathname);
 }
-document.addEventListener('keydown', e => { if(e.key === 'Escape'){ fecharPainel(); esconderPreview(); } });
+document.addEventListener('keydown', e => {
+  if(e.key === 'Escape'){ esconderPreview(); fecharDialogo(); fecharPainel(); }
+});
+
+// ===========================================================================
+// AÇÕES DO PAINEL — cancelar e reagendar (as duas únicas ações de escrita)
+// ===========================================================================
+// Nenhuma delas atua logo: abrem primeiro um diálogo de confirmação com os
+// dados da marcação. O servidor revalida sempre estado, data, hora e
+// conflitos (ver /api/agendamentos/<id>/cancelar e .../reagendar).
+function fecharDialogo(){
+  document.getElementById('dlg-fundo').classList.remove('aberto');
+}
+function fecharDialogoSeExterior(e){
+  if(e.target.id === 'dlg-fundo') fecharDialogo();
+}
+function abrirDialogo(titulo, corpoHtml, acoesHtml){
+  document.getElementById('dlg-titulo').textContent = titulo;
+  document.getElementById('dlg-corpo').innerHTML = corpoHtml;
+  document.getElementById('dlg-acoes').innerHTML = acoesHtml;
+  document.getElementById('dlg-fundo').classList.add('aberto');
+}
+function erroDialogo(msg){
+  const el = document.getElementById('dlg-erro-msg');
+  if(el) el.textContent = msg || '';
+}
+
+function mostrarToast(texto, tipo){
+  const antigo = document.querySelector('.toast');
+  if(antigo) antigo.remove();
+  const el = document.createElement('div');
+  el.className = 'toast ' + (tipo || 'ok');
+  el.textContent = texto;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 7000);
+}
+
+// Depois de cancelar/reagendar: atualiza calendário, tabela e painel sem
+// recarregar a página inteira.
+async function atualizarTudoApos(id, evento){
+  if(evento) calPorId.set(String(evento.id), evento);
+  await calCarregar(false);
+  carregar();
+  const painel = document.getElementById('painel-ag');
+  if(painel.classList.contains('aberto')) abrirPainelAgendamento(id);
+}
+
+// --- Cancelar --------------------------------------------------------------
+async function abrirDialogoCancelar(id){
+  const ev = await obterEvento(id);
+  if(!ev){ mostrarToast('Marcação não encontrada.', 'erro'); return; }
+  abrirDialogo('Cancelar marcação #' + esc(ev.id),
+    '<div class="linha">👤 ' + esc(ev.nome || ev.telefone || '') + '</div>'
+    + '<div class="linha">🔧 ' + esc(ev.servico || '-') + '</div>'
+    + '<div class="linha">📅 ' + esc(ev.data || '-') + '</div>'
+    + '<div class="linha">🕘 ' + esc(ev.hora_hhmm || ev.hora || '-') + '</div>'
+    + '<div class="linha">🆔 Marcação #' + esc(ev.id) + '</div>'
+    + '<div class="dlg-aviso">O horário ficará novamente disponível. '
+    + 'O cliente será notificado, se ainda for possível enviar-lhe mensagem.</div>'
+    + '<div class="dlg-erro" id="dlg-erro-msg"></div>',
+    '<button onclick="fecharDialogo()">Voltar</button>'
+    + '<button class="perigo" id="dlg-confirmar">Confirmar cancelamento</button>');
+  document.getElementById('dlg-confirmar').addEventListener('click', () => confirmarCancelamento(ev.id));
+}
+
+async function confirmarCancelamento(id){
+  const botao = document.getElementById('dlg-confirmar');
+  botao.disabled = true; botao.textContent = 'A cancelar…';
+  try {
+    const resp = await fetch('/api/agendamentos/' + encodeURIComponent(id) + '/cancelar', {method: 'POST'});
+    const dados = await resp.json().catch(() => ({}));
+    if(!resp.ok){
+      erroDialogo(dados.erro || ('Não foi possível cancelar (HTTP ' + resp.status + ').'));
+      botao.disabled = false; botao.textContent = 'Confirmar cancelamento';
+      return;
+    }
+    fecharDialogo();
+    const aviso = dados.cliente_notificado ? null
+      : 'Marcação cancelada, mas não foi possível notificar automaticamente o cliente.';
+    mostrarToast(aviso || 'Marcação cancelada e cliente notificado.', aviso ? 'aviso' : 'ok');
+    await atualizarTudoApos(id, dados.evento);
+  } catch(e){
+    erroDialogo('Falha de rede: ' + e.message);
+    botao.disabled = false; botao.textContent = 'Confirmar cancelamento';
+  }
+}
+
+// --- Alterar / Reagendar ---------------------------------------------------
+async function abrirDialogoReagendar(id){
+  const ev = await obterEvento(id);
+  if(!ev){ mostrarToast('Marcação não encontrada.', 'erro'); return; }
+  abrirDialogo('Alterar/Reagendar #' + esc(ev.id),
+    '<div class="linha">👤 ' + esc(ev.nome || ev.telefone || '') + '</div>'
+    + '<div class="linha">🔧 ' + esc(ev.servico || '-') + ' · ⏱️ ' + esc(ev.duracao || '-') + '</div>'
+    + '<div class="linha">📅 Atual: <strong>' + esc(ev.data || '-') + ' · '
+    + esc(ev.hora_hhmm || ev.hora || '-') + '</strong></div>'
+    + '<label for="dlg-data">Nova data</label>'
+    + '<input type="date" id="dlg-data" value="' + esc(ev.dia) + '">'
+    + '<label for="dlg-hora">Nova hora</label>'
+    + '<input type="time" id="dlg-hora" step="300" value="' + esc(ev.hora_hhmm || '') + '">'
+    + '<div class="dlg-aviso" id="dlg-resumo"></div>'
+    + '<div class="dlg-erro" id="dlg-erro-msg"></div>',
+    '<button onclick="fecharDialogo()">Voltar</button>'
+    + '<button class="principal" id="dlg-confirmar">Confirmar alteração</button>');
+
+  const campoData = document.getElementById('dlg-data');
+  const campoHora = document.getElementById('dlg-hora');
+  const resumo = document.getElementById('dlg-resumo');
+  const atualizarResumo = () => {
+    resumo.innerHTML = 'Antes: <strong>' + esc(ev.data || '-') + ' · '
+      + esc(ev.hora_hhmm || '-') + '</strong><br>Depois: <strong>'
+      + esc(campoData.value || '—') + ' · ' + esc(campoHora.value || '—') + '</strong><br>'
+      + esc(ev.nome || '') + ' · ' + esc(ev.servico || '') + ' · ' + esc(ev.duracao || '')
+      + '<br><em>A marcação só muda depois de confirmar.</em>';
+  };
+  campoData.addEventListener('input', atualizarResumo);
+  campoHora.addEventListener('input', atualizarResumo);
+  atualizarResumo();
+  document.getElementById('dlg-confirmar').addEventListener('click',
+    () => confirmarReagendamento(ev.id, campoData.value, campoHora.value));
+}
+
+async function confirmarReagendamento(id, data, hora){
+  const botao = document.getElementById('dlg-confirmar');
+  if(!data || !hora){ erroDialogo('Indique a nova data e a nova hora.'); return; }
+  botao.disabled = true; botao.textContent = 'A alterar…';
+  try {
+    const resp = await fetch('/api/agendamentos/' + encodeURIComponent(id) + '/reagendar', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({data: data, hora: hora}),
+    });
+    const dados = await resp.json().catch(() => ({}));
+    if(!resp.ok){
+      erroDialogo(dados.erro || ('Não foi possível alterar (HTTP ' + resp.status + ').'));
+      botao.disabled = false; botao.textContent = 'Confirmar alteração';
+      return;
+    }
+    fecharDialogo();
+    const aviso = dados.cliente_notificado ? null
+      : 'Marcação alterada, mas não foi possível notificar automaticamente o cliente.';
+    mostrarToast(aviso || 'Marcação alterada e cliente notificado.', aviso ? 'aviso' : 'ok');
+    await atualizarTudoApos(id, dados.evento);
+  } catch(e){
+    erroDialogo('Falha de rede: ' + e.message);
+    botao.disabled = false; botao.textContent = 'Confirmar alteração';
+  }
+}
 
 // Abertura direta por /dashboard#agendamento-ID
 function abrirAgendamentoPeloHash(){
@@ -5504,7 +6113,7 @@ abrirPedidoPeloHash();
 
 @app.route("/versao", methods=["GET"])
 def versao():
-    return jsonify(versao="v5.4-calendario-dashboard", fluxos=["limpeza", "estetica", "wrap"],
+    return jsonify(versao="v5.5-calendario-acoes-cores", fluxos=["limpeza", "estetica", "wrap"],
                    idiomas=list(IDIOMAS_VALIDOS)), 200
 
 
