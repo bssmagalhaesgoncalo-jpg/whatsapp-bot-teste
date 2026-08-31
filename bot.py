@@ -89,6 +89,9 @@ ACAO_MAIS = "acao_mais"  # "⚙️ Mais ações" — submenu quando uma lista es
 # aqui Voltar não desfaz nada — regressa exatamente ao ecrã onde o cliente
 # estava antes de o abrir (ver reenviar_passo_atual).
 ID_VOLTAR_CARRINHO = "carrinho_voltar"
+# "⬅️ Voltar" na descrição livre de "Outra alteração": leva o id do orçamento
+# embutido, para regressar à LISTA de aspetos desse mesmo orçamento.
+ID_ALT_VOLTAR = "orcamento_alt_voltar_"
 
 # Limites impostos pela API do WhatsApp em mensagens interativas. Aplicados
 # defensivamente em enviar_lista()/enviar_botoes(), para que nenhum texto
@@ -1357,6 +1360,161 @@ def total_centimos_agendamento(agendamento):
 def atualizar_estado_agendamento(id_agendamento, estado):
     with obter_bd() as conn:
         conn.execute("UPDATE agendamentos SET estado = ? WHERE id = ?", (estado, id_agendamento))
+
+
+# ---------------------------------------------------------------------------
+# Calendário do painel — conversão dos dados guardados em datas/horas reais
+# ---------------------------------------------------------------------------
+# A base de dados guarda os valores tal como foram apresentados ao cliente
+# ("02.09.2026 (qua)", "🕝 14:30", "1h30", "aproximadamente 1h", "1 dia"),
+# porque é isso que o WhatsApp mostra. Estas funções — puras e testáveis —
+# são o único sítio onde esses textos são convertidos para o calendário.
+# Registos antigos ou inválidos devolvem None em vez de rebentar: quem chama
+# conta-os e mostra um aviso discreto, mantendo a linha na tabela normal.
+# ---------------------------------------------------------------------------
+CALENDARIO_HORA_INICIO = 8      # 08:00 — início da grelha horária
+CALENDARIO_HORA_FIM = 19        # 19:00 — fim da grelha horária
+CALENDARIO_INTERVALO_MIN = 30   # intervalos de 30 minutos
+CALENDARIO_DURACAO_OMISSAO_MIN = 60   # quando a duração não é interpretável
+DURACAO_DIA_INTEIRO_MIN = (CALENDARIO_HORA_FIM - CALENDARIO_HORA_INICIO) * 60
+
+
+def data_iso_de_texto(texto):
+    """"02.09.2026 (qua)" -> "2026-09-02". Ignora o dia da semana e qualquer
+    texto extra. Devolve None se não houver uma data válida."""
+    achado = re.search(r"(\d{1,2})[./-](\d{1,2})[./-](\d{4})", str(texto or ""))
+    if not achado:
+        return None
+    dia, mes, ano = (int(x) for x in achado.groups())
+    try:
+        return date(ano, mes, dia).isoformat()
+    except ValueError:
+        return None
+
+
+def hora_hhmm_de_texto(texto):
+    """"🕝 14:30" -> "14:30". Ignora emojis e texto à volta. None se
+    não houver uma hora válida."""
+    achado = re.search(r"(\d{1,2})[:hH](\d{2})", str(texto or ""))
+    if not achado:
+        return None
+    horas, minutos = int(achado.group(1)), int(achado.group(2))
+    if not (0 <= horas <= 23 and 0 <= minutos <= 59):
+        return None
+    return f"{horas:02d}:{minutos:02d}"
+
+
+def duracao_para_minutos(texto):
+    """Converte a duração guardada em (minutos, dia_inteiro).
+
+    Aceita "45min", "1h", "1h30", "2h", "3h", "aproximadamente 1h", "1 dia"
+    e "1 Tag"/"1 day". "1 dia" devolve (duração da grelha, True) — é
+    apresentado como serviço de dia inteiro. Devolve (None, False) quando não
+    consegue interpretar nada."""
+    bruto = str(texto or "").strip().lower()
+    if not bruto:
+        return None, False
+    if re.search(r"\d+\s*(dia|dias|tag|tage|day|days)\b", bruto):
+        return DURACAO_DIA_INTEIRO_MIN, True
+
+    # "1h30" / "1h 30" / "2h" (as horas podem trazer minutos colados)
+    achado = re.search(r"(\d+)\s*[hH](?:\s*(\d{1,2}))?", bruto)
+    if achado:
+        minutos = int(achado.group(1)) * 60 + int(achado.group(2) or 0)
+        return (minutos, False) if minutos > 0 else (None, False)
+
+    # "45min" / "45 minutos"
+    achado = re.search(r"(\d+)\s*(min|minuto|minutos|minuten)\b", bruto)
+    if achado:
+        minutos = int(achado.group(1))
+        return (minutos, False) if minutos > 0 else (None, False)
+    return None, False
+
+
+def evento_calendario(agendamento, pedido=None):
+    """Transforma uma marcação num evento de calendário (ou None, se a data
+    ou a hora não forem interpretáveis — nunca inventa um horário).
+
+    `pedido` é o pedido de orçamento associado (pedidos_orcamento.
+    agendamento_id), quando existir: é dele que vêm veículo, ano, wrap,
+    acabamento e fotografias, sem duplicar nada na tabela de agendamentos."""
+    data_iso = data_iso_de_texto(agendamento.get("data"))
+    hora = hora_hhmm_de_texto(agendamento.get("hora"))
+    if not data_iso or not hora:
+        return None
+
+    duracao_texto = recuperar_duracao(agendamento.get("servico"), agendamento.get("duracao"))
+    minutos, dia_inteiro = duracao_para_minutos(duracao_texto)
+    if minutos is None:
+        minutos = CALENDARIO_DURACAO_OMISSAO_MIN
+
+    inicio = datetime.fromisoformat(f"{data_iso}T{hora}:00")
+    if dia_inteiro:
+        inicio = inicio.replace(hour=CALENDARIO_HORA_INICIO, minute=0)
+    fim = inicio + timedelta(minutes=minutos)
+
+    evento = {
+        "id": agendamento["id"],
+        "inicio": inicio.isoformat(timespec="minutes"),
+        "fim": fim.isoformat(timespec="minutes"),
+        "dia": data_iso,
+        "dia_inteiro": dia_inteiro,
+        "duracao_minutos": minutos,
+        "estado": agendamento.get("estado") or "confirmado",
+        "nome": agendamento.get("nome"),
+        "primeiro_nome": primeiro_nome(agendamento.get("nome")) or "",
+        "telefone": agendamento.get("telefone"),
+        "servico": agendamento.get("servico"),
+        "extra": agendamento.get("extra"),
+        "data": agendamento.get("data"),
+        "hora": agendamento.get("hora"),
+        "hora_hhmm": hora,
+        "duracao": duracao_texto,
+        "preco": agendamento.get("preco"),
+        "total_centimos": total_centimos_agendamento(agendamento),
+        "carrinho": linhas_carrinho_agendamento(agendamento),
+        "criado_em": agendamento.get("criado_em"),
+        "pedido": None,
+    }
+    if pedido:
+        evento["pedido"] = {
+            "id": pedido["id"],
+            "veiculo": pedido.get("veiculo"),
+            "ano_veiculo": pedido.get("ano_veiculo"),
+            "tipo_wrap": pedido.get("tipo_wrap"),
+            "cor_acabamento": pedido.get("cor_acabamento"),
+            "estado": pedido.get("estado"),
+            "modo_pedido": pedido.get("modo_pedido"),
+            "fotografias": listar_fotografias(pedido["id"]),
+        }
+    return evento
+
+
+def pedidos_por_agendamento():
+    """Mapa agendamento_id -> pedido, para associar sem uma consulta por
+    marcação. Só entram pedidos que tenham mesmo agendamento_id preenchido."""
+    return {p["agendamento_id"]: p for p in listar_pedidos_orcamento() if p.get("agendamento_id")}
+
+
+def eventos_calendario(inicio_iso=None, fim_iso=None):
+    """Eventos do calendário no intervalo pedido (inclusive), mais a
+    contagem de marcações que não foi possível converter. O filtro é feito
+    pelo DIA já convertido, porque a coluna `data` guarda texto e não uma
+    data comparável em SQL."""
+    associados = pedidos_por_agendamento()
+    eventos, invalidos = [], 0
+    for ag in listar_agendamentos():
+        evento = evento_calendario(ag, associados.get(ag["id"]))
+        if not evento:
+            invalidos += 1
+            continue
+        if inicio_iso and evento["dia"] < inicio_iso:
+            continue
+        if fim_iso and evento["dia"] > fim_iso:
+            continue
+        eventos.append(evento)
+    eventos.sort(key=lambda e: (e["inicio"], e["id"]))
+    return eventos, invalidos
 
 
 # ---------------------------------------------------------------------------
@@ -3321,8 +3479,30 @@ def passo_wrap_veiculo(de, idioma, sessao=None):
                  rodape=t("rodape_wrap", idioma), sessao=sessao, com_rapido=True)
 
 
-def passo_wrap_veiculo_outro(de, idioma):
-    enviar_texto(de, t("wrap_veiculo_outro_pedir", idioma) + "\n\n" + t("rodape_wrap", idioma))
+def pergunta_texto_livre(de, idioma, corpo, sessao=None, id_voltar=None, rodape=None,
+                          titulo_seccao=None, opcoes_extra=None):
+    """Pergunta que espera TEXTO LIVRE, mas apresentada como mensagem
+    INTERATIVA: o cliente continua a poder escrever normalmente (o webhook
+    trata na mesma a mensagem de texto seguinte), e ganha sempre saídas
+    clicáveis — ⬅️ Voltar, 🛒 Carrinho (só quando há um processo/carrinho em
+    curso) e ❌ Cancelar — em vez de ficar preso sem nenhuma opção.
+
+    `id_voltar` permite um destino de Voltar próprio deste passo; por
+    omissão usa o ACAO_VOLTAR normal (ver voltar_um_passo, que já desfaz
+    exatamente o passo de texto livre em curso)."""
+    opcoes = list(opcoes_extra or [])
+    opcoes.append({"id": id_voltar or ACAO_VOLTAR, "titulo": t("botao_voltar", idioma)})
+    if sessao is not None:
+        opcoes.append({"id": "ver_carrinho", "titulo": t("carrinho_botao_ver", idioma)})
+    opcoes.append({"id": ID_CANCELAR, "titulo": t("botao_cancelar", idioma)})
+    enviar_botoes(de, corpo, opcoes, idioma, rodape=rodape,
+                  titulo_seccao=titulo_seccao or t("acoes_seccao", idioma),
+                  botao_lista=t("menu_botao", idioma))
+
+
+def passo_wrap_veiculo_outro(de, idioma, sessao=None):
+    pergunta_texto_livre(de, idioma, t("wrap_veiculo_outro_pedir", idioma), sessao=sessao,
+                         rodape=t("rodape_wrap", idioma), titulo_seccao=t("wrap_veiculo_seccao", idioma))
 
 
 def passo_wrap_ano(de, idioma, sessao=None):
@@ -3331,8 +3511,11 @@ def passo_wrap_ano(de, idioma, sessao=None):
                  sessao=sessao, com_rapido=True)
 
 
-def passo_wrap_ano_outro(de, idioma):
-    enviar_texto(de, t("wrap_ano_outro_pedir", idioma) + "\n\n" + t("rodape_wrap", idioma))
+def passo_wrap_ano_outro(de, idioma, sessao=None, corpo=None):
+    """`corpo` permite repetir a MESMA pergunta interativa com uma mensagem
+    de erro à frente, quando o ano escrito é inválido — nunca só texto."""
+    pergunta_texto_livre(de, idioma, corpo or t("wrap_ano_outro_pedir", idioma), sessao=sessao,
+                         rodape=t("rodape_wrap", idioma), titulo_seccao=t("wrap_ano_seccao", idioma))
 
 
 def passo_wrap_tipo(de, idioma, sessao=None):
@@ -3345,10 +3528,24 @@ def passo_wrap_tipo(de, idioma, sessao=None):
                  sessao=sessao, com_rapido=True)
 
 
+def preco_familia_cor_centimos(familia_id):
+    """Só duas famílias definem já um preço nesta lista, e ambos vêm da
+    tabela central WRAP_COR_PRECOS_CENTIMOS: "Criar a minha cor" (cor à
+    medida, cor_personalizada_livre) e "Transparente/PPF"
+    (cor_transparente_ppf, sem acréscimo -> "Incluído"). As restantes
+    devolvem None — o preço aparece depois, na lista das cores."""
+    if familia_id == "cf_personalizada":
+        return WRAP_COR_PRECOS_CENTIMOS["cor_personalizada_livre"]
+    if familia_id == "cf_transparente":
+        return WRAP_COR_PRECOS_CENTIMOS["cor_transparente_ppf"]
+    return None
+
+
 def passo_wrap_cor_familia(de, idioma, sessao=None):
-    # 8 opções (7 famílias + "Criar a minha cor"): mesma lógica do passo 1 —
-    # só Voltar na lista, Cancelar continua disponível pelo rodapé.
-    enviar_lista(de, t("wrap_cor_familia_corpo", idioma), t("wrap_cor_familia_seccao", idioma), WRAP_FAMILIAS_COR,
+    # 8 opções (7 famílias + "Criar a minha cor"): com Carrinho/Voltar/
+    # Cancelar a lista pagina-se sozinha.
+    opcoes = opcoes_com_precos(WRAP_FAMILIAS_COR, idioma, preco_familia_cor_centimos, "acrescimo")
+    enviar_lista(de, t("wrap_cor_familia_corpo", idioma), t("wrap_cor_familia_seccao", idioma), opcoes,
                  idioma, botao=t("wrap_cor_familia_botao", idioma), com_voltar=True, com_cancelar=True,
                  rodape=t("rodape_wrap", idioma), sessao=sessao, com_rapido=True)
 
@@ -3362,8 +3559,9 @@ def passo_wrap_cor(de, idioma, sessao=None):
                  sessao=sessao, com_rapido=True)
 
 
-def passo_wrap_cor_personalizada(de, idioma):
-    enviar_texto(de, t("wrap_cor_personalizada_pedir", idioma) + "\n\n" + t("rodape_wrap", idioma))
+def passo_wrap_cor_personalizada(de, idioma, sessao=None):
+    pergunta_texto_livre(de, idioma, t("wrap_cor_personalizada_pedir", idioma), sessao=sessao,
+                         rodape=t("rodape_wrap", idioma), titulo_seccao=t("wrap_cor_familia_seccao", idioma))
 
 
 def passo_wrap_acabamento(de, idioma, sessao=None):
@@ -3384,6 +3582,24 @@ def passo_wrap_fotos_pergunta(de, idioma, sessao=None):
         botoes.append({"id": "ver_carrinho", "titulo": t("carrinho_botao_ver", idioma)})
     enviar_botoes(de, t("wrap_fotos_pergunta_corpo", idioma), botoes, idioma, rodape=t("rodape_wrap", idioma),
                   com_voltar=True, com_cancelar=True, titulo_seccao=t("wrap_fotos_seccao", idioma))
+
+
+def passo_wrap_fotos_a_receber(de, idioma, sessao=None, corpo=None):
+    """Ecrã enquanto se espera por fotografias. Nunca é só texto: o cliente
+    tem sempre ✅ Concluir pedido, ⬅️ Voltar, 🛒 Carrinho e ❌ Cancelar
+    clicáveis — e continua a poder simplesmente enviar as fotografias.
+
+    ⬅️ Voltar (ACAO_VOLTAR) deixa de aguardar fotografias e regressa à
+    pergunta "Deseja enviar fotografias?", preservando as que já chegaram e
+    sem criar outro pedido (ver voltar_um_passo)."""
+    opcoes = [{"id": "wrap_fotos_concluir", "titulo": t("wrap_fotos_concluir_botao", idioma)},
+              {"id": ACAO_VOLTAR, "titulo": t("botao_voltar", idioma)}]
+    if sessao is not None:
+        opcoes.append({"id": "ver_carrinho", "titulo": t("carrinho_botao_ver", idioma)})
+    opcoes.append({"id": ID_CANCELAR, "titulo": t("botao_cancelar", idioma)})
+    enviar_botoes(de, corpo or t("wrap_fotos_pedir", idioma), opcoes, idioma,
+                  rodape=t("rodape_wrap", idioma), titulo_seccao=t("wrap_fotos_seccao", idioma),
+                  botao_lista=t("menu_botao", idioma))
 
 
 def passo_wrap_resumo(de, idioma, sessao):
@@ -3875,8 +4091,11 @@ def _reabrir_passo_para_grupo(de, idioma, sessao, grupo):
     reenviar_passo_atual(de, idioma, sessao)
 
 
-def passo_orcamento_generico(de, idioma):
-    enviar_texto(de, t("orcamento_pedido", idioma) + "\n\n" + t("rodape_padrao", idioma))
+def passo_orcamento_generico(de, idioma, sessao=None):
+    # Voltar aqui regressa ao menu principal (ver voltar_um_passo: o fluxo
+    # "orcamento" não tem passo anterior dentro de si).
+    pergunta_texto_livre(de, idioma, t("orcamento_pedido", idioma), sessao=sessao,
+                         rodape=t("rodape_padrao", idioma), titulo_seccao=t("acoes_seccao", idioma))
 
 
 def mostrar_gestao_marcacao(de, idioma, id_agendamento=None):
@@ -4137,6 +4356,28 @@ def api_pedido_recusar(pedido_id):
     return jsonify(obter_pedido_orcamento(pedido_id)), 200
 
 
+@app.route("/api/calendario", methods=["GET"])
+@requer_autenticacao
+def api_calendario():
+    """Eventos do calendário no intervalo pedido (?inicio=&fim=, em
+    YYYY-MM-DD; ambos opcionais). Protegido pela mesma autenticação HTTP
+    Basic do resto do painel — nunca expõe dados de clientes publicamente."""
+    def data_pedida(nome):
+        valor = (request.args.get(nome) or "").strip()
+        return valor if re.fullmatch(r"\d{4}-\d{2}-\d{2}", valor) else None
+
+    inicio, fim = data_pedida("inicio"), data_pedida("fim")
+    eventos, invalidos = eventos_calendario(inicio, fim)
+    return jsonify(
+        eventos=eventos,
+        invalidos=invalidos,
+        inicio=inicio,
+        fim=fim,
+        grelha={"hora_inicio": CALENDARIO_HORA_INICIO, "hora_fim": CALENDARIO_HORA_FIM,
+                "intervalo_min": CALENDARIO_INTERVALO_MIN},
+    ), 200
+
+
 @app.route("/media/<path:nome_ficheiro>", methods=["GET"])
 @requer_autenticacao
 def media(nome_ficheiro):
@@ -4215,6 +4456,109 @@ DASHBOARD_HTML = r"""
   .btn-perigo{background:#3a1a1a;color:#f2a3a3;}
   .orc-erro{color:#e05252;font-size:12.5px;margin-top:6px;}
   .orc-mini{background:transparent;border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:3px 8px;font-size:12px;cursor:pointer;}
+
+  /* --- Calendário ------------------------------------------------------- */
+  .cal-barra{display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:12px 18px;border-bottom:1px solid var(--border);}
+  .cal-barra-filtros{gap:14px;}
+  .cal-grupo{display:flex;gap:6px;flex-wrap:wrap;}
+  .cal-btn{background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:8px;
+           padding:6px 11px;font-size:13px;cursor:pointer;white-space:nowrap;}
+  .cal-btn:hover{border-color:var(--gold);}
+  .cal-btn.ativo{background:var(--gold);color:#1a1400;border-color:var(--gold);font-weight:700;}
+  .cal-periodo{margin-left:auto;color:var(--text);font-size:14px;font-weight:600;}
+  .cal-filtro{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--muted);cursor:pointer;
+              border:1px solid var(--border);border-radius:20px;padding:4px 10px;}
+  .cal-filtro input{accent-color:var(--gold);margin:0;}
+  .cal-legenda{display:flex;gap:12px;flex-wrap:wrap;margin-left:auto;font-size:12px;color:var(--muted);}
+  .cal-legenda span{display:inline-flex;align-items:center;gap:5px;}
+  .cal-ponto{width:10px;height:10px;border-radius:3px;display:inline-block;}
+  .cal-aviso{margin:10px 18px 0;padding:8px 12px;border-radius:8px;font-size:12.5px;
+             background:rgba(232,185,35,.12);color:var(--gold);border:1px solid rgba(232,185,35,.35);}
+  .cal-erro{margin:10px 18px 0;padding:8px 12px;border-radius:8px;font-size:12.5px;
+            background:rgba(224,82,82,.12);color:#e88;border:1px solid rgba(224,82,82,.35);}
+  .cal-conteudo{padding:14px 18px 18px;overflow-x:auto;}
+  .cal-carregando{color:var(--muted);font-size:12.5px;padding:6px 0;}
+
+  /* estados */
+  .ev-confirmado{background:rgba(56,120,232,.20);border-left:3px solid #3878e8;}
+  .ev-concluido{background:rgba(46,160,90,.20);border-left:3px solid #2ea05a;}
+  .ev-reagendado{background:rgba(150,120,200,.20);border-left:3px solid #9678c8;}
+  .ev-cancelado{background:rgba(224,82,82,.18);border-left:3px solid #e05252;}
+  .ev-cancelado .ev-t,.ev-reagendado .ev-t{text-decoration:line-through;}
+
+  /* grelha semana/dia */
+  .cal-grelha{display:grid;position:relative;min-width:680px;border:1px solid var(--border);border-radius:10px;overflow:hidden;}
+  .cal-grelha.dia{min-width:320px;}
+  .cal-cab{background:var(--panel2);padding:8px 6px;text-align:center;font-size:12.5px;border-bottom:1px solid var(--border);
+           position:sticky;top:0;z-index:2;}
+  .cal-cab.hoje{color:var(--gold);font-weight:700;}
+  .cal-cab-hora{background:var(--panel2);border-bottom:1px solid var(--border);border-right:1px solid var(--border);}
+  .cal-horas{border-right:1px solid var(--border);position:relative;}
+  .cal-hora{height:28px;font-size:11px;color:var(--muted);text-align:right;padding-right:6px;
+            border-bottom:1px dashed rgba(255,255,255,.05);box-sizing:border-box;}
+  .cal-coluna{position:relative;border-right:1px solid var(--border);}
+  .cal-coluna:last-child{border-right:none;}
+  .cal-faixa{height:28px;border-bottom:1px dashed rgba(255,255,255,.05);box-sizing:border-box;}
+  .cal-faixa.hora-cheia{border-bottom-color:rgba(255,255,255,.12);}
+  .cal-evento{position:absolute;border-radius:6px;padding:3px 6px;font-size:11.5px;line-height:1.28;overflow:hidden;
+              cursor:pointer;box-sizing:border-box;color:var(--text);}
+  .cal-evento:hover{filter:brightness(1.25);}
+  .cal-evento .ev-t{font-weight:700;}
+  .cal-evento .ev-s{color:var(--muted);}
+  .cal-dia-inteiro{margin:0 0 6px;}
+  .cal-agora{position:absolute;left:0;right:0;height:0;border-top:2px solid #e05252;z-index:3;pointer-events:none;}
+  .cal-agora::before{content:'';position:absolute;left:-4px;top:-4px;width:7px;height:7px;border-radius:50%;background:#e05252;}
+
+  /* mês */
+  .cal-mes{display:grid;grid-template-columns:repeat(7,minmax(90px,1fr));gap:1px;background:var(--border);
+           border:1px solid var(--border);border-radius:10px;overflow:hidden;min-width:660px;}
+  .cal-mes-cab{background:var(--panel2);padding:7px 4px;text-align:center;font-size:12px;color:var(--muted);}
+  .cal-mes-cel{background:var(--panel);min-height:96px;padding:5px;}
+  .cal-mes-cel.fora{opacity:.45;}
+  .cal-mes-cel.hoje{outline:1px solid var(--gold);outline-offset:-1px;}
+  .cal-mes-num{font-size:11.5px;color:var(--muted);margin-bottom:4px;}
+  .cal-mes-cel.hoje .cal-mes-num{color:var(--gold);font-weight:700;}
+  .cal-mes-ev{border-radius:5px;padding:2px 5px;font-size:11px;margin-bottom:3px;cursor:pointer;
+              white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .cal-mes-mais{font-size:10.5px;color:var(--muted);}
+
+  /* agenda vertical (telemóvel) */
+  .cal-agenda-dia{margin-bottom:14px;}
+  .cal-agenda-dia h4{margin:0 0 6px;font-size:13px;color:var(--gold);font-weight:600;}
+  .cal-agenda-ev{border-radius:8px;padding:8px 10px;margin-bottom:6px;font-size:13px;cursor:pointer;}
+
+  /* pré-visualização (hover, só em ecrãs com rato) */
+  .cal-preview{position:fixed;z-index:70;max-width:290px;background:var(--panel);border:1px solid var(--border);
+               border-radius:10px;padding:11px 13px;font-size:12.5px;line-height:1.55;
+               box-shadow:0 10px 30px rgba(0,0,0,.55);pointer-events:none;}
+  .cal-preview img{width:100%;height:78px;object-fit:cover;border-radius:6px;margin-top:7px;}
+  .cal-preview .pv-t{font-weight:700;margin-bottom:3px;}
+
+  /* painel lateral (dossiê da marcação) */
+  .painel-fundo{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:80;}
+  .painel-fundo.aberto{display:block;}
+  .painel{position:fixed;top:0;right:0;height:100%;width:420px;max-width:94vw;background:var(--panel);
+          border-left:1px solid var(--border);z-index:81;transform:translateX(102%);transition:transform .18s ease;
+          display:flex;flex-direction:column;}
+  .painel.aberto{transform:translateX(0);}
+  .painel-cabecalho{display:flex;justify-content:space-between;align-items:center;padding:15px 18px;
+                    border-bottom:1px solid var(--border);}
+  .painel-cabecalho h3{margin:0;font-size:15px;}
+  .painel-corpo{padding:16px 18px 26px;overflow-y:auto;font-size:13.5px;line-height:1.7;}
+  .painel-corpo .linha{margin-bottom:5px;}
+  .painel-corpo h4{margin:16px 0 6px;font-size:12px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted);}
+  .painel-corpo a{color:var(--gold);}
+  .painel-acoes{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0 4px;}
+  .painel-acoes a{background:var(--gold);color:#1a1400;padding:7px 12px;border-radius:8px;text-decoration:none;
+                  font-size:12.5px;font-weight:700;}
+  .estado-chip{display:inline-block;padding:2px 9px;border-radius:20px;font-size:11.5px;font-weight:700;}
+
+  @media (max-width: 720px){
+    .cal-periodo{margin-left:0;width:100%;}
+    .cal-legenda{margin-left:0;}
+    .cal-conteudo{padding:12px;}
+    .painel{width:100%;}
+  }
 </style>
 </head>
 <body>
@@ -4235,6 +4579,35 @@ DASHBOARD_HTML = r"""
   </div>
 
   <div class="lista">
+    <h2>📅 Calendário</h2>
+    <div class="cal-barra">
+      <div class="cal-grupo">
+        <button class="cal-btn" onclick="calHoje()">Hoje</button>
+        <button class="cal-btn" onclick="calNavegar(-1)" aria-label="Anterior">‹ Anterior</button>
+        <button class="cal-btn" onclick="calNavegar(1)" aria-label="Seguinte">Seguinte ›</button>
+      </div>
+      <div class="cal-grupo" id="cal-vistas">
+        <button class="cal-btn" data-vista="dia" onclick="calMudarVista('dia')">Dia</button>
+        <button class="cal-btn" data-vista="semana" onclick="calMudarVista('semana')">Semana</button>
+        <button class="cal-btn" data-vista="mes" onclick="calMudarVista('mes')">Mês</button>
+      </div>
+      <div class="cal-grupo">
+        <button class="cal-btn" onclick="calCarregar(true)">🔄 Atualizar</button>
+      </div>
+      <div class="cal-periodo" id="cal-periodo">—</div>
+    </div>
+
+    <div class="cal-barra cal-barra-filtros">
+      <div class="cal-grupo" id="cal-filtros"></div>
+      <div class="cal-legenda" id="cal-legenda"></div>
+    </div>
+
+    <div id="cal-aviso" class="cal-aviso" hidden></div>
+    <div id="cal-erro" class="cal-erro" hidden></div>
+    <div id="cal-conteudo" class="cal-conteudo"><div class="vazio">A carregar…</div></div>
+  </div>
+
+  <div class="lista" style="margin-top:22px;">
     <h2>Agendamentos</h2>
     <div id="conteudo"><div class="vazio">A carregar…</div></div>
   </div>
@@ -4244,7 +4617,7 @@ DASHBOARD_HTML = r"""
     <div id="conteudo-pedidos"><div class="vazio">A carregar…</div></div>
   </div>
 
-  <div class="refresh" style="margin-top:10px;">Atualiza-se sozinho a cada 20 segundos.</div>
+  <div class="refresh" style="margin-top:10px;">Atualiza-se sozinho a cada 20 segundos (calendário a cada 30).</div>
 </div>
 
 <div id="modal-pedido" class="modal-overlay" onclick="fecharModalSeExterior(event)">
@@ -4256,6 +4629,17 @@ DASHBOARD_HTML = r"""
     <div id="modal-corpo" class="modal-corpo"></div>
   </div>
 </div>
+
+<div id="painel-fundo" class="painel-fundo" onclick="fecharPainel()"></div>
+<aside id="painel-ag" class="painel" aria-hidden="true">
+  <div class="painel-cabecalho">
+    <h3 id="painel-titulo">Marcação</h3>
+    <span class="modal-fechar" onclick="fecharPainel()">✕</span>
+  </div>
+  <div id="painel-corpo" class="painel-corpo"></div>
+</aside>
+
+<div id="cal-preview" class="cal-preview" hidden></div>
 
 <div id="lightbox" class="lightbox" onclick="this.classList.remove('aberto')">
   <img id="lightbox-img" src="">
@@ -4302,7 +4686,7 @@ async function carregar(){
   dados.forEach(d => {
     const criado = d.criado_em ? new Date(d.criado_em).toLocaleString('pt-PT') : '-';
     const classeEstado = d.estado !== 'confirmado' ? 'estado-cancelado' : '';
-    html += `<tr>
+    html += `<tr class="clicavel" onclick="abrirPainelAgendamento(${parseInt(d.id, 10)})">
       <td>${esc(d.nome || d.telefone)}<br><span style="color:var(--muted);font-size:12px;">${esc(d.telefone)}</span></td>
       <td><span class="tag">${esc(d.servico)}</span>${d.extra ? '<br><span style="color:var(--muted);font-size:12px;">+ '+esc(d.extra)+'</span>' : ''}</td>
       <td>${esc(d.data) || '-'}</td>
@@ -4586,10 +4970,521 @@ function abrirLightbox(src){
   document.getElementById('lightbox').classList.add('aberto');
 }
 
+// ===========================================================================
+// CALENDÁRIO (só consulta) — vanilla JS, sem dependências nem CDNs
+// ===========================================================================
+// Os valores da grelha vêm do servidor (CALENDARIO_HORA_INICIO/FIM/INTERVALO
+// em bot.py), com estes como reserva caso a API ainda não tenha respondido.
+let CAL_INICIO = 8, CAL_FIM = 19, CAL_PASSO = 30;
+const CAL_ALTURA_FAIXA = 28;                     // px por intervalo
+const alturaPorMinuto = () => CAL_ALTURA_FAIXA / CAL_PASSO;
+
+const CAL_ESTADOS = [
+  {id: 'confirmado', nome: 'Confirmado', cor: '#3878e8', classe: 'ev-confirmado'},
+  {id: 'concluido',  nome: 'Concluído',  cor: '#2ea05a', classe: 'ev-concluido'},
+  {id: 'reagendado', nome: 'Reagendado', cor: '#9678c8', classe: 'ev-reagendado'},
+  {id: 'cancelado',  nome: 'Cancelado',  cor: '#e05252', classe: 'ev-cancelado'},
+];
+const DIAS_CURTOS = ['seg', 'ter', 'qua', 'qui', 'sex', 'sáb', 'dom'];
+const MESES = ['janeiro','fevereiro','março','abril','maio','junho',
+               'julho','agosto','setembro','outubro','novembro','dezembro'];
+
+let calVista = 'semana';                          // semana (por defeito) | dia | mes
+let calAncora = new Date();
+let calFiltros = {confirmado: true, concluido: true, reagendado: false, cancelado: false};
+let calEventos = [];                              // eventos do intervalo atual
+const calPorId = new Map();                       // cache id -> evento (dossiê)
+let calAFazerPedido = false;
+
+// "concluído" chega da BD com acento; a chave dos filtros/classes não tem.
+function chaveEstado(estado){
+  const limpo = String(estado || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  return CAL_ESTADOS.some(e => e.id === limpo) ? limpo : 'confirmado';
+}
+function infoEstado(estado){
+  const chave = chaveEstado(estado);
+  return CAL_ESTADOS.find(e => e.id === chave);
+}
+
+function ymd(d){
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0')
+         + '-' + String(d.getDate()).padStart(2, '0');
+}
+function deYmd(s){
+  const [a, m, d] = String(s).split('-').map(Number);
+  return new Date(a, m - 1, d);
+}
+function maisDias(d, n){
+  const nova = new Date(d.getTime());
+  nova.setDate(nova.getDate() + n);
+  return nova;
+}
+// A semana começa sempre à SEGUNDA-feira.
+function inicioSemana(d){
+  const nova = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const desvio = (nova.getDay() + 6) % 7;
+  return maisDias(nova, -desvio);
+}
+function minutosDeIso(iso){
+  const hm = String(iso).split('T')[1] || '00:00';
+  const [h, m] = hm.split(':').map(Number);
+  return h * 60 + m;
+}
+function hhmmDeIso(iso){
+  return (String(iso).split('T')[1] || '').slice(0, 5);
+}
+function ecraPequeno(){
+  return window.matchMedia('(max-width: 720px)').matches;
+}
+function temHover(){
+  return window.matchMedia('(hover: hover) and (pointer: fine)').matches;
+}
+
+// --- intervalo pedido à API, conforme a vista atual ------------------------
+function calIntervalo(){
+  if(calVista === 'dia'){
+    const d = ymd(calAncora);
+    return {inicio: d, fim: d};
+  }
+  if(calVista === 'semana'){
+    const ini = inicioSemana(calAncora);
+    return {inicio: ymd(ini), fim: ymd(maisDias(ini, 6))};
+  }
+  const primeiro = new Date(calAncora.getFullYear(), calAncora.getMonth(), 1);
+  const ultimo = new Date(calAncora.getFullYear(), calAncora.getMonth() + 1, 0);
+  // a grelha do mês mostra semanas completas (segunda a domingo)
+  return {inicio: ymd(inicioSemana(primeiro)), fim: ymd(maisDias(inicioSemana(ultimo), 6))};
+}
+
+function calTextoPeriodo(){
+  if(calVista === 'dia'){
+    return DIAS_CURTOS[(calAncora.getDay() + 6) % 7] + ', ' + calAncora.getDate() + ' de '
+           + MESES[calAncora.getMonth()] + ' ' + calAncora.getFullYear();
+  }
+  if(calVista === 'semana'){
+    const ini = inicioSemana(calAncora), fim = maisDias(ini, 6);
+    const mesmoMes = ini.getMonth() === fim.getMonth();
+    return ini.getDate() + (mesmoMes ? '' : ' ' + MESES[ini.getMonth()]) + ' – '
+           + fim.getDate() + ' ' + MESES[fim.getMonth()] + ' ' + fim.getFullYear();
+  }
+  return MESES[calAncora.getMonth()][0].toUpperCase() + MESES[calAncora.getMonth()].slice(1)
+         + ' ' + calAncora.getFullYear();
+}
+
+// --- controlos -------------------------------------------------------------
+function calMudarVista(vista){
+  if(calVista === vista) return;
+  calVista = vista;
+  calCarregar();
+}
+function calNavegar(sentido){
+  if(calVista === 'dia') calAncora = maisDias(calAncora, sentido);
+  else if(calVista === 'semana') calAncora = maisDias(calAncora, 7 * sentido);
+  else calAncora = new Date(calAncora.getFullYear(), calAncora.getMonth() + sentido, 1);
+  calCarregar();
+}
+function calHoje(){
+  calAncora = new Date();
+  calCarregar();
+}
+function calAlternarFiltro(estado, ligado){
+  calFiltros[estado] = ligado;
+  calDesenhar();                                  // filtrar não precisa de ir à API
+}
+
+function calDesenharControlos(){
+  document.querySelectorAll('#cal-vistas .cal-btn').forEach(b => {
+    b.classList.toggle('ativo', b.dataset.vista === calVista);
+  });
+  document.getElementById('cal-periodo').textContent = calTextoPeriodo();
+
+  const filtros = document.getElementById('cal-filtros');
+  if(!filtros.dataset.pronto){
+    filtros.innerHTML = CAL_ESTADOS.map(e =>
+      '<label class="cal-filtro"><input type="checkbox" data-estado="' + e.id + '"'
+      + (calFiltros[e.id] ? ' checked' : '') + '> ' + esc(e.nome) + '</label>').join('');
+    filtros.querySelectorAll('input').forEach(inp => {
+      inp.addEventListener('change', () => calAlternarFiltro(inp.dataset.estado, inp.checked));
+    });
+    filtros.dataset.pronto = '1';
+    document.getElementById('cal-legenda').innerHTML = CAL_ESTADOS.map(e =>
+      '<span><i class="cal-ponto" style="background:' + e.cor + '"></i>' + esc(e.nome) + '</span>').join('');
+  }
+}
+
+// --- carregamento ----------------------------------------------------------
+async function calCarregar(manual){
+  calDesenharControlos();
+  if(calAFazerPedido) return;
+  calAFazerPedido = true;
+  const conteudo = document.getElementById('cal-conteudo');
+  const erro = document.getElementById('cal-erro');
+  if(manual || !calEventos.length){
+    conteudo.innerHTML = '<div class="cal-carregando">A carregar o calendário…</div>';
+  }
+  const {inicio, fim} = calIntervalo();
+  try {
+    const resp = await fetch('/api/calendario?inicio=' + inicio + '&fim=' + fim);
+    if(!resp.ok) throw new Error('HTTP ' + resp.status);
+    const dados = await resp.json();
+    if(dados.grelha){
+      CAL_INICIO = dados.grelha.hora_inicio;
+      CAL_FIM = dados.grelha.hora_fim;
+      CAL_PASSO = dados.grelha.intervalo_min;
+    }
+    // substitui sempre a lista inteira -> nunca duplica ao atualizar
+    calEventos = dados.eventos || [];
+    calEventos.forEach(ev => calPorId.set(String(ev.id), ev));
+    erro.hidden = true;
+    const aviso = document.getElementById('cal-aviso');
+    if(dados.invalidos){
+      aviso.textContent = '⚠️ ' + dados.invalidos + ' marcação(ões) com data, hora ou duração inválida não '
+                        + 'foi possível colocar no calendário — continuam visíveis na tabela de agendamentos.';
+      aviso.hidden = false;
+    } else {
+      aviso.hidden = true;
+    }
+    calDesenhar();
+  } catch(e){
+    erro.textContent = '❌ Não foi possível carregar o calendário (' + e.message + '). Tente Atualizar.';
+    erro.hidden = false;
+    if(!calEventos.length) conteudo.innerHTML = '<div class="vazio">Sem dados para mostrar.</div>';
+  } finally {
+    calAFazerPedido = false;
+  }
+}
+
+function calEventosVisiveis(){
+  return calEventos.filter(ev => calFiltros[chaveEstado(ev.estado)]);
+}
+
+function calDesenhar(){
+  calDesenharControlos();
+  const conteudo = document.getElementById('cal-conteudo');
+  const visiveis = calEventosVisiveis();
+  if(calVista === 'mes'){
+    conteudo.innerHTML = calHtmlMes(visiveis);
+  } else if(ecraPequeno()){
+    // telemóvel: agenda vertical legível, sem deslocação horizontal
+    conteudo.innerHTML = calHtmlAgenda(visiveis);
+  } else {
+    conteudo.innerHTML = calHtmlGrelha(visiveis);
+  }
+  calLigarEventos();
+  calDesenharLinhaAgora();
+}
+
+// --- vista semana / dia (grelha horária) -----------------------------------
+function diasDaVista(){
+  if(calVista === 'dia') return [new Date(calAncora.getFullYear(), calAncora.getMonth(), calAncora.getDate())];
+  const ini = inicioSemana(calAncora);
+  return Array.from({length: 7}, (_, i) => maisDias(ini, i));
+}
+
+// Reparte eventos sobrepostos por colunas, para nenhum tapar o outro.
+function calDisporSobrepostos(eventos){
+  const ordenados = eventos.slice().sort((a, b) => minutosDeIso(a.inicio) - minutosDeIso(b.inicio));
+  const colunas = [];   // fim (min) de cada coluna
+  const postos = [];
+  let grupo = [], grupoFim = -1;
+  const fecharGrupo = () => {
+    const total = Math.max(1, colunas.length);
+    grupo.forEach(p => { p.total = total; });
+    grupo = []; colunas.length = 0; grupoFim = -1;
+  };
+  ordenados.forEach(ev => {
+    const ini = minutosDeIso(ev.inicio);
+    const fim = Math.max(ini + 15, minutosDeIso(ev.fim) || (ini + 60));
+    if(grupo.length && ini >= grupoFim) fecharGrupo();
+    let coluna = colunas.findIndex(f => f <= ini);
+    if(coluna === -1){ colunas.push(fim); coluna = colunas.length - 1; }
+    else { colunas[coluna] = fim; }
+    const posto = {ev, ini, fim, coluna, total: 1};
+    postos.push(posto); grupo.push(posto);
+    grupoFim = Math.max(grupoFim, fim);
+  });
+  if(grupo.length) fecharGrupo();
+  return postos;
+}
+
+function calHtmlEvento(ev, estilo, classeExtra){
+  const info = infoEstado(ev.estado);
+  const total = ev.total_centimos ? formatarCentimos(ev.total_centimos) : '';
+  const linha2 = [esc(ev.servico || ''), esc(ev.duracao || '')].filter(Boolean).join(' · ');
+  return '<div class="cal-evento ' + info.classe + ' ' + (classeExtra || '') + '" style="' + estilo + '"'
+       + ' data-id="' + esc(ev.id) + '" tabindex="0" role="button">'
+       + '<div class="ev-t">' + esc(ev.dia_inteiro ? 'Dia inteiro' : hhmmDeIso(ev.inicio))
+       + ' · ' + esc(ev.primeiro_nome || ev.telefone || '') + '</div>'
+       + '<div class="ev-s">' + linha2 + '</div>'
+       + (total ? '<div class="ev-s">' + esc(total) + '</div>' : '')
+       + '</div>';
+}
+
+function calHtmlGrelha(eventos){
+  const dias = diasDaVista();
+  const faixas = Math.round((CAL_FIM - CAL_INICIO) * 60 / CAL_PASSO);
+  let horas = '<div class="cal-horas">';
+  for(let i = 0; i < faixas; i++){
+    const minuto = CAL_INICIO * 60 + i * CAL_PASSO;
+    const rotulo = (minuto % 60 === 0)
+      ? String(Math.floor(minuto / 60)).padStart(2, '0') + ':00' : '';
+    horas += '<div class="cal-hora">' + rotulo + '</div>';
+  }
+  horas += '</div>';
+
+  const hojeYmd = ymd(new Date());
+  let cabecalhos = '<div class="cal-cab cal-cab-hora"></div>';
+  let colunas = '';
+  dias.forEach(d => {
+    const chave = ymd(d);
+    cabecalhos += '<div class="cal-cab' + (chave === hojeYmd ? ' hoje' : '') + '">'
+                + DIAS_CURTOS[(d.getDay() + 6) % 7] + ' ' + d.getDate() + '/'
+                + String(d.getMonth() + 1).padStart(2, '0') + '</div>';
+
+    // Os eventos de dia inteiro já vêm do servidor a começar no início da
+    // grelha e com a duração dela toda (ver evento_calendario) — por isso
+    // são posicionados exatamente como os outros, ocupando a coluna inteira.
+    const doDia = eventos.filter(ev => ev.dia === chave);
+
+    let celulas = '';
+    for(let i = 0; i < faixas; i++){
+      const cheia = ((CAL_INICIO * 60 + i * CAL_PASSO) % 60 === 0);
+      celulas += '<div class="cal-faixa' + (cheia ? ' hora-cheia' : '') + '"></div>';
+    }
+    let blocos = '';
+    calDisporSobrepostos(doDia).forEach(p => {
+      const topo = Math.max(0, (p.ini - CAL_INICIO * 60)) * alturaPorMinuto();
+      const alturaMax = faixas * CAL_ALTURA_FAIXA - topo;
+      const altura = Math.max(24, Math.min((p.fim - Math.max(p.ini, CAL_INICIO * 60)) * alturaPorMinuto(), alturaMax));
+      const largura = 100 / p.total;
+      blocos += calHtmlEvento(p.ev,
+        'top:' + topo.toFixed(1) + 'px;height:' + altura.toFixed(1) + 'px;left:calc(' + (largura * p.coluna).toFixed(3)
+        + '% + 2px);width:calc(' + largura.toFixed(3) + '% - 4px);');
+    });
+    colunas += '<div class="cal-coluna" data-dia="' + chave + '">' + celulas + blocos + '</div>';
+  });
+
+  const largura = calVista === 'dia' ? '58px 1fr' : '58px repeat(7, minmax(84px, 1fr))';
+  return '<div class="cal-grelha ' + (calVista === 'dia' ? 'dia' : '') + '" '
+       + 'style="grid-template-columns:' + largura + ';grid-auto-rows:min-content;">'
+       + cabecalhos + horas + colunas + '</div>'
+       + (eventos.length ? '' : '<div class="vazio">Sem marcações neste período.</div>');
+}
+
+// --- vista mês -------------------------------------------------------------
+function calHtmlMes(eventos){
+  const primeiro = new Date(calAncora.getFullYear(), calAncora.getMonth(), 1);
+  const inicio = inicioSemana(primeiro);
+  const hojeYmd = ymd(new Date());
+  const porDia = {};
+  eventos.forEach(ev => { (porDia[ev.dia] = porDia[ev.dia] || []).push(ev); });
+
+  let html = '<div class="cal-mes">' + DIAS_CURTOS.map(d =>
+    '<div class="cal-mes-cab">' + d + '</div>').join('');
+  for(let i = 0; i < 42; i++){
+    const d = maisDias(inicio, i);
+    const chave = ymd(d);
+    const fora = d.getMonth() !== calAncora.getMonth();
+    const doDia = (porDia[chave] || []).slice().sort((a, b) => a.inicio.localeCompare(b.inicio));
+    const visiveis = doDia.slice(0, 3);
+    html += '<div class="cal-mes-cel' + (fora ? ' fora' : '') + (chave === hojeYmd ? ' hoje' : '') + '">'
+          + '<div class="cal-mes-num">' + d.getDate() + '</div>'
+          + visiveis.map(ev => '<div class="cal-mes-ev ' + infoEstado(ev.estado).classe + '" data-id="'
+              + esc(ev.id) + '" tabindex="0" role="button">'
+              + esc(ev.dia_inteiro ? '' : hhmmDeIso(ev.inicio) + ' ')
+              + esc(ev.primeiro_nome || ev.telefone || '') + '</div>').join('')
+          + (doDia.length > 3 ? '<div class="cal-mes-mais">+' + (doDia.length - 3) + '</div>' : '')
+          + '</div>';
+  }
+  html += '</div>';
+  return html + (eventos.length ? '' : '<div class="vazio">Sem marcações neste mês.</div>');
+}
+
+// --- agenda vertical (telemóvel) -------------------------------------------
+function calHtmlAgenda(eventos){
+  if(!eventos.length) return '<div class="vazio">Sem marcações neste período.</div>';
+  const porDia = {};
+  eventos.forEach(ev => { (porDia[ev.dia] = porDia[ev.dia] || []).push(ev); });
+  return Object.keys(porDia).sort().map(dia => {
+    const d = deYmd(dia);
+    const lista = porDia[dia].slice().sort((a, b) => a.inicio.localeCompare(b.inicio));
+    return '<div class="cal-agenda-dia"><h4>' + DIAS_CURTOS[(d.getDay() + 6) % 7] + ' · '
+         + d.getDate() + ' ' + MESES[d.getMonth()] + '</h4>'
+         + lista.map(ev => calHtmlEvento(ev, 'position:relative;', 'cal-agenda-ev')).join('')
+         + '</div>';
+  }).join('');
+}
+
+// --- linha da hora atual ---------------------------------------------------
+function calDesenharLinhaAgora(){
+  if(calVista === 'mes' || ecraPequeno()) return;
+  const agora = new Date();
+  const minutos = agora.getHours() * 60 + agora.getMinutes();
+  if(minutos < CAL_INICIO * 60 || minutos > CAL_FIM * 60) return;
+  const coluna = document.querySelector('.cal-coluna[data-dia="' + ymd(agora) + '"]');
+  if(!coluna) return;
+  const linha = document.createElement('div');
+  linha.className = 'cal-agora';
+  linha.style.top = ((minutos - CAL_INICIO * 60) * alturaPorMinuto()).toFixed(1) + 'px';
+  coluna.appendChild(linha);
+}
+
+// --- interação: hover (computador) e clique/toque ---------------------------
+function calLigarEventos(){
+  document.querySelectorAll('#cal-conteudo [data-id]').forEach(el => {
+    el.addEventListener('click', () => abrirPainelAgendamento(el.dataset.id));
+    el.addEventListener('keydown', e => {
+      if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); abrirPainelAgendamento(el.dataset.id); }
+    });
+    if(temHover()){
+      el.addEventListener('mouseenter', e => mostrarPreview(el.dataset.id, e));
+      el.addEventListener('mousemove', moverPreview);
+      el.addEventListener('mouseleave', esconderPreview);
+    }
+  });
+}
+
+function mostrarPreview(id, evento){
+  const ev = calPorId.get(String(id));
+  if(!ev) return;
+  const caixa = document.getElementById('cal-preview');
+  const info = infoEstado(ev.estado);
+  const p = ev.pedido || {};
+  const foto = (p.fotografias && p.fotografias.length)
+    ? '<img src="/media/' + encodeURIComponent(p.fotografias[0].nome_ficheiro) + '" alt="">' : '';
+  const veiculo = p.veiculo ? '<div>🚗 ' + esc(p.veiculo) + (p.ano_veiculo ? ' (' + esc(p.ano_veiculo) + ')' : '') + '</div>' : '';
+  caixa.innerHTML =
+      '<div class="pv-t">' + esc(ev.nome || ev.telefone || '') + '</div>'
+    + '<div>' + esc(ev.servico || '-') + (ev.extra ? ' + ' + esc(ev.extra) : '') + '</div>'
+    + '<div>📅 ' + esc(ev.data || '') + ' · ' + esc(ev.hora_hhmm || ev.hora || '') + '</div>'
+    + '<div>⏱️ ' + esc(ev.duracao || '-') + '</div>'
+    + '<div>💰 ' + esc(formatarCentimos(ev.total_centimos)) + '</div>'
+    + '<div><span class="estado-chip" style="background:' + info.cor + '33;color:' + info.cor + '">'
+    + esc(info.nome) + '</span></div>' + veiculo + foto;
+  caixa.hidden = false;
+  moverPreview(evento);
+}
+function moverPreview(evento){
+  const caixa = document.getElementById('cal-preview');
+  if(caixa.hidden) return;
+  const margem = 14;
+  const largura = caixa.offsetWidth || 280, altura = caixa.offsetHeight || 160;
+  let x = evento.clientX + margem, y = evento.clientY + margem;
+  if(x + largura > window.innerWidth - 8) x = evento.clientX - largura - margem;
+  if(y + altura > window.innerHeight - 8) y = Math.max(8, evento.clientY - altura - margem);
+  caixa.style.left = x + 'px';
+  caixa.style.top = y + 'px';
+}
+function esconderPreview(){
+  document.getElementById('cal-preview').hidden = true;
+}
+// Rede de segurança: a pré-visualização nunca pode ficar presa no ecrã.
+document.addEventListener('scroll', esconderPreview, true);
+window.addEventListener('blur', esconderPreview);
+
+// ===========================================================================
+// Dossiê da marcação — painel lateral ÚNICO, usado pelo calendário e pela
+// tabela de agendamentos (nada de HTML nem lógica duplicada)
+// ===========================================================================
+async function obterEvento(id){
+  const chave = String(id);
+  if(calPorId.has(chave)) return calPorId.get(chave);
+  // pode ser uma marcação fora do intervalo em vista (ex.: vinda da tabela)
+  const resp = await fetch('/api/calendario');
+  if(!resp.ok) return null;
+  const dados = await resp.json();
+  (dados.eventos || []).forEach(ev => calPorId.set(String(ev.id), ev));
+  return calPorId.get(chave) || null;
+}
+
+async function abrirPainelAgendamento(id){
+  esconderPreview();
+  const painel = document.getElementById('painel-ag');
+  const corpo = document.getElementById('painel-corpo');
+  document.getElementById('painel-titulo').textContent = 'Marcação #' + id;
+  corpo.innerHTML = '<div class="cal-carregando">A carregar…</div>';
+  painel.classList.add('aberto');
+  painel.setAttribute('aria-hidden', 'false');
+  document.getElementById('painel-fundo').classList.add('aberto');
+  if(location.hash !== '#agendamento-' + id) history.replaceState(null, '', '#agendamento-' + id);
+
+  const ev = await obterEvento(id);
+  if(!ev){
+    corpo.innerHTML = '<div class="orc-erro">Marcação não encontrada.</div>';
+    return;
+  }
+  const info = infoEstado(ev.estado);
+  const tel = String(ev.telefone || '').replace(/[^0-9]/g, '');
+  const p = ev.pedido;
+
+  let html = '<div class="linha"><span class="estado-chip" style="background:' + info.cor + '33;color:'
+           + info.cor + '">' + esc(info.nome) + '</span></div>';
+  html += '<div class="linha">👤 ' + esc(ev.nome || 'sem nome') + '</div>';
+  html += '<div class="linha">📱 <a href="tel:+' + esc(tel) + '">+' + esc(tel) + '</a></div>';
+  html += '<div class="painel-acoes"><a href="https://wa.me/' + esc(tel) + '" target="_blank" rel="noopener">'
+        + '💬 Contactar no WhatsApp</a></div>';
+  html += '<h4>Marcação</h4>';
+  html += '<div class="linha">📅 ' + esc(ev.data || '-') + '</div>';
+  html += '<div class="linha">🕘 ' + esc(ev.hora_hhmm || ev.hora || '-') + '</div>';
+  html += '<div class="linha">⏱️ ' + esc(ev.duracao || '-') + (ev.dia_inteiro ? ' (dia inteiro)' : '') + '</div>';
+  html += '<div class="linha">🔧 ' + esc(ev.servico || '-') + '</div>';
+  if(ev.extra) html += '<div class="linha">➕ ' + esc(ev.extra) + '</div>';
+
+  if(ev.carrinho && ev.carrinho.length){
+    html += '<h4>Discriminação</h4>';
+    ev.carrinho.forEach(l => {
+      const preco = (l.preco || 0) * (l.quantidade || 1);
+      html += '<div class="linha" style="color:var(--muted);">• ' + esc(l.nome) + ': '
+            + esc(formatarCentimos(preco)) + '</div>';
+    });
+  }
+  html += '<div class="linha"><strong>💰 Total: ' + esc(formatarCentimos(ev.total_centimos)) + '</strong></div>';
+  html += '<div class="linha" style="color:var(--muted);">🕓 Criado em '
+        + esc(ev.criado_em ? new Date(ev.criado_em).toLocaleString('pt-PT') : '-') + '</div>';
+
+  // Secções do pedido associado — escondidas por completo quando não existem.
+  if(p && (p.veiculo || p.ano_veiculo || p.tipo_wrap || p.cor_acabamento)){
+    html += '<h4>Veículo e Wrap (pedido #' + esc(p.id) + ')</h4>';
+    if(p.veiculo) html += '<div class="linha">🚗 ' + esc(p.veiculo)
+                        + (p.ano_veiculo ? ' (' + esc(p.ano_veiculo) + ')' : '') + '</div>';
+    if(p.tipo_wrap) html += '<div class="linha">🎨 ' + esc(p.tipo_wrap) + '</div>';
+    if(p.cor_acabamento) html += '<div class="linha">🖌️ ' + esc(p.cor_acabamento) + '</div>';
+  }
+  if(p && p.fotografias && p.fotografias.length){
+    html += '<h4>Fotografias (' + p.fotografias.length + ')</h4><div class="galeria">';
+    p.fotografias.forEach(f => {
+      const src = '/media/' + encodeURIComponent(f.nome_ficheiro);
+      html += '<img src="' + src + '" onclick="abrirLightbox(\'' + src + '\')">';
+    });
+    html += '</div>';
+  }
+  corpo.innerHTML = html;
+}
+
+function fecharPainel(){
+  const painel = document.getElementById('painel-ag');
+  painel.classList.remove('aberto');
+  painel.setAttribute('aria-hidden', 'true');
+  document.getElementById('painel-fundo').classList.remove('aberto');
+  if(location.hash.indexOf('#agendamento-') === 0) history.replaceState(null, '', location.pathname);
+}
+document.addEventListener('keydown', e => { if(e.key === 'Escape'){ fecharPainel(); esconderPreview(); } });
+
+// Abertura direta por /dashboard#agendamento-ID
+function abrirAgendamentoPeloHash(){
+  const m = /^#agendamento-(\d+)$/.exec(location.hash);
+  if(m) abrirPainelAgendamento(m[1]);
+}
+window.addEventListener('hashchange', abrirAgendamentoPeloHash);
+
 carregar();
 carregarPedidos();
+calCarregar(true).then(abrirAgendamentoPeloHash);
 setInterval(carregar, 20000);
 setInterval(carregarPedidos, 20000);
+setInterval(() => calCarregar(false), 30000);
+// o layout muda entre grelha (computador/tablet) e agenda vertical (telemóvel)
+window.addEventListener('resize', () => calDesenhar());
 
 // Abre automaticamente o dossiê de um pedido quando se chega a esta página
 // por uma ligação #pedido-<id> (ver link_dossie_pedido, usado na notificação
@@ -4609,7 +5504,7 @@ abrirPedidoPeloHash();
 
 @app.route("/versao", methods=["GET"])
 def versao():
-    return jsonify(versao="v5.3-voltar-precos", fluxos=["limpeza", "estetica", "wrap"],
+    return jsonify(versao="v5.4-calendario-dashboard", fluxos=["limpeza", "estetica", "wrap"],
                    idiomas=list(IDIOMAS_VALIDOS)), 200
 
 
@@ -4896,7 +5791,11 @@ def receber_mensagem():
             if sessao.get("fluxo") == "wrap" and sessao.get("_wrap_aguardando_ano_texto"):
                 ano = ano_veiculo_valido(msg["text"]["body"])
                 if not ano:
-                    enviar_texto(de, t("wrap_ano_invalido", idioma))
+                    # Repete a MESMA pergunta interativa (com Voltar/Cancelar),
+                    # nunca só uma mensagem de texto sem saída.
+                    passo_wrap_ano_outro(de, idioma, sessao,
+                                         corpo=t("wrap_ano_invalido", idioma) + "\n\n"
+                                               + t("wrap_ano_outro_pedir", idioma))
                     return jsonify(status="ok"), 200
                 sessao.pop("_wrap_aguardando_ano_texto", None)
                 sessao["wrap_ano"] = ano
@@ -4918,7 +5817,8 @@ def receber_mensagem():
                     sessao.pop("aguardando_fotos", None)
                     avancar_para_resumo_wrap(de, idioma, sessao)
                 else:
-                    enviar_texto(de, t("wrap_foto_formato_invalido", idioma))
+                    passo_wrap_fotos_a_receber(de, idioma, sessao,
+                                               corpo=t("wrap_foto_formato_invalido", idioma))
                 return jsonify(status="ok"), 200
 
             if sessao.get("fluxo") == "orcamento":
@@ -4972,6 +5872,18 @@ def receber_mensagem():
 
             if id_botao == ACAO_VOLTAR:
                 voltar_um_passo(de, idioma, sessao)
+                return jsonify(status="ok"), 200
+
+            # Voltar da descrição livre de "Outra alteração" -> lista de
+            # aspetos do MESMO orçamento (verificado ANTES do prefixo
+            # genérico "orcamento_alt_", que também lhe serve de prefixo).
+            if id_botao.startswith(ID_ALT_VOLTAR):
+                sessao.pop("_aguardando_alteracao_orcamento_id", None)
+                guardar_sessao(de, sessao)
+                try:
+                    mostrar_lista_alteracao_orcamento(de, idioma, int(id_botao[len(ID_ALT_VOLTAR):]))
+                except ValueError:
+                    nao_entendi_com_opcoes(de, idioma, sessao)
                 return jsonify(status="ok"), 200
 
             if id_botao == ID_VOLTAR_CARRINHO:
@@ -5088,7 +6000,7 @@ def receber_mensagem():
                 _garantir_pedido_wrap(de, sessao)
                 sessao["aguardando_fotos"] = True
                 guardar_sessao(de, sessao)
-                enviar_texto(de, t("wrap_fotos_pedir", idioma))
+                passo_wrap_fotos_a_receber(de, idioma, sessao)
                 return jsonify(status="ok"), 200
 
             if id_botao in ("wrap_fotos_nao", "wrap_fotos_concluir"):
@@ -5298,7 +6210,7 @@ def receber_mensagem():
             if id_escolhido == "mp_orcamento":
                 sessao["fluxo"] = "orcamento"
                 guardar_sessao(de, sessao)
-                passo_orcamento_generico(de, idioma)
+                passo_orcamento_generico(de, idioma, sessao)
                 return jsonify(status="ok"), 200
             if id_escolhido == "mp_gerir":
                 mostrar_gestao_marcacao(de, idioma)
@@ -5356,7 +6268,11 @@ def receber_mensagem():
                 if aspeto == "outra":
                     sessao["_aguardando_alteracao_orcamento_id"] = orcamento_id
                     guardar_sessao(de, sessao)
-                    enviar_texto(de, t("alteracao_outra_pedir", idioma))
+                    # Voltar aqui regressa à LISTA de aspetos do MESMO
+                    # orçamento (ver ID_ALT_VOLTAR), nunca ao menu.
+                    pergunta_texto_livre(de, idioma, t("alteracao_outra_pedir", idioma),
+                                         id_voltar=f"{ID_ALT_VOLTAR}{orcamento_id}",
+                                         titulo_seccao=t("alteracao_seccao", idioma))
                 else:
                     registar_pedido_alteracao(de, idioma, orcamento_id, sessao, aspeto)
                 return jsonify(status="ok"), 200
@@ -5369,7 +6285,7 @@ def receber_mensagem():
                     if id_escolhido == "wv_outro":
                         sessao["_wrap_aguardando_veiculo_texto"] = True
                         guardar_sessao(de, sessao)
-                        passo_wrap_veiculo_outro(de, idioma)
+                        passo_wrap_veiculo_outro(de, idioma, sessao)
                     else:
                         opcao = encontrar_opcao(WRAP_TIPOS_VEICULO, id_escolhido)
                         sessao["wrap_veiculo_id"] = id_escolhido
@@ -5385,7 +6301,7 @@ def receber_mensagem():
                     if id_escolhido == "wrap_ano_outro":
                         sessao["_wrap_aguardando_ano_texto"] = True
                         guardar_sessao(de, sessao)
-                        passo_wrap_ano_outro(de, idioma)
+                        passo_wrap_ano_outro(de, idioma, sessao)
                     else:
                         sessao["wrap_ano"] = id_escolhido[len("wrap_ano_"):]
                         guardar_sessao(de, sessao)
@@ -5414,7 +6330,7 @@ def receber_mensagem():
                     elif id_escolhido == "cf_personalizada":
                         sessao["_wrap_aguardando_cor_texto"] = True
                         guardar_sessao(de, sessao)
-                        passo_wrap_cor_personalizada(de, idioma)
+                        passo_wrap_cor_personalizada(de, idioma, sessao)
                     else:
                         guardar_sessao(de, sessao)
                         passo_wrap_cor(de, idioma, sessao)
@@ -5508,7 +6424,8 @@ def receber_mensagem():
                     conteudo = None
 
             if not conteudo:
-                enviar_texto(de, t("wrap_foto_formato_invalido", idioma))
+                passo_wrap_fotos_a_receber(de, idioma, sessao,
+                                           corpo=t("wrap_foto_formato_invalido", idioma))
                 return jsonify(status="ok"), 200
 
             nome_ficheiro = guardar_media_local(pedido_id, media_id, conteudo, mime_confirmado or mime_tipo)
@@ -5521,13 +6438,11 @@ def receber_mensagem():
                 sessao.pop("aguardando_fotos", None)
                 avancar_para_resumo_wrap(de, idioma, sessao)
             else:
-                enviar_texto(de, t("wrap_foto_recebida_contagem", idioma, atual=total_fotos, total=5))
-                botao_ver = ("rapido_ver_pedido_botao" if sessao.get("wrap_modo") == MODO_RAPIDO
-                             else "carrinho_botao_ver")
-                enviar_botoes(de, t("wrap_fotos_mais_ou_concluir", idioma), [
-                    {"id": "wrap_fotos_concluir", "titulo": t("wrap_fotos_concluir_botao", idioma)},
-                    {"id": "ver_carrinho", "titulo": t(botao_ver, idioma)},
-                ], idioma)
+                # Enquanto não chegar às 5, volta sempre a mostrar as mesmas
+                # opções clicáveis (Concluir / Voltar / Carrinho / Cancelar).
+                corpo = (t("wrap_foto_recebida_contagem", idioma, atual=total_fotos, total=5)
+                         + "\n\n" + t("wrap_fotos_mais_ou_concluir", idioma))
+                passo_wrap_fotos_a_receber(de, idioma, sessao, corpo=corpo)
             return jsonify(status="ok"), 200
 
         # --- Qualquer outro tipo (áudio, imagem fora de contexto, sticker, etc.) ---
@@ -5556,7 +6471,7 @@ def reenviar_passo_atual(de, idioma, sessao):
         if sessao.get("_rapido_etapa_resumo"):
             passo_rapido_resumo(de, idioma, sessao)
         elif sessao.get("aguardando_fotos"):
-            enviar_texto(de, t("wrap_fotos_pedir", idioma))
+            passo_wrap_fotos_a_receber(de, idioma, sessao)
         elif "rapido_interesse" in sessao:
             passo_rapido_fotos(de, idioma, sessao)
         else:
@@ -5567,11 +6482,11 @@ def reenviar_passo_atual(de, idioma, sessao):
         if sessao.get("_wrap_etapa_resumo"):
             passo_wrap_resumo(de, idioma, sessao)
         elif sessao.get("aguardando_fotos"):
-            enviar_texto(de, t("wrap_fotos_pedir", idioma))
+            passo_wrap_fotos_a_receber(de, idioma, sessao)
         elif "wrap_acabamento" in sessao:
             passo_wrap_fotos_pergunta(de, idioma, sessao)
         elif sessao.get("_wrap_aguardando_cor_texto"):
-            passo_wrap_cor_personalizada(de, idioma)
+            passo_wrap_cor_personalizada(de, idioma, sessao)
         elif "wrap_cor" in sessao:
             passo_wrap_acabamento(de, idioma, sessao)
         elif "wrap_cor_familia" in sessao:
@@ -5579,11 +6494,11 @@ def reenviar_passo_atual(de, idioma, sessao):
         elif "wrap_tipo" in sessao:
             passo_wrap_cor_familia(de, idioma, sessao)
         elif sessao.get("_wrap_aguardando_ano_texto"):
-            passo_wrap_ano_outro(de, idioma)
+            passo_wrap_ano_outro(de, idioma, sessao)
         elif "wrap_ano" in sessao:
             passo_wrap_tipo(de, idioma, sessao)
         elif sessao.get("_wrap_aguardando_veiculo_texto"):
-            passo_wrap_veiculo_outro(de, idioma)
+            passo_wrap_veiculo_outro(de, idioma, sessao)
         elif "wrap_categoria_veiculo" in sessao:
             passo_wrap_ano(de, idioma, sessao)
         elif sessao.get("wrap_modo") == MODO_DETALHE:
