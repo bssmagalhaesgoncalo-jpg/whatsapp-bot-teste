@@ -30,6 +30,7 @@ import re
 import json
 import sqlite3
 import requests
+import unicodedata
 from functools import wraps
 from datetime import date, timedelta, datetime
 from flask import Flask, request, jsonify, send_from_directory, Response
@@ -233,6 +234,16 @@ TEXTOS = {
                    "en": "Step {n} of 5 — What time suits you?"},
     "hora_seccao": {"pt": "Horários disponíveis", "de": "Verfügbare Uhrzeiten", "en": "Available times"},
     "hora_botao": {"pt": "⏰ Escolher hora", "de": "⏰ Uhrzeit wählen", "en": "⏰ Choose time"},
+    # A lista de horas mostra só o que está MESMO livre. Quando nada sobra
+    # nesse dia, o cliente volta a escolher a data — nunca fica sem saída.
+    "hora_sem_vagas": {
+        "pt": "😕 Nesse dia já não temos horários livres. Escolha outro dia, por favor.",
+        "de": "😕 An diesem Tag haben wir keine freien Uhrzeiten mehr. Bitte wählen Sie einen anderen Tag.",
+        "en": "😕 There are no free time slots left on that day. Please choose another day."},
+    "hora_entretanto_ocupada": {
+        "pt": "😕 Esse horário foi ocupado entretanto. Escolha outro, por favor.",
+        "de": "😕 Diese Uhrzeit wurde inzwischen belegt. Bitte wählen Sie eine andere.",
+        "en": "😕 That time slot has just been taken. Please choose another one."},
 
     # --- Resumo / confirmação -----------------------------------------------
     "resumo_titulo": {"pt": "📋 *Confirme a sua marcação*", "de": "📋 *Bestätigen Sie Ihre Buchung*",
@@ -1261,7 +1272,87 @@ def obter_bd():
         "origem TEXT NOT NULL DEFAULT 'dashboard', "
         "alterado_em TEXT NOT NULL)"
     )
+    # -----------------------------------------------------------------------
+    # bloqueia_horario — separa DEFINITIVAMENTE o estado da marcação da
+    # disponibilidade do horário: 0 = horário livre, 1 = horário bloqueado.
+    # Uma marcação pode estar cancelada e o negócio decidir na mesma se
+    # aquele horário volta ao mercado ou não (ver libertar_horario_ao_cancelar).
+    #
+    # Migração automática e NÃO destrutiva: a coluna nasce com DEFAULT 1
+    # (uma marcação nova ocupa mesmo o horário), mas no instante em que é
+    # criada as marcações antigas já canceladas ou reagendadas são postas a
+    # 0 — senão horários que hoje estão livres começavam de repente a
+    # aparecer bloqueados, sem ninguém ter pedido nada. O UPDATE corre uma
+    # única vez: nos arranques seguintes o ALTER falha (coluna já existe) e
+    # as escolhas entretanto feitas no painel ficam intactas.
+    # -----------------------------------------------------------------------
+    try:
+        conn.execute("ALTER TABLE agendamentos ADD COLUMN bloqueia_horario INTEGER NOT NULL DEFAULT 1")
+        conn.execute("UPDATE agendamentos SET bloqueia_horario = 0 "
+                     "WHERE LOWER(COALESCE(estado, '')) IN ('cancelado', 'reagendado')")
+        # Fecha já a transação implícita aberta por este UPDATE: quem recebe
+        # esta ligação pode precisar de abrir a sua própria transação com
+        # BEGIN IMMEDIATE (cancelar/reagendar/gravar marcação) e o SQLite não
+        # deixa abrir uma transação dentro de outra.
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # coluna já existe — nada a migrar
+    # Configurações do negócio editáveis no painel (chave -> valor em texto).
+    # Tabela NOVA: CREATE TABLE IF NOT EXISTS chega, bases de dados antigas
+    # continuam a funcionar exatamente na mesma e ganham os valores por
+    # omissão definidos em CONFIGURACOES_OMISSAO.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS configuracoes ("
+        "chave TEXT PRIMARY KEY, "
+        "valor TEXT NOT NULL, "
+        "atualizado_em TEXT NOT NULL)"
+    )
     return conn
+
+
+# ---------------------------------------------------------------------------
+# Configurações do negócio — guardadas na base de dados (persistem a um
+# refresh do painel E a um reinício do servidor, ao contrário de uma variável
+# em memória ou de localStorage no browser).
+# ---------------------------------------------------------------------------
+CONFIG_LIBERTAR_AO_CANCELAR = "libertar_horario_ao_cancelar"
+CONFIGURACOES_OMISSAO = {
+    # LIGADO por defeito: ao cancelar, o horário volta a ficar disponível.
+    CONFIG_LIBERTAR_AO_CANCELAR: "1",
+}
+
+
+def obter_configuracao(chave, omissao=None):
+    """Valor guardado de uma configuração, ou o valor por omissão quando
+    ainda nunca foi gravada (base de dados antiga, primeira utilização)."""
+    with obter_bd() as conn:
+        linha = conn.execute("SELECT valor FROM configuracoes WHERE chave = ?", (chave,)).fetchone()
+    if linha:
+        return linha[0]
+    return CONFIGURACOES_OMISSAO.get(chave) if omissao is None else omissao
+
+
+def guardar_configuracao(chave, valor):
+    with obter_bd() as conn:
+        conn.execute(
+            "INSERT INTO configuracoes (chave, valor, atualizado_em) VALUES (?, ?, ?) "
+            "ON CONFLICT(chave) DO UPDATE SET valor = excluded.valor, "
+            "atualizado_em = excluded.atualizado_em",
+            (chave, str(valor), datetime.utcnow().isoformat()),
+        )
+    return str(valor)
+
+
+def libertar_horario_ao_cancelar():
+    """True -> ao cancelar, o horário volta automaticamente a ficar livre
+    (a marcação continua no histórico como cancelada). False -> a marcação
+    cancelada continua a ocupar o horário e a impedir novas reservas."""
+    return str(obter_configuracao(CONFIG_LIBERTAR_AO_CANCELAR)).strip() in ("1", "true", "True")
+
+
+def configuracoes_atuais():
+    """Configurações tal como o painel as consome (já em booleano)."""
+    return {CONFIG_LIBERTAR_AO_CANCELAR: libertar_horario_ao_cancelar()}
 
 
 def carregar_sessao(telefone):
@@ -1286,12 +1377,34 @@ def apagar_sessao(telefone):
         conn.execute("DELETE FROM sessoes WHERE telefone = ?", (telefone,))
 
 
+# Colunas de `agendamentos` lidas em todo o lado — uma lista só, para nunca
+# haver um SELECT a devolver menos colunas do que o dicionário espera.
+CAMPOS_AGENDAMENTO = ["id", "telefone", "nome", "categoria", "servico", "extra", "data", "hora",
+                      "preco", "duracao", "estado", "criado_em", "carrinho_json", "bloqueia_horario"]
+SQL_COLUNAS_AGENDAMENTO = ", ".join(CAMPOS_AGENDAMENTO)
+
+
 def guardar_agendamento(telefone, sessao):
+    """Grava a marcação CONFIRMADA da sessão. A verificação de conflitos e o
+    INSERT correm dentro da MESMA transação de escrita (BEGIN IMMEDIATE):
+    dois clientes que confirmem o mesmo horário ao mesmo tempo são
+    obrigatoriamente serializados pelo SQLite e o segundo recebe
+    HorarioOcupado — nunca ficam as duas marcações gravadas."""
+    data_iso = data_iso_de_texto(sessao.get("data"))
+    hora = hora_hhmm_de_texto(sessao.get("hora"))
+    duracao = recuperar_duracao(sessao.get("servico"), sessao.get("duracao"))
+
     with obter_bd() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if data_iso and hora:
+            existentes = _agendamentos_da_conexao(conn)
+            if conflitos_no_intervalo(existentes, data_iso, hora, sessao.get("servico"), duracao):
+                raise HorarioOcupado(f"{data_iso} {hora}")
         cur = conn.execute(
             "INSERT INTO agendamentos "
-            "(telefone, nome, categoria, servico, extra, data, hora, preco, duracao, estado, criado_em, carrinho_json) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmado', ?, ?)",
+            "(telefone, nome, categoria, servico, extra, data, hora, preco, duracao, estado, criado_em, "
+            "carrinho_json, bloqueia_horario) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmado', ?, ?, 1)",
             (
                 telefone, sessao.get("nome"), sessao.get("categoria"),
                 sessao.get("servico"), sessao.get("extra"),
@@ -1304,15 +1417,20 @@ def guardar_agendamento(telefone, sessao):
         return cur.lastrowid
 
 
+def _agendamentos_da_conexao(conn):
+    """Todas as marcações, lidas por uma conexão JÁ dentro de uma transação
+    — usado pela verificação de conflitos que tem de correr atomicamente
+    com a escrita."""
+    linhas = conn.execute(f"SELECT {SQL_COLUNAS_AGENDAMENTO} FROM agendamentos").fetchall()
+    return [dict(zip(CAMPOS_AGENDAMENTO, l)) for l in linhas]
+
+
 def listar_agendamentos():
     with obter_bd() as conn:
         linhas = conn.execute(
-            "SELECT id, telefone, nome, categoria, servico, extra, data, hora, preco, duracao, estado, "
-            "criado_em, carrinho_json FROM agendamentos ORDER BY id DESC"
+            f"SELECT {SQL_COLUNAS_AGENDAMENTO} FROM agendamentos ORDER BY id DESC"
         ).fetchall()
-    campos = ["id", "telefone", "nome", "categoria", "servico", "extra", "data", "hora",
-              "preco", "duracao", "estado", "criado_em", "carrinho_json"]
-    return [dict(zip(campos, l)) for l in linhas]
+    return [dict(zip(CAMPOS_AGENDAMENTO, l)) for l in linhas]
 
 
 def ultimo_agendamento_ativo(telefone):
@@ -1328,15 +1446,10 @@ def ultimo_agendamento_ativo(telefone):
             "preco": linha[4], "duracao": recuperar_duracao(linha[1], linha[5])}
 
 
-CAMPOS_AGENDAMENTO = ["id", "telefone", "nome", "categoria", "servico", "extra", "data", "hora",
-                       "preco", "duracao", "estado", "criado_em", "carrinho_json"]
-
-
 def obter_agendamento(id_agendamento):
     with obter_bd() as conn:
         linha = conn.execute(
-            "SELECT id, telefone, nome, categoria, servico, extra, data, hora, preco, duracao, estado, "
-            "criado_em, carrinho_json FROM agendamentos WHERE id = ?",
+            f"SELECT {SQL_COLUNAS_AGENDAMENTO} FROM agendamentos WHERE id = ?",
             (id_agendamento,),
         ).fetchone()
     return dict(zip(CAMPOS_AGENDAMENTO, linha)) if linha else None
@@ -1349,9 +1462,8 @@ def agendamentos_confirmados_por_telefone(telefone):
     concluídas, reagendadas ou arquivadas deixam de aparecer no carrinho."""
     with obter_bd() as conn:
         linhas = conn.execute(
-            "SELECT id, telefone, nome, categoria, servico, extra, data, hora, preco, duracao, estado, "
-            "criado_em, carrinho_json FROM agendamentos WHERE telefone = ? AND estado = 'confirmado' "
-            "ORDER BY id DESC",
+            f"SELECT {SQL_COLUNAS_AGENDAMENTO} FROM agendamentos "
+            "WHERE telefone = ? AND estado = 'confirmado' ORDER BY id DESC",
             (telefone,),
         ).fetchall()
     return [dict(zip(CAMPOS_AGENDAMENTO, l)) for l in linhas]
@@ -1380,9 +1492,24 @@ def total_centimos_agendamento(agendamento):
     return int(round(float(preco) * 100)) if preco else 0
 
 
-def atualizar_estado_agendamento(id_agendamento, estado):
+def atualizar_estado_agendamento(id_agendamento, estado, bloqueia_horario=None):
+    """Muda o estado de uma marcação. `bloqueia_horario` é OPCIONAL e, quando
+    indicado, é gravado na mesma instrução — o estado e a disponibilidade do
+    horário nunca ficam por um instante em desacordo.
+
+    Quando não é indicado, aplica-se a regra por omissão do estado: uma
+    marcação REAGENDADA (a antiga, que já não vai acontecer) deixa sempre de
+    ocupar o horário; concluída e confirmada continuam a ocupá-lo; o
+    cancelamento tem caminho próprio (ver marcar_agendamento_cancelado), por
+    ser o único caso em que a decisão pertence ao negócio."""
+    if bloqueia_horario is None and chave_estado(estado) == "reagendado":
+        bloqueia_horario = 0
     with obter_bd() as conn:
-        conn.execute("UPDATE agendamentos SET estado = ? WHERE id = ?", (estado, id_agendamento))
+        if bloqueia_horario is None:
+            conn.execute("UPDATE agendamentos SET estado = ? WHERE id = ?", (estado, id_agendamento))
+        else:
+            conn.execute("UPDATE agendamentos SET estado = ?, bloqueia_horario = ? WHERE id = ?",
+                         (estado, int(bool(bloqueia_horario)), id_agendamento))
 
 
 # ---------------------------------------------------------------------------
@@ -1440,6 +1567,46 @@ ESTADO_CALENDARIO = {
     "reagendado": "Reagendado",
     "cancelado": "Cancelado",
 }
+
+
+def chave_estado(estado):
+    """"Concluído" -> "concluido". A base de dados guarda o estado como foi
+    escrito (com acento); a chave normalizada é a que se usa para comparar,
+    filtrar e escolher classes CSS. Mesma regra do chaveEstado() do painel."""
+    limpo = unicodedata.normalize("NFD", str(estado or ""))
+    return "".join(c for c in limpo if not unicodedata.combining(c)).strip().lower()
+
+
+# ---------------------------------------------------------------------------
+# DISPONIBILIDADE REAL — o estado da marcação e a ocupação do horário são
+# duas coisas diferentes (ver a coluna bloqueia_horario):
+#   • confirmada ................................. bloqueia
+#   • concluída .................................. bloqueia
+#   • cancelada com bloqueia_horario = 1 ......... bloqueia
+#   • cancelada com bloqueia_horario = 0 ......... NÃO bloqueia
+#   • reagendada (a antiga) ...................... NÃO bloqueia
+#   • a marcação nova saída do reagendamento fica confirmada -> bloqueia
+# Esta é a ÚNICA função que decide se um registo ocupa um horário; tudo o
+# resto (calendário, painel, WhatsApp) pergunta-lhe a ela.
+# ---------------------------------------------------------------------------
+ESTADOS_QUE_BLOQUEIAM_SEMPRE = ("confirmado", "concluido")
+
+
+def agendamento_bloqueia_horario(agendamento):
+    estado = chave_estado((agendamento or {}).get("estado") or "confirmado")
+    if estado in ESTADOS_QUE_BLOQUEIAM_SEMPRE:
+        return True
+    if estado == "cancelado":
+        return int((agendamento or {}).get("bloqueia_horario") or 0) == 1
+    return False        # reagendada antiga (e qualquer estado desconhecido)
+
+
+def horario_livre_de_uma_marcacao(agendamento):
+    """True quando o registo existe mas o horário está livre — cancelada e
+    libertada. Usado para a distinguir visualmente de uma cancelada que
+    continua a ocupar o horário."""
+    return chave_estado((agendamento or {}).get("estado")) == "cancelado" \
+        and not agendamento_bloqueia_horario(agendamento)
 
 
 def data_iso_de_texto(texto):
@@ -1528,6 +1695,11 @@ def evento_calendario(agendamento, pedido=None):
         "dia_inteiro": dia_inteiro,
         "duracao_minutos": minutos,
         "estado": agendamento.get("estado") or "confirmado",
+        "estado_chave": chave_estado(agendamento.get("estado") or "confirmado"),
+        # A cor diz o SERVIÇO; estes dois dizem, por texto, o que a cor nunca
+        # diz: se o registo ainda ocupa o horário ou se este já está livre.
+        "bloqueia_horario": agendamento_bloqueia_horario(agendamento),
+        "horario_livre": not agendamento_bloqueia_horario(agendamento),
         "nome": agendamento.get("nome"),
         "primeiro_nome": primeiro_nome(agendamento.get("nome")) or "",
         "telefone": agendamento.get("telefone"),
@@ -2784,7 +2956,16 @@ def passo_data(de, idioma, passo_n=4, sessao=None):
 
 
 def passo_hora(de, idioma, passo_n=5, sessao=None):
-    enviar_lista(de, t("hora_corpo", idioma, n=passo_n), t("hora_seccao", idioma), HORARIOS, idioma,
+    """Mostra só os horários REALMENTE livres na data escolhida — um horário
+    bloqueado (marcação confirmada, concluída, ou cancelada que o negócio
+    decidiu manter ocupado) não aparece; um horário libertado volta a
+    aparecer de imediato, sem nada em cache."""
+    livres = horarios_livres_para_sessao(sessao)
+    if not livres:
+        enviar_texto(de, t("hora_sem_vagas", idioma))
+        passo_data(de, idioma, sessao=sessao)
+        return
+    enviar_lista(de, t("hora_corpo", idioma, n=passo_n), t("hora_seccao", idioma), livres, idioma,
                  botao=t("hora_botao", idioma), com_voltar=True, rodape=t("rodape_padrao", idioma), sessao=sessao)
 
 
@@ -2999,26 +3180,46 @@ class HorarioOcupado(Exception):
     """Já existe outra marcação confirmada nesse intervalo (409 no painel)."""
 
 
-def cancelar_agendamento(id_agendamento):
-    """Cancela uma marcação CONFIRMADA e tenta avisar o cliente. Devolve
-    (agendamento_atualizado, cliente_notificado). Levanta EstadoInvalido se
-    já estiver cancelada, concluída ou reagendada — nunca cancela duas vezes.
+def marcar_agendamento_cancelado(id_agendamento, libertar=None, exigir_confirmado=True):
+    """Passa uma marcação a CANCELADA e grava, na MESMA instrução, se o
+    horário fica livre ou continua bloqueado.
 
-    A mudança de estado corre numa transação: ou fica gravada, ou não muda
-    nada (a verificação do estado e a escrita ficam na mesma transação, para
-    dois pedidos simultâneos não cancelarem os dois)."""
+    `libertar`: True -> horário volta a ficar disponível (bloqueia_horario=0);
+    False -> a marcação cancelada continua a ocupar o horário
+    (bloqueia_horario=1); None -> aplica a configuração guardada no painel
+    (ver libertar_horario_ao_cancelar). É este None que os cancelamentos
+    iniciados pelo cliente no WhatsApp usam: a decisão é do negócio e nunca
+    lhe é apresentada.
+
+    Devolve True se o horário ficou LIVRE. A verificação do estado e a
+    escrita ficam na mesma transação, para dois pedidos simultâneos não
+    cancelarem a mesma marcação duas vezes."""
+    if libertar is None:
+        libertar = libertar_horario_ao_cancelar()
+    bloqueia = 0 if libertar else 1
     with obter_bd() as conn:
         conn.execute("BEGIN IMMEDIATE")
         linha = conn.execute("SELECT estado FROM agendamentos WHERE id = ?", (id_agendamento,)).fetchone()
         if not linha:
             raise LookupError("Marcação não encontrada.")
-        if linha[0] != "confirmado":
+        if exigir_confirmado and linha[0] != "confirmado":
             raise EstadoInvalido(linha[0])
-        conn.execute("UPDATE agendamentos SET estado = 'cancelado' WHERE id = ?", (id_agendamento,))
+        # O registo NUNCA é apagado: fica no histórico como cancelado, só a
+        # ocupação do horário é que muda.
+        conn.execute("UPDATE agendamentos SET estado = 'cancelado', bloqueia_horario = ? WHERE id = ?",
+                     (bloqueia, id_agendamento))
+    return bool(libertar)
 
+
+def cancelar_agendamento(id_agendamento, libertar=None, avisar_cliente=True):
+    """Cancela uma marcação CONFIRMADA e tenta avisar o cliente. Devolve
+    (agendamento_atualizado, cliente_notificado, horario_libertado). Levanta
+    EstadoInvalido se já estiver cancelada, concluída ou reagendada — nunca
+    cancela duas vezes."""
+    libertado = marcar_agendamento_cancelado(id_agendamento, libertar)
     agendamento = obter_agendamento(id_agendamento)
-    notificado = _avisar_cliente_marcacao_cancelada(agendamento)
-    return agendamento, notificado
+    notificado = _avisar_cliente_marcacao_cancelada(agendamento) if avisar_cliente else False
+    return agendamento, notificado, libertado
 
 
 def _intervalo_agendamento(agendamento, data_iso=None, hora=None):
@@ -3038,26 +3239,91 @@ def _intervalo_agendamento(agendamento, data_iso=None, hora=None):
     return inicio, inicio + timedelta(minutes=minutos)
 
 
-def conflitos_de_horario(id_agendamento, data_iso, hora):
-    """Marcações CONFIRMADAS que se sobrepõem ao novo intervalo (a própria
-    marcação é sempre ignorada). A sobreposição considera a duração dos dois
-    lados, não apenas a hora de início."""
-    alvo = obter_agendamento(id_agendamento)
-    if not alvo:
-        return []
-    novo_inicio, novo_fim = _intervalo_agendamento(alvo, data_iso, hora)
+def _intervalo_solto(servico, duracao, data_iso, hora):
+    """(início, fim) de um horário que ainda NÃO é uma marcação — usado
+    quando se está a verificar se um slot está livre antes de gravar."""
+    return _intervalo_agendamento({"servico": servico, "duracao": duracao}, data_iso, hora)
+
+
+def conflitos_no_intervalo(agendamentos, data_iso, hora, servico, duracao, ignorar_id=None):
+    """Dos `agendamentos` dados, os que OCUPAM MESMO o intervalo pedido.
+
+    Um registo só entra aqui se agendamento_bloqueia_horario() disser que
+    ocupa o horário — uma marcação cancelada e libertada é ignorada, uma
+    marcação cancelada que continua a bloquear entra, tal como uma
+    confirmada ou concluída. A sobreposição conta com a duração dos dois
+    lados, não apenas com a hora de início."""
+    novo_inicio, novo_fim = _intervalo_solto(servico, duracao, data_iso, hora)
     if not novo_inicio:
-        return []
+        # Duração desconhecida: NÃO se inventa nenhuma (essa continua a ser a
+        # regra do calendário). Mas para a DISPONIBILIDADE não se pode dar o
+        # horário como livre só por isso — verifica-se o instante de início,
+        # que é o mínimo indiscutível: se já houver algo a decorrer nesse
+        # momento, o horário está ocupado.
+        if not (data_iso and hora):
+            return []
+        try:
+            novo_inicio = datetime.fromisoformat(f"{data_iso}T{hora}:00")
+        except ValueError:
+            return []
+        novo_fim = novo_inicio
     conflitos = []
-    for outro in listar_agendamentos():
-        if outro["id"] == id_agendamento or outro["estado"] != "confirmado":
+    for outro in agendamentos:
+        if ignorar_id is not None and outro.get("id") == ignorar_id:
+            continue
+        if not agendamento_bloqueia_horario(outro):
             continue
         if data_iso_de_texto(outro.get("data")) != data_iso:
             continue
         inicio, fim = _intervalo_agendamento(outro)
-        if inicio and novo_inicio < fim and inicio < novo_fim:
+        if not inicio:
+            continue
+        sobrepoe = (inicio <= novo_inicio < fim) if novo_inicio == novo_fim \
+            else (novo_inicio < fim and inicio < novo_fim)
+        if sobrepoe:
             conflitos.append(outro)
     return conflitos
+
+
+def conflitos_de_horario(id_agendamento, data_iso, hora):
+    """Marcações que ocupam o horário para onde se quer mover a marcação
+    `id_agendamento` (a própria é sempre ignorada)."""
+    alvo = obter_agendamento(id_agendamento)
+    if not alvo:
+        return []
+    return conflitos_no_intervalo(
+        listar_agendamentos(), data_iso, hora,
+        alvo.get("servico"), alvo.get("duracao"), ignorar_id=id_agendamento)
+
+
+def horario_esta_livre(data_iso, hora, servico=None, duracao=None, ignorar_id=None):
+    """True quando NADA ocupa esse intervalo. Ponto de entrada simples para
+    o fluxo do WhatsApp (ver horarios_livres_para_sessao)."""
+    return not conflitos_no_intervalo(
+        listar_agendamentos(), data_iso, hora, servico, duracao, ignorar_id=ignorar_id)
+
+
+def horarios_livres_para_sessao(sessao):
+    """Dos HORARIOS do catálogo, os que estão mesmo livres na data escolhida
+    pelo cliente. É esta a "disponibilidade apresentada no WhatsApp": logo
+    que um horário é libertado no painel volta a aparecer aqui, e logo que
+    é bloqueado desaparece — sem nada em cache."""
+    sessao = sessao or {}
+    data_iso = data_iso_de_texto(sessao.get("data"))
+    if not data_iso:
+        return list(HORARIOS)          # ainda não há data: nada a filtrar
+    _, duracao_pt, servico_pt, _ = calcular_preco_duracao(sessao)
+    servico = sessao.get("servico") or servico_pt
+    duracao = recuperar_duracao(servico, sessao.get("duracao") or duracao_pt)
+    existentes = listar_agendamentos()
+    livres = []
+    for etiqueta in HORARIOS:
+        hora = hora_hhmm_de_texto(etiqueta)
+        if not hora:
+            continue
+        if not conflitos_no_intervalo(existentes, data_iso, hora, servico, duracao):
+            livres.append(etiqueta)
+    return livres
 
 
 def reagendar_agendamento(id_agendamento, data_iso, hora, origem="dashboard"):
@@ -3088,7 +3354,9 @@ def reagendar_agendamento(id_agendamento, data_iso, hora, origem="dashboard"):
         if not linha or linha[0] != "confirmado":
             raise EstadoInvalido(linha[0] if linha else "inexistente")
         # a marcação continua ATIVA e confirmada, apenas na nova data/hora
-        conn.execute("UPDATE agendamentos SET data = ?, hora = ? WHERE id = ?",
+        # bloqueia_horario = 1: a marcação nova resultante do reagendamento
+        # ocupa o novo horário normalmente.
+        conn.execute("UPDATE agendamentos SET data = ?, hora = ?, bloqueia_horario = 1 WHERE id = ?",
                      (data_texto, hora_texto, id_agendamento))
         conn.execute(
             "INSERT INTO agendamento_historico (agendamento_id, data_anterior, hora_anterior, "
@@ -3191,15 +3459,19 @@ def processar_acao_equipa_marcacao(de, id_botao):
 
     if acao == "cancelar_sim":
         # Mesma lógica central usada pelo painel (ver cancelar_agendamento).
+        # Sem escolha explícita -> aplica a configuração guardada no painel
+        # ("Libertar automaticamente o horário").
         try:
-            _, notificado = cancelar_agendamento(id_agendamento)
+            _, notificado, libertado = cancelar_agendamento(id_agendamento)
         except (EstadoInvalido, LookupError):
             _responder_equipa(f"ℹ️ A marcação #{id_agendamento} já não está confirmada "
                               f"(estado atual: {obter_agendamento(id_agendamento)['estado']}).")
             return True
         _responder_equipa(f"❌ Marcação {resumo} cancelada — "
                           + ("cliente avisado." if notificado
-                             else "NÃO foi possível avisar o cliente automaticamente."))
+                             else "NÃO foi possível avisar o cliente automaticamente.")
+                          + ("\n🔓 Horário libertado: volta a estar disponível." if libertado
+                             else "\n🔒 Horário mantido ocupado: continua a impedir novas reservas."))
         return True
 
     if acao == "concluir":
@@ -4608,7 +4880,40 @@ def api_calendario():
         cores_servicos=cores_servicos_legenda(),
         cor_omissao=COR_SERVICO_OMISSAO,
         estados=ESTADO_CALENDARIO,
+        configuracoes=configuracoes_atuais(),
     ), 200
+
+
+# ---------------------------------------------------------------------------
+# Configurações do painel — leitura e gravação (mesma autenticação de tudo o
+# resto). O valor vem do corpo JSON, mas NUNCA é aceite tal e qual: só é
+# gravado depois de convertido para "1"/"0" aqui no servidor.
+# ---------------------------------------------------------------------------
+def _booleano_do_pedido(valor):
+    """Aceita true/false, "1"/"0", "sim"/"nao", 1/0. Devolve None quando o
+    valor não é reconhecido — quem chama responde 400 em vez de adivinhar."""
+    if isinstance(valor, bool):
+        return valor
+    texto = str(valor).strip().lower()
+    if texto in ("1", "true", "sim", "on", "yes"):
+        return True
+    if texto in ("0", "false", "nao", "não", "off", "no"):
+        return False
+    return None
+
+
+@app.route("/api/configuracoes", methods=["GET", "POST"])
+@requer_autenticacao
+def api_configuracoes():
+    if request.method == "POST":
+        dados = request.get_json(force=True, silent=True) or {}
+        if CONFIG_LIBERTAR_AO_CANCELAR not in dados:
+            return jsonify(erro="Nada para gravar."), 400
+        valor = _booleano_do_pedido(dados.get(CONFIG_LIBERTAR_AO_CANCELAR))
+        if valor is None:
+            return jsonify(erro="Valor inválido (esperado verdadeiro/falso)."), 400
+        guardar_configuracao(CONFIG_LIBERTAR_AO_CANCELAR, "1" if valor else "0")
+    return jsonify(ok=True, configuracoes=configuracoes_atuais()), 200
 
 
 # ---------------------------------------------------------------------------
@@ -4635,15 +4940,41 @@ def _resposta_evento(id_agendamento, notificado, extra=None):
 @requer_autenticacao
 def api_agendamento_cancelar(id_agendamento):
     """Cancela uma marcação a partir do painel. Só aceita marcações ainda
-    CONFIRMADAS — um segundo pedido devolve 409, nunca cancela duas vezes."""
+    CONFIRMADAS — um segundo pedido devolve 409, nunca cancela duas vezes.
+
+    Corpo JSON (tudo opcional):
+      libertar        -> true: o horário volta a ficar livre;
+                         false: a marcação cancelada continua a ocupá-lo;
+                         ausente: aplica a configuração guardada.
+      guardar_padrao  -> true: passa essa escolha a configuração por omissão.
+
+    Nada disto é aceite tal e qual: `libertar` é convertido para booleano
+    aqui no servidor e a escolha só é gravada depois de validada."""
+    dados = request.get_json(force=True, silent=True) or {}
+    libertar = None
+    if "libertar" in dados:
+        libertar = _booleano_do_pedido(dados.get("libertar"))
+        if libertar is None:
+            return jsonify(erro="Escolha de horário inválida (esperado verdadeiro/falso)."), 400
+    guardar_padrao = _booleano_do_pedido(dados.get("guardar_padrao")) or False
+
     try:
-        _, notificado = cancelar_agendamento(id_agendamento)
+        _, notificado, libertado = cancelar_agendamento(id_agendamento, libertar)
     except LookupError:
         return jsonify(erro="Marcação não encontrada."), 404
     except EstadoInvalido as e:
         return jsonify(erro=f"Esta marcação já não está confirmada (estado atual: {e}).",
                        estado=str(e)), 409
-    return _resposta_evento(id_agendamento, notificado)
+
+    # Só depois de o cancelamento ter mesmo corrido é que a escolha passa a
+    # padrão — nunca se grava uma preferência a partir de um pedido falhado.
+    if guardar_padrao and libertar is not None:
+        guardar_configuracao(CONFIG_LIBERTAR_AO_CANCELAR, "1" if libertar else "0")
+
+    return _resposta_evento(id_agendamento, notificado, extra={
+        "horario_libertado": bool(libertado),
+        "configuracoes": configuracoes_atuais(),
+    })
 
 
 @app.route("/api/agendamentos/<int:id_agendamento>/reagendar", methods=["POST"])
@@ -4706,6 +5037,9 @@ DASHBOARD_HTML = r"""
   :root{
     --bg:#0d0f12; --panel:#15181d; --panel2:#1b1f26; --border:#262b33;
     --gold:#e8b923; --text:#f2f3f5; --muted:#9aa1ac;
+    /* laranja do indicador "Agora" — deliberadamente diferente do vermelho
+       dos cancelamentos, para os dois nunca se confundirem */
+    --agora:#ff7a59;
   }
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;}
@@ -4782,11 +5116,47 @@ DASHBOARD_HTML = r"""
 
   /* A COR do evento vem do SERVIÇO (inline, ver cor_do_servico em bot.py).
      Estas classes tratam só do ESTADO — nunca da cor identificadora. */
-  .est-cancelado,.est-reagendado{opacity:.62;}
-  .est-cancelado .ev-t,.est-reagendado .ev-t{text-decoration:line-through;}
+  .est-reagendado{opacity:.62;}
+  .est-reagendado .ev-t{text-decoration:line-through;}
   .ev-badge{display:inline-block;padding:0 4px;border-radius:4px;font-size:9.5px;font-weight:700;
             background:rgba(255,255,255,.16);color:var(--text);margin-left:4px;vertical-align:middle;
             letter-spacing:.2px;max-width:100%;overflow:hidden;text-overflow:ellipsis;}
+
+  /* --- Cancelado: bloqueado vs. livre -----------------------------------
+     A informação NUNCA é passada só pela cor. Cada um destes casos tem, ao
+     mesmo tempo: fundo próprio, borda própria (sólida ou tracejada), um
+     ícone (🔒 / 🔓) e a frase escrita "Horário bloqueado"/"Horário livre".
+     A cor do SERVIÇO continua visível numa faixa lateral (--cor-servico),
+     por isso continua a dar para ler serviço + estado + disponibilidade num
+     relance. */
+  /* NOTA: estas regras NÃO podem mexer no `position` — .cal-evento é
+     position:absolute e é isso que o coloca na hora certa da grelha; um
+     position:relative aqui (mais específico) atirava o cartão para o fundo
+     da coluna. O ::before já se apoia nesse position:absolute. Só o
+     .cal-mes-ev (que vive no fluxo normal) precisa de position:relative. */
+  .cal-evento.bloqueado,.cal-mes-ev.bloqueado{
+      background:#3d1414 !important;border:1px solid #e05252 !important;border-left:none !important;
+      color:#f4c9c9;padding:2px 6px 2px 11px;}
+  .cal-evento.livre,.cal-mes-ev.livre{
+      background:rgba(224,82,82,.09) !important;border:1px dashed #e05252 !important;border-left:none !important;
+      color:#e7b3b3;padding:2px 6px 2px 11px;}
+  .cal-mes-ev.bloqueado,.cal-mes-ev.livre{position:relative;}
+  /* faixa com a cor original do serviço, à esquerda do cartão vermelho */
+  .cal-evento.bloqueado::before,.cal-evento.livre::before,
+  .cal-mes-ev.bloqueado::before,.cal-mes-ev.livre::before{
+      content:'';position:absolute;left:2px;top:3px;bottom:3px;width:4px;border-radius:3px;
+      background:var(--cor-servico,#8b95a6);}
+  .cal-evento.livre .ev-t,.cal-evento.bloqueado .ev-t{text-decoration:line-through;}
+  .cal-evento.livre .ev-disp,.cal-evento.bloqueado .ev-disp{text-decoration:none;font-weight:700;}
+  .ev-disp{display:block;font-size:9.5px;letter-spacing:0;line-height:1.2;}
+  /* texto mais compacto nos cartões cancelados: assim o nome do serviço cabe
+     sempre, mesmo num bloco de 45 minutos */
+  .cal-evento.bloqueado,.cal-evento.livre{font-size:10.5px;line-height:1.22;}
+  .cal-evento.bloqueado .ev-s,.cal-evento.livre .ev-s{color:inherit;opacity:.85;}
+  /* uma marcação cancelada e LIBERTADA não pode parecer que ocupa o horário:
+     encosta-se à direita, estreita e por cima, deixando o slot visualmente
+     vazio para uma reserva nova. */
+  .cal-evento.livre{opacity:.9;}
 
   /* grelha semana/dia */
   .cal-grelha{display:grid;position:relative;min-width:680px;border:1px solid var(--border);border-radius:10px;overflow:hidden;}
@@ -4808,8 +5178,25 @@ DASHBOARD_HTML = r"""
   .cal-evento .ev-t{font-weight:700;}
   .cal-evento .ev-s{color:var(--muted);}
   .cal-dia-inteiro{margin:0 0 6px;}
-  .cal-agora{position:absolute;left:0;right:0;height:0;border-top:2px solid #e05252;z-index:3;pointer-events:none;}
-  .cal-agora::before{content:'';position:absolute;left:-4px;top:-4px;width:7px;height:7px;border-radius:50%;background:#e05252;}
+  /* --- Indicador da hora atual ------------------------------------------
+     Linha FINA a toda a largura da coluna do dia de hoje, com uma etiqueta
+     "Agora · HH:MM" — nunca um traço vermelho solto que parece um elemento
+     partido, e nunca confundível com uma marcação (não tem fundo de cartão,
+     não recebe cliques e não entra na disposição dos eventos). */
+  .cal-agora{position:absolute;left:0;right:0;height:0;z-index:6;pointer-events:none;
+             border-top:1px solid var(--agora,#ff7a59);}
+  .cal-agora .agora-etiqueta{position:absolute;left:3px;top:-9px;padding:1px 6px;border-radius:9px;
+             font-size:9.5px;font-weight:700;line-height:1.5;white-space:nowrap;letter-spacing:.2px;
+             background:var(--agora,#ff7a59);color:#25120c;box-shadow:0 1px 5px rgba(0,0,0,.45);}
+  /* cabeçalho do dia de hoje: destaque DISCRETO (não grita, mas vê-se) */
+  .cal-cab.hoje{color:var(--agora,#ff7a59);font-weight:700;
+                background:linear-gradient(180deg,rgba(255,122,89,.16),rgba(255,122,89,0));
+                box-shadow:inset 0 -2px 0 var(--agora,#ff7a59);}
+  .cal-cab .cab-hoje{display:block;font-size:9px;letter-spacing:.6px;text-transform:uppercase;opacity:.85;}
+  /* telemóvel (agenda vertical): a mesma informação, sem grelha horária */
+  .cal-agora-agenda{display:flex;align-items:center;gap:8px;margin:2px 0 8px;
+                    font-size:10.5px;font-weight:700;color:var(--agora,#ff7a59);}
+  .cal-agora-agenda::after{content:'';flex:1;height:1px;background:var(--agora,#ff7a59);opacity:.55;}
 
   /* mês */
   .cal-mes{display:grid;grid-template-columns:repeat(7,minmax(90px,1fr));gap:1px;background:var(--border);
@@ -4859,6 +5246,35 @@ DASHBOARD_HTML = r"""
                    border-radius:7px;padding:7px 9px;font-size:14px;width:100%;}
   .dlg-aviso{margin-top:12px;padding:8px 11px;border-radius:8px;font-size:12.5px;
              background:rgba(232,185,35,.12);color:var(--gold);border:1px solid rgba(232,185,35,.35);}
+  /* escolha "libertar / manter" dentro do diálogo de cancelamento */
+  .dlg-escolha{margin-top:14px;padding-top:12px;border-top:1px solid var(--border);}
+  .dlg-escolha > strong{display:block;font-size:13px;margin-bottom:8px;}
+  .dlg-opcao{display:flex;gap:9px;align-items:flex-start;padding:9px 11px;margin-bottom:7px;cursor:pointer;
+             border:1px solid var(--border);border-radius:9px;background:var(--panel2);font-size:13px;}
+  .dlg-opcao:hover{border-color:var(--gold);}
+  .dlg-opcao input{width:auto;margin:3px 0 0;accent-color:var(--gold);flex:0 0 auto;}
+  .dlg-opcao .op-desc{display:block;color:var(--muted);font-size:11.5px;margin-top:2px;line-height:1.45;}
+  .dlg-opcao.escolhida{border-color:var(--gold);background:rgba(232,185,35,.08);}
+  .dlg-padrao{display:flex;gap:8px;align-items:center;font-size:12.5px;color:var(--muted);margin-top:4px;cursor:pointer;}
+  .dlg-padrao input{width:auto;margin:0;accent-color:var(--gold);}
+
+  /* --- Definições do painel --------------------------------------------- */
+  .def-linha{display:flex;gap:14px;align-items:flex-start;justify-content:space-between;
+             flex-wrap:wrap;padding:14px 18px;}
+  .def-texto{max-width:640px;}
+  .def-texto strong{display:block;font-size:13.5px;margin-bottom:3px;}
+  .def-texto span{color:var(--muted);font-size:12.5px;line-height:1.6;}
+  .interruptor{display:inline-flex;align-items:center;gap:10px;cursor:pointer;font-size:12.5px;
+               color:var(--muted);white-space:nowrap;}
+  .interruptor input{position:absolute;opacity:0;width:0;height:0;}
+  .interruptor .calha{width:44px;height:24px;border-radius:20px;background:#3a3f4a;position:relative;
+                      transition:background .15s ease;flex:0 0 auto;}
+  .interruptor .calha::after{content:'';position:absolute;top:3px;left:3px;width:18px;height:18px;
+                      border-radius:50%;background:#c9ced8;transition:transform .15s ease,background .15s ease;}
+  .interruptor input:checked + .calha{background:var(--gold);}
+  .interruptor input:checked + .calha::after{transform:translateX(20px);background:#1a1400;}
+  .interruptor input:focus-visible + .calha{outline:2px solid var(--gold);outline-offset:2px;}
+  .def-estado{font-size:12px;padding:0 18px 14px;color:var(--muted);}
   .dlg-erro{margin-top:10px;color:#e88;font-size:12.5px;}
   .dlg-acoes{display:flex;gap:8px;justify-content:flex-end;padding:0 18px 18px;flex-wrap:wrap;}
   .dlg-acoes button{cursor:pointer;border:1px solid var(--border);border-radius:8px;padding:8px 14px;
@@ -4916,6 +5332,24 @@ DASHBOARD_HTML = r"""
   </div>
 
   <div class="lista">
+    <h2>⚙️ Definições</h2>
+    <div class="def-linha">
+      <div class="def-texto">
+        <strong>Ao cancelar uma marcação</strong>
+        <span id="def-descricao">Com esta opção <em>ligada</em>, a marcação fica guardada no histórico como
+        cancelada mas o horário volta automaticamente a ficar disponível para novas reservas.
+        Desligada, a marcação cancelada continua a ocupar o horário e a impedir novas reservas.</span>
+      </div>
+      <label class="interruptor" for="def-libertar">
+        <input type="checkbox" id="def-libertar">
+        <span class="calha"></span>
+        <span>Libertar automaticamente o horário</span>
+      </label>
+    </div>
+    <div class="def-estado" id="def-estado">A carregar as definições…</div>
+  </div>
+
+  <div class="lista" style="margin-top:22px;">
     <h2>📅 Calendário</h2>
     <div class="cal-barra">
       <div class="cal-grupo">
@@ -5031,10 +5465,15 @@ async function carregar(){
     return;
   }
 
-  let html = '<table><thead><tr><th>Cliente</th><th>Serviço</th><th>Data</th><th>Hora</th><th>Preço</th><th>Estado</th><th>Recebido em</th></tr></thead><tbody>';
+  let html = '<table><thead><tr><th>Cliente</th><th>Serviço</th><th>Data</th><th>Hora</th><th>Preço</th><th>Estado</th><th>Horário</th><th>Recebido em</th></tr></thead><tbody>';
   dados.forEach(d => {
     const criado = d.criado_em ? new Date(d.criado_em).toLocaleString('pt-PT') : '-';
     const classeEstado = d.estado !== 'confirmado' ? 'estado-cancelado' : '';
+    // A tabela diz, por texto e ícone, se o registo ainda ocupa o horário.
+    const bloqueia = evBloqueiaHorario(d);
+    const horario = bloqueia
+      ? '<span style="color:#f2a3a3;">🔒 Bloqueado</span>'
+      : '<span style="color:#9fe0b8;">🔓 Livre</span>';
     html += `<tr class="clicavel" onclick="abrirPainelAgendamento(${parseInt(d.id, 10)})">
       <td>${esc(d.nome || d.telefone)}<br><span style="color:var(--muted);font-size:12px;">${esc(d.telefone)}</span></td>
       <td><span class="tag">${esc(d.servico)}</span>${d.extra ? '<br><span style="color:var(--muted);font-size:12px;">+ '+esc(d.extra)+'</span>' : ''}</td>
@@ -5042,6 +5481,7 @@ async function carregar(){
       <td>${esc(d.hora) || '-'}</td>
       <td>${d.preco ? 'CHF '+esc(d.preco) : '-'}</td>
       <td class="${classeEstado}">${esc(d.estado)}</td>
+      <td>${horario}</td>
       <td style="color:var(--muted);">${esc(criado)}</td>
     </tr>`;
   });
@@ -5334,8 +5774,50 @@ const CAL_ESTADOS = [
   {id: 'confirmado', nome: 'Confirmado', cor: '#3878e8', classe: 'est-confirmado'},
   {id: 'concluido',  nome: 'Concluído',  cor: '#2ea05a', classe: 'est-concluido'},
   {id: 'reagendado', nome: 'Reagendado', cor: '#9678c8', classe: 'est-reagendado'},
-  {id: 'cancelado',  nome: 'Cancelado',  cor: '#e05252', classe: 'est-cancelado'},
+  {id: 'cancelado',  nome: 'Cancelado',  cor: '#e05252', classe: 'est-cancelado',
+   rotuloFiltro: 'Cancelados (horário livre)'},
 ];
+// Cor do indicador "Agora" — laranja quente, deliberadamente DIFERENTE do
+// vermelho dos cancelamentos, para nunca se confundirem.
+const COR_AGORA = '#ff7a59';
+
+// --- Estado da marcação vs. disponibilidade do horário ---------------------
+// São duas coisas distintas e são sempre comunicadas em separado: a cor diz
+// o SERVIÇO, o texto diz o ESTADO, e um terceiro texto (com ícone e borda
+// próprios) diz se o horário está BLOQUEADO ou LIVRE.
+function evCancelado(ev){
+  return chaveEstado(ev.estado) === 'cancelado';
+}
+function evBloqueiaHorario(ev){
+  if(typeof ev.bloqueia_horario === 'boolean') return ev.bloqueia_horario;
+  const chave = chaveEstado(ev.estado);
+  if(chave === 'confirmado' || chave === 'concluido') return true;
+  if(chave === 'cancelado') return Number(ev.bloqueia_horario || 0) === 1;
+  return false;
+}
+// '' (marcação ativa normal) | 'bloqueado' | 'livre'
+function classeDisponibilidade(ev){
+  if(!evCancelado(ev)) return '';
+  return evBloqueiaHorario(ev) ? 'bloqueado' : 'livre';
+}
+// Frase completa — usada onde há espaço: tooltip, pré-visualização, painel
+// de detalhes, cartões em cascata e vista de mês.
+function textoDisponibilidade(ev){
+  const classe = classeDisponibilidade(ev);
+  if(classe === 'bloqueado') return '🔒 Cancelado · Horário bloqueado';
+  if(classe === 'livre')     return '🔓 Cancelado · Horário livre';
+  return '';
+}
+// Forma curta para o cartão da grelha: um bloco de 45min/1h não tem altura
+// para a frase inteira e cortá-la a meio era pior. O "Cancelado" continua
+// ali mesmo por cima, no crachá de estado, por isso o cartão diz na mesma
+// as duas coisas — estado e disponibilidade — sem nada truncado.
+function textoDisponibilidadeCurto(ev){
+  const classe = classeDisponibilidade(ev);
+  if(classe === 'bloqueado') return '🔒 Horário bloqueado';
+  if(classe === 'livre')     return '🔓 Horário livre';
+  return '';
+}
 // Preenchido a partir da API (mapa central CORES_SERVICOS em bot.py) — nunca
 // gerado ao acaso, por isso a cor de um serviço é sempre a mesma.
 let CAL_CORES_SERVICOS = {};
@@ -5347,6 +5829,10 @@ function corDoEvento(ev){
 // texto (hora, cliente, serviço, preço) sempre legível por cima.
 function estiloCorEvento(ev){
   const cor = corDoEvento(ev);
+  // Cancelado: o cartão passa a vermelho (bloqueado) ou a vermelho tracejado
+  // (livre) pelas classes CSS, mas a cor do SERVIÇO continua visível numa
+  // faixa lateral alimentada por esta variável — nunca se perde.
+  if(evCancelado(ev)) return '--cor-servico:' + cor + ';';
   return 'background:' + cor + '33;border-left:3px solid ' + cor + ';';
 }
 const DIAS_CURTOS = ['seg', 'ter', 'qua', 'qui', 'sex', 'sáb', 'dom'];
@@ -5464,14 +5950,21 @@ function calDesenharControlos(){
   const filtros = document.getElementById('cal-filtros');
   if(!filtros.dataset.pronto){
     filtros.innerHTML = CAL_ESTADOS.map(e =>
-      '<label class="cal-filtro"><input type="checkbox" data-estado="' + e.id + '"'
-      + (calFiltros[e.id] ? ' checked' : '') + '> ' + esc(e.nome) + '</label>').join('');
+      '<label class="cal-filtro" title="' + esc(e.id === 'cancelado'
+          ? 'As marcações canceladas que CONTINUAM a bloquear o horário aparecem sempre — se não '
+            + 'aparecessem, o calendário mostrava como livre um horário que está ocupado.'
+          : 'Mostrar/ocultar marcações neste estado.')
+      + '"><input type="checkbox" data-estado="' + e.id + '"'
+      + (calFiltros[e.id] ? ' checked' : '') + '> ' + esc(e.rotuloFiltro || e.nome) + '</label>').join('');
     filtros.querySelectorAll('input').forEach(inp => {
       inp.addEventListener('change', () => calAlternarFiltro(inp.dataset.estado, inp.checked));
     });
     filtros.dataset.pronto = '1';
     document.getElementById('cal-legenda').innerHTML = CAL_ESTADOS.map(e =>
-      '<span><i class="cal-ponto" style="background:' + e.cor + '"></i>' + esc(e.nome) + '</span>').join('');
+      '<span><i class="cal-ponto" style="background:' + e.cor + '"></i>' + esc(e.nome) + '</span>').join('')
+      + '<span title="Cancelada, mas o horário continua ocupado">🔒 Horário bloqueado</span>'
+      + '<span title="Cancelada e o horário voltou a ficar disponível">🔓 Horário livre</span>'
+      + '<span><i class="cal-ponto" style="background:' + COR_AGORA + '"></i>Agora</span>';
   }
 }
 
@@ -5483,6 +5976,67 @@ function desenharLegendaServicos(){
     + nomes.map(nome => '<span><i class="cal-ponto" style="background:'
         + esc(CAL_CORES_SERVICOS[nome]) + '"></i>' + esc(nome) + '</span>').join('');
 }
+
+// ===========================================================================
+// DEFINIÇÕES — "Ao cancelar uma marcação: libertar automaticamente o horário"
+// ===========================================================================
+// O valor vive na base de dados (tabela `configuracoes`), por isso sobrevive
+// a um refresh do painel e a um reinício do servidor. Aqui em JavaScript é
+// só um espelho do que o servidor respondeu — nunca a fonte de verdade.
+let defLibertarAoCancelar = true;      // mesmo valor por omissão do servidor
+
+function aplicarConfiguracoes(cfg){
+  if(!cfg) return;
+  if(typeof cfg.libertar_horario_ao_cancelar === 'boolean'){
+    defLibertarAoCancelar = cfg.libertar_horario_ao_cancelar;
+  }
+  const campo = document.getElementById('def-libertar');
+  if(campo) campo.checked = defLibertarAoCancelar;
+  const estado = document.getElementById('def-estado');
+  if(estado){
+    estado.textContent = defLibertarAoCancelar
+      ? '✅ Ligado — ao cancelar, o horário fica automaticamente livre para novas reservas.'
+      : '🔒 Desligado — ao cancelar, o horário continua ocupado até ser libertado à mão.';
+  }
+}
+
+async function carregarConfiguracoes(){
+  try {
+    const resp = await fetch('/api/configuracoes');
+    if(!resp.ok) throw new Error('HTTP ' + resp.status);
+    const dados = await resp.json();
+    aplicarConfiguracoes(dados.configuracoes);
+  } catch(e){
+    const estado = document.getElementById('def-estado');
+    if(estado) estado.textContent = '❌ Não foi possível carregar as definições (' + e.message + ').';
+  }
+}
+
+async function guardarDefinicaoLibertar(valor){
+  const campo = document.getElementById('def-libertar');
+  const estado = document.getElementById('def-estado');
+  if(estado) estado.textContent = 'A guardar…';
+  try {
+    const resp = await fetch('/api/configuracoes', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({libertar_horario_ao_cancelar: valor}),
+    });
+    const dados = await resp.json().catch(() => ({}));
+    if(!resp.ok) throw new Error(dados.erro || ('HTTP ' + resp.status));
+    aplicarConfiguracoes(dados.configuracoes);
+    mostrarToast('Definição guardada.', 'ok');
+  } catch(e){
+    // Reverte o interruptor: o que manda é o servidor, não o browser.
+    if(campo) campo.checked = defLibertarAoCancelar;
+    if(estado) estado.textContent = '❌ Não foi possível guardar (' + e.message + ').';
+    mostrarToast('Não foi possível guardar a definição.', 'erro');
+  }
+}
+
+(function ligarDefinicoes(){
+  const campo = document.getElementById('def-libertar');
+  if(campo) campo.addEventListener('change', () => guardarDefinicaoLibertar(campo.checked));
+})();
 
 // --- carregamento ----------------------------------------------------------
 // Uma navegação NUNCA é ignorada por já haver outro pedido a decorrer: cada
@@ -5517,6 +6071,7 @@ async function calCarregar(manual){
       CAL_FIM = dados.grelha.hora_fim;
       CAL_PASSO = dados.grelha.intervalo_min;
     }
+    if(dados.configuracoes) aplicarConfiguracoes(dados.configuracoes);
     if(dados.cores_servicos){
       CAL_CORES_SERVICOS = dados.cores_servicos;
       CAL_COR_OMISSAO = dados.cor_omissao || CAL_COR_OMISSAO;
@@ -5546,7 +6101,13 @@ async function calCarregar(manual){
 }
 
 function calEventosVisiveis(){
-  return calEventos.filter(ev => calFiltros[chaveEstado(ev.estado)]);
+  return calEventos.filter(ev => {
+    // Uma marcação cancelada que CONTINUA a bloquear o horário aparece
+    // sempre: esconde-la seria mostrar como livre um horário que não está.
+    if(evCancelado(ev) && evBloqueiaHorario(ev)) return true;
+    // Cancelada e libertada: fora da vista por defeito, só com o filtro.
+    return calFiltros[chaveEstado(ev.estado)];
+  });
 }
 
 function calDesenhar(){
@@ -5600,16 +6161,28 @@ function calDisporSobrepostos(eventos){
 
 function calHtmlEvento(ev, estilo, classeExtra){
   const info = infoEstado(ev.estado);
+  const disp = classeDisponibilidade(ev);
+  // nos cartões em cascata (telemóvel) a altura é livre -> cabe a frase toda
+  const cascata = (classeExtra || '').indexOf('cal-agenda-ev') !== -1;
   const total = ev.total_centimos ? formatarCentimos(ev.total_centimos) : '';
+  // O nome do SERVIÇO fica sempre visível, mesmo num cartão cancelado.
   const linha2 = [esc(ev.servico || ''), esc(ev.duracao || '')].filter(Boolean).join(' · ');
-  return '<div class="cal-evento ' + info.classe + ' ' + (classeExtra || '') + '" style="'
+  return '<div class="cal-evento ' + info.classe + ' ' + disp + ' ' + (classeExtra || '') + '" style="'
        + estiloCorEvento(ev) + (estilo || '') + '"'
-       + ' data-id="' + esc(ev.id) + '" tabindex="0" role="button">'
+       + ' data-id="' + esc(ev.id) + '" tabindex="0" role="button"'
+       + ' title="' + esc((ev.servico || '') + ' · ' + info.nome
+                          + (disp ? ' · ' + textoDisponibilidade(ev).replace(/^\S+\s/, '') : '')) + '">'
        + '<div class="ev-t">' + esc(ev.dia_inteiro ? 'Dia inteiro' : hhmmDeIso(ev.inicio))
        + ' · ' + esc(ev.primeiro_nome || ev.telefone || '')
        + '<span class="ev-badge">' + esc(info.nome) + '</span></div>'
+       // O SERVIÇO vem sempre antes da linha de disponibilidade: num cartão
+       // baixo (45min/1h) é o que tem de sobrar, nunca pode ser cortado. Num
+       // cartão cancelado o total é omitido pela mesma razão — continua no
+       // painel de detalhes e na pré-visualização.
        + '<div class="ev-s">' + linha2 + '</div>'
-       + (total ? '<div class="ev-s">' + esc(total) + '</div>' : '')
+       + (disp ? '<div class="ev-disp">' + esc(cascata ? textoDisponibilidade(ev)
+                                                        : textoDisponibilidadeCurto(ev)) + '</div>' : '')
+       + (total && !disp ? '<div class="ev-s">' + esc(total) + '</div>' : '')
        + '</div>';
 }
 
@@ -5630,29 +6203,47 @@ function calHtmlGrelha(eventos){
   let colunas = '';
   dias.forEach(d => {
     const chave = ymd(d);
-    cabecalhos += '<div class="cal-cab' + (chave === hojeYmd ? ' hoje' : '') + '">'
+    const eHoje = (chave === hojeYmd);
+    cabecalhos += '<div class="cal-cab' + (eHoje ? ' hoje' : '') + '" data-dia="' + chave + '">'
                 + DIAS_CURTOS[(d.getDay() + 6) % 7] + ' ' + d.getDate() + '/'
-                + String(d.getMonth() + 1).padStart(2, '0') + '</div>';
+                + String(d.getMonth() + 1).padStart(2, '0')
+                + (eHoje ? '<span class="cab-hoje">hoje</span>' : '') + '</div>';
 
     // Os eventos de dia inteiro já vêm do servidor a começar no início da
     // grelha e com a duração dela toda (ver evento_calendario) — por isso
     // são posicionados exatamente como os outros, ocupando a coluna inteira.
     const doDia = eventos.filter(ev => ev.dia === chave);
+    // Uma marcação cancelada cujo horário foi LIBERTADO não pode ocupar o
+    // slot como uma reserva ativa: fica de fora da disposição em colunas
+    // (não comprime nem empurra nada) e é desenhada como uma tira estreita
+    // encostada à direita, deixando o horário visualmente livre.
+    const ocupam = doDia.filter(ev => classeDisponibilidade(ev) !== 'livre');
+    const libertados = doDia.filter(ev => classeDisponibilidade(ev) === 'livre');
 
     let celulas = '';
     for(let i = 0; i < faixas; i++){
       const cheia = ((CAL_INICIO * 60 + i * CAL_PASSO) % 60 === 0);
       celulas += '<div class="cal-faixa' + (cheia ? ' hora-cheia' : '') + '"></div>';
     }
-    let blocos = '';
-    calDisporSobrepostos(doDia).forEach(p => {
-      const topo = Math.max(0, (p.ini - CAL_INICIO * 60)) * alturaPorMinuto();
+    const geometria = (ini, fim) => {
+      const topo = Math.max(0, (ini - CAL_INICIO * 60)) * alturaPorMinuto();
       const alturaMax = faixas * CAL_ALTURA_FAIXA - topo;
-      const altura = Math.max(24, Math.min((p.fim - Math.max(p.ini, CAL_INICIO * 60)) * alturaPorMinuto(), alturaMax));
+      const altura = Math.max(24, Math.min((fim - Math.max(ini, CAL_INICIO * 60)) * alturaPorMinuto(), alturaMax));
+      return {topo: topo, altura: altura};
+    };
+    let blocos = '';
+    calDisporSobrepostos(ocupam).forEach(p => {
+      const g = geometria(p.ini, p.fim);
       const largura = 100 / p.total;
       blocos += calHtmlEvento(p.ev,
-        'top:' + topo.toFixed(1) + 'px;height:' + altura.toFixed(1) + 'px;left:calc(' + (largura * p.coluna).toFixed(3)
+        'top:' + g.topo.toFixed(1) + 'px;height:' + g.altura.toFixed(1) + 'px;left:calc(' + (largura * p.coluna).toFixed(3)
         + '% + 2px);width:calc(' + largura.toFixed(3) + '% - 4px);');
+    });
+    libertados.forEach(ev => {
+      const ini = minutosDeIso(ev.inicio);
+      const g = geometria(ini, Math.max(ini + 15, minutosDeIso(ev.fim)));
+      blocos += calHtmlEvento(ev, 'top:' + g.topo.toFixed(1) + 'px;height:' + g.altura.toFixed(1)
+        + 'px;right:2px;width:44%;z-index:4;');
     });
     colunas += '<div class="cal-coluna" data-dia="' + chave + '">' + celulas + blocos + '</div>';
   });
@@ -5682,12 +6273,17 @@ function calHtmlMes(eventos){
     const visiveis = doDia.slice(0, 3);
     html += '<div class="cal-mes-cel' + (fora ? ' fora' : '') + (chave === hojeYmd ? ' hoje' : '') + '">'
           + '<div class="cal-mes-num">' + d.getDate() + '</div>'
-          + visiveis.map(ev => '<div class="cal-mes-ev ' + infoEstado(ev.estado).classe + '" style="'
+          + visiveis.map(ev => {
+              const disp = classeDisponibilidade(ev);
+              const marca = disp === 'bloqueado' ? '🔒 ' : disp === 'livre' ? '🔓 ' : '';
+              return '<div class="cal-mes-ev ' + infoEstado(ev.estado).classe + ' ' + disp + '" style="'
               + estiloCorEvento(ev) + '" data-id="' + esc(ev.id) + '" tabindex="0" role="button" title="'
-              + esc((ev.servico || '') + ' · ' + infoEstado(ev.estado).nome) + '">'
-              + esc(ev.dia_inteiro ? '' : hhmmDeIso(ev.inicio) + ' ')
+              + esc((ev.servico || '') + ' · ' + infoEstado(ev.estado).nome
+                    + (disp ? ' · ' + (disp === 'bloqueado' ? 'Horário bloqueado' : 'Horário livre') : '')) + '">'
+              + marca + esc(ev.dia_inteiro ? '' : hhmmDeIso(ev.inicio) + ' ')
               + esc(ev.primeiro_nome || ev.telefone || '')
-              + '<span class="ev-badge">' + esc(infoEstado(ev.estado).nome) + '</span></div>').join('')
+              + '<span class="ev-badge">' + esc(infoEstado(ev.estado).nome) + '</span></div>';
+            }).join('')
           + (doDia.length > 3 ? '<div class="cal-mes-mais">+' + (doDia.length - 3) + '</div>' : '')
           + '</div>';
   }
@@ -5695,34 +6291,105 @@ function calHtmlMes(eventos){
   return html + (eventos.length ? '' : '<div class="vazio">Sem marcações neste mês.</div>');
 }
 
-// --- agenda vertical (telemóvel) -------------------------------------------
+// --- coluna de reservas: cartões em cascata (telemóvel / agenda vertical) --
+// Exatamente as mesmas regras da grelha: serviço ativo com a cor
+// predefinida do serviço; cancelado e bloqueado como cartão vermelho com
+// cadeado; cancelado e livre como cartão vermelho transparente e tracejado;
+// e sempre a frase "Horário livre"/"Horário bloqueado" escrita no cartão.
+// Respeita os mesmos filtros do calendário (recebe já calEventosVisiveis()).
 function calHtmlAgenda(eventos){
   if(!eventos.length) return '<div class="vazio">Sem marcações neste período.</div>';
   const porDia = {};
   eventos.forEach(ev => { (porDia[ev.dia] = porDia[ev.dia] || []).push(ev); });
+  const hojeYmd = ymd(new Date());
   return Object.keys(porDia).sort().map(dia => {
     const d = deYmd(dia);
     const lista = porDia[dia].slice().sort((a, b) => a.inicio.localeCompare(b.inicio));
+    const eHoje = (dia === hojeYmd);
+    let cartoes = '';
+    let agoraColocado = !(eHoje && agoraDentroDaGrelha());
+    const minutosAgora = minutosDoDiaAgora();
+    lista.forEach(ev => {
+      // No telemóvel não há grelha horária: o "Agora" entra como separador
+      // discreto, exatamente entre o cartão anterior e o seguinte.
+      if(!agoraColocado && minutosDeIso(ev.inicio) >= minutosAgora){
+        cartoes += htmlAgoraAgenda();
+        agoraColocado = true;
+      }
+      cartoes += calHtmlEvento(ev, 'position:relative;', 'cal-agenda-ev');
+    });
+    if(!agoraColocado) cartoes += htmlAgoraAgenda();
     return '<div class="cal-agenda-dia"><h4>' + DIAS_CURTOS[(d.getDay() + 6) % 7] + ' · '
-         + d.getDate() + ' ' + MESES[d.getMonth()] + '</h4>'
-         + lista.map(ev => calHtmlEvento(ev, 'position:relative;', 'cal-agenda-ev')).join('')
-         + '</div>';
+         + d.getDate() + ' ' + MESES[d.getMonth()] + (eHoje ? ' · hoje' : '') + '</h4>'
+         + cartoes + '</div>';
   }).join('');
 }
 
-// --- linha da hora atual ---------------------------------------------------
-function calDesenharLinhaAgora(){
-  if(calVista === 'mes' || ecraPequeno()) return;
+// ===========================================================================
+// INDICADOR DA HORA ATUAL — "Agora · HH:MM"
+// ===========================================================================
+// Uma linha fina a toda a largura da coluna do dia de hoje, com uma etiqueta
+// que diz a horas são. Regras:
+//   • só existe na coluna do DIA DE HOJE;
+//   • desaparece por completo quando a semana/dia/mês em vista não contém
+//     hoje, e quando a hora atual está fora do horário da grelha;
+//   • nunca deixa pontos nem traços soltos: é sempre removida antes de ser
+//     redesenhada, e não é desenhada de todo quando não se aplica;
+//   • não se confunde com uma marcação (sem fundo de cartão, sem cliques,
+//     cor laranja própria, fora da disposição dos eventos);
+//   • atualiza-se sozinha a cada minuto, sem recarregar a página.
+function minutosDoDiaAgora(){
   const agora = new Date();
-  const minutos = agora.getHours() * 60 + agora.getMinutes();
-  if(minutos < CAL_INICIO * 60 || minutos > CAL_FIM * 60) return;
-  const coluna = document.querySelector('.cal-coluna[data-dia="' + ymd(agora) + '"]');
-  if(!coluna) return;
+  return agora.getHours() * 60 + agora.getMinutes();
+}
+function agoraDentroDaGrelha(){
+  const minutos = minutosDoDiaAgora();
+  return minutos >= CAL_INICIO * 60 && minutos <= CAL_FIM * 60;
+}
+function horaAgoraTexto(){
+  const agora = new Date();
+  return String(agora.getHours()).padStart(2, '0') + ':' + String(agora.getMinutes()).padStart(2, '0');
+}
+function htmlAgoraAgenda(){
+  return '<div class="cal-agora-agenda">Agora · ' + esc(horaAgoraTexto()) + '</div>';
+}
+function limparLinhaAgora(){
+  document.querySelectorAll('#cal-conteudo .cal-agora').forEach(el => el.remove());
+}
+
+function calDesenharLinhaAgora(){
+  limparLinhaAgora();                       // nunca fica um traço antigo para trás
+  if(calVista === 'mes' || ecraPequeno()) return;   // o mês e o telemóvel não têm grelha horária
+  if(!agoraDentroDaGrelha()) return;                // fora do horário mostrado
+  const coluna = document.querySelector('.cal-coluna[data-dia="' + ymd(new Date()) + '"]');
+  if(!coluna) return;                               // a vista atual não contém hoje
   const linha = document.createElement('div');
   linha.className = 'cal-agora';
-  linha.style.top = ((minutos - CAL_INICIO * 60) * alturaPorMinuto()).toFixed(1) + 'px';
+  linha.setAttribute('aria-hidden', 'true');
+  linha.style.top = ((minutosDoDiaAgora() - CAL_INICIO * 60) * alturaPorMinuto()).toFixed(1) + 'px';
+  const etiqueta = document.createElement('span');
+  etiqueta.className = 'agora-etiqueta';
+  etiqueta.textContent = 'Agora · ' + horaAgoraTexto();
+  linha.appendChild(etiqueta);
   coluna.appendChild(linha);
 }
+
+// A cada minuto: reposiciona a linha (sem recarregar a página nem ir à rede)
+// e, no telemóvel, redesenha a agenda para o separador "Agora" acompanhar.
+function calTicAgora(){
+  if(ecraPequeno()){
+    // Redesenha a agenda só quando há mesmo um "Agora" em jogo: ou já está
+    // um separador no ecrã (que pode ter de sair), ou hoje está à vista e
+    // dentro do horário. Caso contrário não se mexe em nada.
+    const marcador = document.querySelector('#cal-conteudo .cal-agora-agenda');
+    const hojeAVista = agoraDentroDaGrelha()
+      && calEventosVisiveis().some(ev => ev.dia === ymd(new Date()));
+    if(marcador || hojeAVista) calDesenhar();
+    return;
+  }
+  calDesenharLinhaAgora();
+}
+setInterval(calTicAgora, 60000);
 
 // --- interação: hover (computador) e clique/toque ---------------------------
 function calLigarEventos(){
@@ -5779,7 +6446,10 @@ function mostrarPreview(id, elemento){
     + '<div>⏱️ ' + esc(ev.duracao || '-') + '</div>'
     + '<div>💰 ' + esc(formatarCentimos(ev.total_centimos)) + '</div>'
     + '<div><span class="estado-chip" style="background:' + info.cor + '33;color:' + info.cor + '">'
-    + esc(info.nome) + '</span></div>' + veiculo + foto
+    + esc(info.nome) + '</span>' + (textoDisponibilidade(ev)
+        ? ' <span class="estado-chip" style="background:rgba(224,82,82,.18);color:#f2a3a3">'
+          + esc(textoDisponibilidade(ev)) + '</span>' : '')
+    + '</div>' + veiculo + foto
     + '<div class="pv-acoes">'
     + '<button data-acao="detalhes">📋 Ver detalhes</button>'
     + (podeAgir ? '<button data-acao="reagendar">✏️ Alterar/Reagendar</button>'
@@ -5866,7 +6536,11 @@ async function abrirPainelAgendamento(id){
   const p = ev.pedido;
 
   let html = '<div class="linha"><span class="estado-chip" style="background:' + info.cor + '33;color:'
-           + info.cor + '">' + esc(info.nome) + '</span></div>';
+           + info.cor + '">' + esc(info.nome) + '</span>'
+           + (textoDisponibilidade(ev)
+               ? ' <span class="estado-chip" style="background:rgba(224,82,82,.18);color:#f2a3a3">'
+                 + esc(textoDisponibilidade(ev)) + '</span>' : '')
+           + '</div>';
   html += '<div class="linha">👤 ' + esc(ev.nome || 'sem nome') + '</div>';
   html += '<div class="linha">📱 <a href="tel:+' + esc(tel) + '">+' + esc(tel) + '</a></div>';
   html += '<div class="painel-acoes"><a href="https://wa.me/' + esc(tel) + '" target="_blank" rel="noopener">'
@@ -5968,39 +6642,77 @@ function mostrarToast(texto, tipo){
   setTimeout(() => el.remove(), 7000);
 }
 
-// Depois de cancelar/reagendar: atualiza calendário, tabela e painel sem
-// recarregar a página inteira.
+// Depois de cancelar/reagendar, atualiza TUDO o que mostra este horário, sem
+// recarregar a página inteira: a grelha do calendário, os cartões em cascata
+// (a mesma função calDesenhar desenha os dois), a tabela de agendamentos e o
+// painel de detalhes, se estiver aberto. A disponibilidade que o WhatsApp
+// apresenta não precisa de ser "atualizada" aqui: é calculada no servidor a
+// cada passo (ver horarios_livres_para_sessao), a partir desta mesma
+// verificação — assim que o horário é libertado, volta a ser oferecido.
 async function atualizarTudoApos(id, evento){
   if(evento) calPorId.set(String(evento.id), evento);
-  await calCarregar(false);
-  carregar();
+  await calCarregar(false);         // calendário + coluna de reservas em cascata
+  await carregar();                 // tabela de agendamentos
   const painel = document.getElementById('painel-ag');
-  if(painel.classList.contains('aberto')) abrirPainelAgendamento(id);
+  if(painel.classList.contains('aberto')) await abrirPainelAgendamento(id);
 }
 
 // --- Cancelar --------------------------------------------------------------
+// O cancelamento NUNCA acontece ao abrir este diálogo: primeiro pergunta-se
+// o que fazer ao horário (pré-selecionado com a configuração guardada) e só
+// depois de "Confirmar cancelamento" é que alguma coisa muda.
 async function abrirDialogoCancelar(id){
   const ev = await obterEvento(id);
   if(!ev){ mostrarToast('Marcação não encontrada.', 'erro'); return; }
+  const libertarPorOmissao = defLibertarAoCancelar;
   abrirDialogo('Cancelar marcação #' + esc(ev.id),
     '<div class="linha">👤 ' + esc(ev.nome || ev.telefone || '') + '</div>'
     + '<div class="linha">🔧 ' + esc(ev.servico || '-') + '</div>'
     + '<div class="linha">📅 ' + esc(ev.data || '-') + '</div>'
     + '<div class="linha">🕘 ' + esc(ev.hora_hhmm || ev.hora || '-') + '</div>'
     + '<div class="linha">🆔 Marcação #' + esc(ev.id) + '</div>'
-    + '<div class="dlg-aviso">O horário ficará novamente disponível. '
-    + 'O cliente será notificado, se ainda for possível enviar-lhe mensagem.</div>'
+    + '<div class="dlg-escolha">'
+    +   '<strong>O que deseja fazer com este horário?</strong>'
+    +   '<label class="dlg-opcao' + (libertarPorOmissao ? ' escolhida' : '') + '" data-valor="1">'
+    +     '<input type="radio" name="dlg-horario" value="1"' + (libertarPorOmissao ? ' checked' : '') + '>'
+    +     '<span>✅ Libertar o horário'
+    +       '<span class="op-desc">A marcação fica no histórico como cancelada e o horário volta a '
+    +       'ficar disponível para novas reservas.</span></span>'
+    +   '</label>'
+    +   '<label class="dlg-opcao' + (libertarPorOmissao ? '' : ' escolhida') + '" data-valor="0">'
+    +     '<input type="radio" name="dlg-horario" value="0"' + (libertarPorOmissao ? '' : ' checked') + '>'
+    +     '<span>🔒 Manter o horário ocupado'
+    +       '<span class="op-desc">A marcação fica cancelada mas continua a ocupar este horário e a '
+    +       'impedir novas reservas.</span></span>'
+    +   '</label>'
+    +   '<label class="dlg-padrao"><input type="checkbox" id="dlg-guardar-padrao"> '
+    +     'Guardar esta escolha como padrão</label>'
+    + '</div>'
+    + '<div class="dlg-aviso">O cliente será notificado, se ainda for possível enviar-lhe mensagem. '
+    + 'A marcação nunca é apagada: fica sempre no histórico.</div>'
     + '<div class="dlg-erro" id="dlg-erro-msg"></div>',
     '<button onclick="fecharDialogo()">Voltar</button>'
     + '<button class="perigo" id="dlg-confirmar">Confirmar cancelamento</button>');
+
+  const opcoes = document.querySelectorAll('#dlg-corpo .dlg-opcao');
+  opcoes.forEach(op => op.addEventListener('change', () => {
+    opcoes.forEach(o => o.classList.toggle('escolhida', o.querySelector('input').checked));
+  }));
   document.getElementById('dlg-confirmar').addEventListener('click', () => confirmarCancelamento(ev.id));
 }
 
 async function confirmarCancelamento(id){
   const botao = document.getElementById('dlg-confirmar');
+  const escolhido = document.querySelector('#dlg-corpo input[name="dlg-horario"]:checked');
+  const libertar = escolhido ? escolhido.value === '1' : defLibertarAoCancelar;
+  const guardarPadrao = !!(document.getElementById('dlg-guardar-padrao')
+                        && document.getElementById('dlg-guardar-padrao').checked);
   botao.disabled = true; botao.textContent = 'A cancelar…';
   try {
-    const resp = await fetch('/api/agendamentos/' + encodeURIComponent(id) + '/cancelar', {method: 'POST'});
+    const resp = await fetch('/api/agendamentos/' + encodeURIComponent(id) + '/cancelar', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({libertar: libertar, guardar_padrao: guardarPadrao}),
+    });
     const dados = await resp.json().catch(() => ({}));
     if(!resp.ok){
       erroDialogo(dados.erro || ('Não foi possível cancelar (HTTP ' + resp.status + ').'));
@@ -6008,9 +6720,15 @@ async function confirmarCancelamento(id){
       return;
     }
     fecharDialogo();
+    // O servidor é que diz o que realmente aconteceu ao horário — nunca se
+    // anuncia ao utilizador aquilo que só se pediu.
+    const horario = dados.horario_libertado
+      ? '🔓 O horário voltou a ficar disponível.' : '🔒 O horário continua ocupado.';
     const aviso = dados.cliente_notificado ? null
       : 'Marcação cancelada, mas não foi possível notificar automaticamente o cliente.';
-    mostrarToast(aviso || 'Marcação cancelada e cliente notificado.', aviso ? 'aviso' : 'ok');
+    mostrarToast((aviso || 'Marcação cancelada e cliente notificado.') + ' ' + horario,
+                 aviso ? 'aviso' : 'ok');
+    if(dados.configuracoes) aplicarConfiguracoes(dados.configuracoes);
     await atualizarTudoApos(id, dados.evento);
   } catch(e){
     erroDialogo('Falha de rede: ' + e.message);
@@ -6088,6 +6806,7 @@ window.addEventListener('hashchange', abrirAgendamentoPeloHash);
 
 carregar();
 carregarPedidos();
+carregarConfiguracoes();
 calCarregar(true).then(abrirAgendamentoPeloHash);
 setInterval(carregar, 20000);
 setInterval(carregarPedidos, 20000);
@@ -6113,7 +6832,7 @@ abrirPedidoPeloHash();
 
 @app.route("/versao", methods=["GET"])
 def versao():
-    return jsonify(versao="v5.5-calendario-acoes-cores", fluxos=["limpeza", "estetica", "wrap"],
+    return jsonify(versao="v5.6-horarios-cancelados", fluxos=["limpeza", "estetica", "wrap"],
                    idiomas=list(IDIOMAS_VALIDOS)), 200
 
 
@@ -6664,7 +7383,18 @@ def receber_mensagem():
                 return jsonify(status="ok"), 200
 
             if id_botao == "confirmar":
-                id_ag = guardar_agendamento(de, sessao)
+                # Última verificação, atómica com a gravação: entre o resumo e
+                # este clique o horário pode ter sido ocupado por outro
+                # cliente. Nesse caso nada é gravado e volta-se ao passo da
+                # hora, já sem o horário que entretanto desapareceu.
+                try:
+                    id_ag = guardar_agendamento(de, sessao)
+                except HorarioOcupado:
+                    sessao.pop("hora", None)
+                    guardar_sessao(de, sessao)
+                    enviar_texto(de, t("hora_entretanto_ocupada", idioma))
+                    passo_hora(de, idioma, sessao=sessao)
+                    return jsonify(status="ok"), 200
                 enviar_texto(de, mensagem_confirmacao_final(sessao, idioma))
                 # Em vez de mandar escrever comandos no próprio texto: botões.
                 enviar_botoes(de, t("e_agora_pergunta", idioma), [
@@ -6706,10 +7436,20 @@ def receber_mensagem():
 
             if id_botao.startswith("cancelar_ag_"):
                 id_ag = int(id_botao.split("_")[-1])
-                atualizar_estado_agendamento(id_ag, "cancelado")
+                # A decisão "libertar ou manter o horário" é do NEGÓCIO: aqui
+                # aplica-se em silêncio a configuração guardada no painel e
+                # nunca se pergunta nada ao cliente.
+                try:
+                    libertado = marcar_agendamento_cancelado(id_ag, exigir_confirmado=False)
+                except LookupError:
+                    libertado = None
                 enviar_texto(de, t("cancelado_cliente", idioma))
                 if PROVIDER_WHATSAPP:
-                    enviar_texto(PROVIDER_WHATSAPP, f"❌ Marcação #{id_ag} cancelada pelo cliente {formatar_telefone(de)}.")
+                    estado_horario = ("🔓 Horário libertado." if libertado
+                                      else "🔒 Horário mantido ocupado." if libertado is False else "")
+                    enviar_texto(PROVIDER_WHATSAPP,
+                                 f"❌ Marcação #{id_ag} cancelada pelo cliente {formatar_telefone(de)}."
+                                 + (f"\n{estado_horario}" if estado_horario else ""))
                 return jsonify(status="ok"), 200
 
             # --- Orçamento: resposta do cliente (aceitar/alterar/recusar) ---
