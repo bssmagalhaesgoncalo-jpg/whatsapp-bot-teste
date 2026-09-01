@@ -60,8 +60,18 @@ PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
 
 GRAPH_URL = f"https://graph.facebook.com/v21.0/{PHONE_NUMBER_ID}/messages"
 
-NOME_OFICINA = "Spotless Car Detail (TESTE)"
-MORADA_OFICINA = "Spotless Car Detail, Zermatt"
+# ---------------------------------------------------------------------------
+# IDENTIDADE DO NEGÓCIO — configurável por ambiente, nunca escrita à mão nas
+# mensagens. Trocar estas duas variáveis muda o nome e a morada em todo o
+# lado: saudação, resumo, confirmação, notificações e painel.
+# ---------------------------------------------------------------------------
+BUSINESS_NAME = os.environ.get("BUSINESS_NAME", "Daniela Nails (TESTE)")
+BUSINESS_ADDRESS = os.environ.get("BUSINESS_ADDRESS", "Visp, Switzerland")
+
+# Nomes antigos mantidos como aliases: há código e testes que os usam, e
+# renomeá-los não traria nada — apontam para a mesma identidade.
+NOME_OFICINA = BUSINESS_NAME
+MORADA_OFICINA = BUSINESS_ADDRESS
 
 # IDs usados em botões/listas em todo o fluxo (nunca traduzidos — são
 # identificadores internos, não texto visível)
@@ -191,36 +201,36 @@ TEXTOS = {
     "cancelar_desc": {"pt": "Terminar sem marcar", "de": "Ohne Buchung beenden", "en": "End without booking"},
 
     # --- Passos: Limpeza -----------------------------------------------
-    "limpeza_tipo_corpo": {"pt": "Passo 1 de 5 — Escolha o tipo de limpeza:",
-                            "de": "Schritt 1 von 5 — Wählen Sie die Art der Reinigung:",
-                            "en": "Step 1 of 5 — Choose the type of cleaning:"},
-    "limpeza_tipo_seccao": {"pt": "Tipo de limpeza", "de": "Art der Reinigung", "en": "Cleaning type"},
-    "limpeza_tipo_botao": {"pt": "🧼 Escolher", "de": "🧼 Wählen", "en": "🧼 Choose"},
+    "limpeza_tipo_corpo": {"pt": "Passo 1 de 5 — Que serviço deseja para as mãos?",
+                            "de": "Schritt 1 von 5 — Welchen Service möchten Sie für die Hände?",
+                            "en": "Step 1 of 5 — Which service would you like for your hands?"},
+    "limpeza_tipo_seccao": {"pt": "Serviços de mãos", "de": "Handservices", "en": "Hand services"},
+    "limpeza_tipo_botao": {"pt": "💅 Escolher", "de": "💅 Wählen", "en": "💅 Choose"},
 
-    "limpeza_tamanho_corpo": {"pt": "Passo 2 de 5 — Qual o tamanho do veículo?",
-                               "de": "Schritt 2 von 5 — Wie gross ist das Fahrzeug?",
-                               "en": "Step 2 of 5 — What is the vehicle size?"},
-    "tamanho_seccao": {"pt": "Tamanho do veículo", "de": "Fahrzeuggrösse", "en": "Vehicle size"},
-    "tamanho_botao": {"pt": "🚗 Escolher", "de": "🚗 Wählen", "en": "🚗 Choose"},
+    "limpeza_tamanho_corpo": {"pt": "Passo 2 de 5 — Que comprimento deseja para as unhas?",
+                               "de": "Schritt 2 von 5 — Welche Nagellänge möchten Sie?",
+                               "en": "Step 2 of 5 — What nail length would you like?"},
+    "tamanho_seccao": {"pt": "Comprimento das unhas", "de": "Nagellänge", "en": "Nail length"},
+    "tamanho_botao": {"pt": "📏 Escolher", "de": "📏 Wählen", "en": "📏 Choose"},
 
-    "extra_corpo": {"pt": "Passo 3 de 5 — Deseja algum extra?",
-                    "de": "Schritt 3 von 5 — Möchten Sie ein Extra?",
-                    "en": "Step 3 of 5 — Would you like any extra?"},
+    "extra_corpo": {"pt": "Passo 3 de 5 — Deseja acrescentar algum extra?",
+                    "de": "Schritt 3 von 5 — Möchten Sie ein Extra dazunehmen?",
+                    "en": "Step 3 of 5 — Would you like to add any extra?"},
     "extra_seccao": {"pt": "Extras disponíveis", "de": "Verfügbare Extras", "en": "Available extras"},
     "extra_botao": {"pt": "➕ Escolher", "de": "➕ Wählen", "en": "➕ Choose"},
 
     # --- Passos: Estética -----------------------------------------------
-    "estetica_servico_corpo": {"pt": "Passo 1 de 5 — Escolha o serviço de estética:",
-                                "de": "Schritt 1 von 5 — Wählen Sie den Aufbereitungsservice:",
-                                "en": "Step 1 of 5 — Choose the detailing service:"},
-    "estetica_servico_seccao": {"pt": "Estética automóvel", "de": "Fahrzeugaufbereitung", "en": "Car detailing"},
-    "estetica_servico_botao": {"pt": "✨ Escolher", "de": "✨ Wählen", "en": "✨ Choose"},
+    "estetica_servico_corpo": {"pt": "Passo 1 de 5 — Que serviço deseja para os pés?",
+                                "de": "Schritt 1 von 5 — Welchen Service möchten Sie für die Füsse?",
+                                "en": "Step 1 of 5 — Which service would you like for your feet?"},
+    "estetica_servico_seccao": {"pt": "Serviços de pés", "de": "Fussservices", "en": "Foot services"},
+    "estetica_servico_botao": {"pt": "🦶 Escolher", "de": "🦶 Wählen", "en": "🦶 Choose"},
 
-    "estetica_estado_corpo": {"pt": "Passo 2 de 5 — Como está o estado atual do veículo?",
-                               "de": "Schritt 2 von 5 — Wie ist der aktuelle Zustand des Fahrzeugs?",
-                               "en": "Step 2 of 5 — What is the vehicle's current condition?"},
-    "estado_seccao": {"pt": "Estado do veículo", "de": "Fahrzeugzustand", "en": "Vehicle condition"},
-    "estado_botao": {"pt": "🚗 Escolher", "de": "🚗 Wählen", "en": "🚗 Choose"},
+    "estetica_estado_corpo": {"pt": "Passo 2 de 5 — É necessário remover produto das unhas?",
+                               "de": "Schritt 2 von 5 — Muss Produkt von den Nägeln entfernt werden?",
+                               "en": "Step 2 of 5 — Does any product need removing from the nails?"},
+    "estado_seccao": {"pt": "Remoção de produto", "de": "Produktentfernung", "en": "Product removal"},
+    "estado_botao": {"pt": "🧴 Escolher", "de": "🧴 Wählen", "en": "🧴 Choose"},
 
     # --- Data / hora --------------------------------------------------------
     "data_corpo": {"pt": "Passo {n} de 5 — Para que dia gostaria de marcar?",
@@ -260,6 +270,10 @@ TEXTOS = {
     "resumo_pergunta": {"pt": "Está tudo correto?", "de": "Ist alles korrekt?", "en": "Is everything correct?"},
     "botao_confirmar": {"pt": "✅ Confirmar", "de": "✅ Bestätigen", "en": "✅ Confirm"},
     "botao_alterar": {"pt": "✏️ Alterar", "de": "✏️ Ändern", "en": "✏️ Change"},
+    # Rótulos do RESUMO: respostas diretas à pergunta "confirmamos?", em três
+    # botões visíveis de imediato (ver passo_resumo).
+    "botao_resumo_sim": {"pt": "✅ Sim, confirmar", "de": "✅ Ja, bestätigen", "en": "✅ Yes, confirm"},
+    "botao_resumo_nao": {"pt": "✏️ Não, alterar", "de": "✏️ Nein, ändern", "en": "✏️ No, change"},
     "botao_cancelar": {"pt": "❌ Cancelar", "de": "❌ Abbrechen", "en": "❌ Cancel"},
 
     "obrigado_nome": {"pt": "Obrigado, {nome}!", "de": "Danke, {nome}!", "en": "Thank you, {nome}!"},
@@ -271,9 +285,9 @@ TEXTOS = {
     "confirmado_duracao": {"pt": "⏱️ Duração: aproximadamente {duracao}",
                             "de": "⏱️ Dauer: ungefähr {duracao}",
                             "en": "⏱️ Duration: approximately {duracao}"},
-    "confirmado_instrucao": {"pt": "Por favor, retire os seus objetos pessoais do veículo antes da entrega.",
-                              "de": "Bitte entfernen Sie Ihre persönlichen Gegenstände vor der Abgabe aus dem Fahrzeug.",
-                              "en": "Please remove your personal belongings from the vehicle before drop-off."},
+    "confirmado_instrucao": {"pt": "Por favor, chegue aproximadamente 5 minutos antes da sua marcação.",
+                              "de": "Bitte kommen Sie ungefähr 5 Minuten vor Ihrem Termin an.",
+                              "en": "Please arrive approximately 5 minutes before your appointment."},
     # (o antigo "confirmado_rodape", que mandava escrever MENU/GERIR, foi
     # removido — essas ações são agora os botões enviados logo a seguir à
     # confirmação: "🗓️ Gerir marcação" e "🏠 Menu principal".)
@@ -778,92 +792,133 @@ def tx(valor, idioma):
 # guardado na base de dados e usado nas notificações internas.
 # ---------------------------------------------------------------------------
 LIMPEZA_TIPOS = [
-    {"id": "lp_int", "preco": 80,
-     "titulo": {"pt": "Interior", "de": "Innenreinigung", "en": "Interior"},
-     "descricao": {"pt": "Aspiração e higienização completa do habitáculo",
-                   "de": "Absaugen und vollständige Hygiene des Innenraums",
-                   "en": "Vacuuming and full interior sanitising"},
-     "duracao": {"pt": "1h30", "de": "1h30", "en": "1h 30"}},
-    {"id": "lp_ext", "preco": 60,
-     "titulo": {"pt": "Exterior", "de": "Aussenreinigung", "en": "Exterior"},
-     "descricao": {"pt": "Lavagem exterior à mão + secagem",
-                   "de": "Handwäsche aussen + Trocknen",
-                   "en": "Hand exterior wash + drying"},
+    {"id": "lp_gellack", "preco": 55,
+     "titulo": {"pt": "Gellack mãos", "de": "Gellack Hände", "en": "Gel polish hands"},
+     "descricao": {"pt": "Verniz em gel de longa duração",
+                   "de": "Langanhaltender Gellack",
+                   "en": "Long-lasting gel polish"},
      "duracao": {"pt": "1h", "de": "1h", "en": "1h"}},
-    {"id": "lp_full", "preco": 130,
-     "titulo": {"pt": "Interior + Exterior", "de": "Innen + Aussen", "en": "Interior + Exterior"},
-     "descricao": {"pt": "Pacote completo por dentro e por fora",
-                   "de": "Komplettpaket innen und aussen",
-                   "en": "Complete package inside and out"},
-     "duracao": {"pt": "2h", "de": "2h", "en": "2h"}},
+    {"id": "lp_gel", "preco": 90,
+     "titulo": {"pt": "Aplicação de gel", "de": "Gelmodellage", "en": "Gel application"},
+     "descricao": {"pt": "Construção completa em gel",
+                   "de": "Vollständiger Aufbau in Gel",
+                   "en": "Full gel build-up"},
+     "duracao": {"pt": "1h45", "de": "1h45", "en": "1h 45"}},
+    {"id": "lp_reenchimento", "preco": 70,
+     "titulo": {"pt": "Reenchimento", "de": "Auffüllen", "en": "Refill"},
+     "descricao": {"pt": "Manutenção do gel já aplicado",
+                   "de": "Auffrischung des vorhandenen Gels",
+                   "en": "Maintenance of existing gel"},
+     "duracao": {"pt": "1h30", "de": "1h30", "en": "1h 30"}},
+    {"id": "lp_classica", "preco": 40,
+     "titulo": {"pt": "Manicure clássica", "de": "Klassische Maniküre", "en": "Classic manicure"},
+     "descricao": {"pt": "Corte, lima e cutículas",
+                   "de": "Schneiden, Feilen und Nagelhaut",
+                   "en": "Cut, file and cuticles"},
+     "duracao": {"pt": "45min", "de": "45min", "en": "45min"}},
 ]
 
+# Comprimento das unhas — reutiliza a estrutura central de modificadores
+# (mesmo mecanismo de "fator" partilhado com o carrinho e com os preços).
+# Os IDs internos mantêm-se para não partir sessões nem marcações antigas.
 TAMANHOS_VEICULO = [
     {"id": "tam_p", "fator": 1.0,
-     "titulo": {"pt": "Pequeno", "de": "Klein", "en": "Small"},
-     "descricao": {"pt": "Ex: Smart, Polo, Corsa", "de": "Z.B. Smart, Polo, Corsa", "en": "E.g. Smart, Polo, Corsa"}},
-    {"id": "tam_m", "fator": 1.15,
+     "titulo": {"pt": "Natural/curto", "de": "Natürlich/kurz", "en": "Natural/short"},
+     "descricao": {"pt": "Comprimento natural", "de": "Natürliche Länge", "en": "Natural length"}},
+    {"id": "tam_m", "fator": 1.10,
      "titulo": {"pt": "Médio", "de": "Mittel", "en": "Medium"},
-     "descricao": {"pt": "Ex: Golf, Sedan, Berlina", "de": "Z.B. Golf, Limousine", "en": "E.g. Golf, Sedan"}},
-    {"id": "tam_g", "fator": 1.35,
-     "titulo": {"pt": "Grande", "de": "Gross", "en": "Large"},
-     "descricao": {"pt": "Ex: SUV, Van, Pick-up", "de": "Z.B. SUV, Van, Pick-up", "en": "E.g. SUV, Van, Pick-up"}},
+     "descricao": {"pt": "Ligeiramente além da ponta do dedo",
+                   "de": "Leicht über die Fingerkuppe hinaus",
+                   "en": "Slightly beyond the fingertip"}},
+    {"id": "tam_g", "fator": 1.20,
+     "titulo": {"pt": "Longo", "de": "Lang", "en": "Long"},
+     "descricao": {"pt": "Comprimento marcado", "de": "Deutliche Länge", "en": "Noticeable length"}},
+    {"id": "tam_xl", "fator": 1.35,
+     "titulo": {"pt": "Extra longo", "de": "Extra lang", "en": "Extra long"},
+     "descricao": {"pt": "Requer mais tempo de trabalho",
+                   "de": "Benötigt mehr Arbeitszeit",
+                   "en": "Requires more working time"}},
 ]
 
 EXTRAS_LIMPEZA = [
     {"id": "ex_nenhum", "preco": 0,
-     "titulo": {"pt": "Nenhum extra", "de": "Kein Extra", "en": "No extra"},
+     "titulo": {"pt": "Sem extra", "de": "Kein Extra", "en": "No extra"},
      "descricao": {"pt": "Seguir sem extras", "de": "Ohne Extras fortfahren", "en": "Continue without extras"}},
-    {"id": "ex_pelos", "preco": 25,
-     "titulo": {"pt": "Remoção de pelos de animal", "de": "Tierhaarentfernung", "en": "Pet hair removal"},
-     "descricao": {"pt": "Tratamento específico", "de": "Spezielle Behandlung", "en": "Specific treatment"}},
-    {"id": "ex_odores", "preco": 20,
-     "titulo": {"pt": "Tratamento de odores", "de": "Geruchsbehandlung", "en": "Odour treatment"},
-     "descricao": {"pt": "Ozono / neutralização de cheiros", "de": "Ozon / Geruchsneutralisierung",
-                   "en": "Ozone / odour neutralisation"}},
-    {"id": "ex_bancos", "preco": 15,
-     "titulo": {"pt": "Proteção de bancos", "de": "Sitzschutz", "en": "Seat protection"},
-     "descricao": {"pt": "Impermeabilização têxtil/pele", "de": "Imprägnierung Textil/Leder",
-                   "en": "Fabric/leather waterproofing"}},
+    {"id": "ex_french", "preco": 10,
+     "titulo": {"pt": "French/Babyboomer", "de": "French/Babyboomer", "en": "French/Babyboomer"},
+     "descricao": {"pt": "Acabamento degradê ou ponta branca",
+                   "de": "Verlauf oder weisse Spitze",
+                   "en": "Gradient or white tip finish"}},
+    {"id": "ex_nailart", "preco": 15,
+     "titulo": {"pt": "Nail Art simples", "de": "Einfache Nailart", "en": "Simple nail art"},
+     "descricao": {"pt": "Desenho ou decoração em algumas unhas",
+                   "de": "Motiv oder Dekoration auf einigen Nägeln",
+                   "en": "Design or decoration on a few nails"}},
+    {"id": "ex_reparacao", "preco": 8,
+     "titulo": {"pt": "Reparação de uma unha", "de": "Reparatur eines Nagels", "en": "Repair of one nail"},
+     "descricao": {"pt": "Correção pontual", "de": "Punktuelle Korrektur", "en": "Single-nail fix"}},
 ]
 
 ESTETICA_SERVICOS = [
-    {"id": "es_polimento", "preco": 150,
-     "titulo": {"pt": "Polimento", "de": "Polieren", "en": "Polishing"},
-     "descricao": {"pt": "Remove riscos e devolve o brilho", "de": "Entfernt Kratzer und bringt den Glanz zurück",
-                   "en": "Removes scratches and restores shine"},
-     "duracao": {"pt": "3h", "de": "3h", "en": "3h"}},
-    {"id": "es_ceramica", "preco": 350,
-     "titulo": {"pt": "Proteção cerâmica", "de": "Keramikversiegelung", "en": "Ceramic coating"},
-     "descricao": {"pt": "Proteção de longa duração", "de": "Langfristiger Schutz", "en": "Long-lasting protection"},
-     "duracao": {"pt": "1 dia", "de": "1 Tag", "en": "1 day"}},
-    {"id": "es_farois", "preco": 60,
-     "titulo": {"pt": "Polimento de faróis", "de": "Scheinwerferpolitur", "en": "Headlight polishing"},
-     "descricao": {"pt": "Recupera a transparência dos faróis", "de": "Stellt die Transparenz der Scheinwerfer wieder her",
-                   "en": "Restores headlight clarity"},
-     "duracao": {"pt": "45min", "de": "45min", "en": "45min"}},
+    {"id": "es_pedicure", "preco": 55,
+     "titulo": {"pt": "Pedicure clássica", "de": "Klassische Pediküre", "en": "Classic pedicure"},
+     "descricao": {"pt": "Corte, lima e cuidado das cutículas",
+                   "de": "Schneiden, Feilen und Nagelhautpflege",
+                   "en": "Cut, file and cuticle care"},
+     "duracao": {"pt": "1h", "de": "1h", "en": "1h"}},
+    {"id": "es_pedigel", "preco": 75,
+     "titulo": {"pt": "Pedicure + Gellack", "de": "Pediküre + Gellack", "en": "Pedicure + gel polish"},
+     "descricao": {"pt": "Pedicure com verniz em gel",
+                   "de": "Pediküre mit Gellack",
+                   "en": "Pedicure with gel polish"},
+     "duracao": {"pt": "1h15", "de": "1h15", "en": "1h 15"}},
+    {"id": "es_spa", "preco": 85,
+     "titulo": {"pt": "Spa pedicure", "de": "Spa-Pediküre", "en": "Spa pedicure"},
+     "descricao": {"pt": "Banho, esfoliação e massagem",
+                   "de": "Fussbad, Peeling und Massage",
+                   "en": "Soak, scrub and massage"},
+     "duracao": {"pt": "1h30", "de": "1h30", "en": "1h 30"}},
 ]
 
+# Remoção de produto — reutiliza a mesma estrutura central de modificadores
+# por "fator". Nenhuma mensagem aqui fala de veículos.
 ESTADO_VEICULO = [
     {"id": "est_bom", "fator": 1.0,
-     "titulo": {"pt": "✅ Bom estado", "de": "✅ Guter Zustand", "en": "✅ Good condition"}},
-    {"id": "est_medio", "fator": 1.0,
-     "titulo": {"pt": "🟡 Estado médio", "de": "🟡 Mittlerer Zustand", "en": "🟡 Average condition"}},
-    {"id": "est_mau", "fator": 1.15,
-     "titulo": {"pt": "🔴 Precisa de atenção especial", "de": "🔴 Braucht besondere Pflege", "en": "🔴 Needs special attention"}},
+     "titulo": {"pt": "Sem remoção", "de": "Ohne Entfernung", "en": "No removal"},
+     "descricao": {"pt": "As unhas estão sem produto",
+                   "de": "Die Nägel sind ohne Produkt",
+                   "en": "Nails have no product on"}},
+    {"id": "est_medio", "fator": 1.10,
+     "titulo": {"pt": "Remover Gellack", "de": "Gellack entfernen", "en": "Remove gel polish"},
+     "descricao": {"pt": "Retirar verniz em gel existente",
+                   "de": "Vorhandenen Gellack ablösen",
+                   "en": "Take off existing gel polish"}},
+    {"id": "est_mau", "fator": 1.20,
+     "titulo": {"pt": "Remover gel/acrílico", "de": "Gel/Acryl entfernen", "en": "Remove gel/acrylic"},
+     "descricao": {"pt": "Remoção de construção em gel ou acrílico",
+                   "de": "Entfernung von Gel- oder Acrylaufbau",
+                   "en": "Removal of gel or acrylic build-up"}},
 ]
 
 EXTRAS_ESTETICA = [
     {"id": "exe_nenhum", "preco": 0,
-     "titulo": {"pt": "Nenhum extra", "de": "Kein Extra", "en": "No extra"},
+     "titulo": {"pt": "Sem extra", "de": "Kein Extra", "en": "No extra"},
      "descricao": {"pt": "Seguir sem extras", "de": "Ohne Extras fortfahren", "en": "Continue without extras"}},
-    {"id": "exe_farois", "preco": 60,
-     "titulo": {"pt": "Polimento de faróis", "de": "Scheinwerferpolitur", "en": "Headlight polishing"},
-     "descricao": {"pt": "Complementar ao serviço principal", "de": "Ergänzend zum Hauptservice",
-                   "en": "In addition to the main service"}},
-    {"id": "exe_pneus", "preco": 20,
-     "titulo": {"pt": "Tratamento de pneus/jantes", "de": "Reifen-/Felgenpflege", "en": "Tyre/rim treatment"},
-     "descricao": {"pt": "Acabamento final", "de": "Abschliessende Politur", "en": "Finishing touch"}},
+    {"id": "exe_french", "preco": 10,
+     "titulo": {"pt": "French", "de": "French", "en": "French"},
+     "descricao": {"pt": "Acabamento francês", "de": "French-Finish", "en": "French finish"}},
+    {"id": "exe_nailart", "preco": 15,
+     "titulo": {"pt": "Nail Art", "de": "Nailart", "en": "Nail art"},
+     "descricao": {"pt": "Decoração nos dedos dos pés",
+                   "de": "Dekoration auf den Zehennägeln",
+                   "en": "Decoration on the toenails"}},
+    {"id": "exe_calos", "preco": 20,
+     # "Tratamento de calosidades" tem 25 caracteres e a API corta os títulos
+     # de linha aos 24 (MAX_TITULO_LINHA) — sem o "de" fica igual de claro.
+     "titulo": {"pt": "Tratamento calosidades", "de": "Hornhautbehandlung", "en": "Callus treatment"},
+     "descricao": {"pt": "Cuidado intensivo da pele dura",
+                   "de": "Intensive Pflege der harten Haut",
+                   "en": "Intensive care for hard skin"}},
 ]
 
 # ---------------------------------------------------------------------------
@@ -1099,12 +1154,8 @@ MENU_PRINCIPAL = [
      "titulo": {"pt": "📅 Marcar um serviço", "de": "📅 Termin buchen", "en": "📅 Book a service"},
      "descricao": {"pt": "Escolher serviço, data e hora", "de": "Service, Datum und Uhrzeit wählen",
                    "en": "Choose service, date and time"}},
-    {"id": "mp_orcamento",
-     "titulo": {"pt": "💰 Pedir orçamento", "de": "💰 Kostenvoranschlag anfragen", "en": "💰 Request a quote"},
-     "descricao": {"pt": "Sem compromisso, resposta da equipa", "de": "Unverbindlich, Antwort vom Team",
-                   "en": "No obligation, our team will reply"}},
     {"id": "mp_gerir",
-     "titulo": {"pt": "🗓️ Gerir a minha marcação", "de": "🗓️ Meinen Termin verwalten", "en": "🗓️ Manage my booking"},
+     "titulo": {"pt": "🗓️ Gerir marcação", "de": "🗓️ Termin verwalten", "en": "🗓️ Manage booking"},
      "descricao": {"pt": "Ver, reagendar ou cancelar", "de": "Ansehen, verschieben oder stornieren",
                    "en": "View, reschedule or cancel"}},
     {"id": "mp_humano",
@@ -1112,18 +1163,30 @@ MENU_PRINCIPAL = [
      "descricao": {"pt": "Um humano responde-lhe em breve", "de": "Ein Mitarbeiter meldet sich in Kürze",
                    "en": "A team member will reply shortly"}},
     {"id": "mp_idioma",
-     "titulo": {"pt": "🌐 Alterar idioma", "de": "🌐 Sprache ändern", "en": "🌐 Change language"},
+     "titulo": {"pt": "🌍 Alterar idioma", "de": "🌍 Sprache ändern", "en": "🌍 Change language"},
      "descricao": {"pt": "Português, Deutsch, English", "de": "Português, Deutsch, English",
                    "en": "Português, Deutsch, English"}},
 ]
 
+# Categorias VISÍVEIS ao cliente. Os IDs internos mantêm-se (cat_limpeza /
+# cat_estetica) de propósito: mudá-los só por causa do texto partiria sessões
+# guardadas, marcações antigas e o dispatch do webhook, sem ganho nenhum.
 CATEGORIAS_MARCAR = [
-    {"id": "cat_limpeza", "titulo": {"pt": "🧼 Limpeza", "de": "🧼 Reinigung", "en": "🧼 Cleaning"}},
-    {"id": "cat_estetica", "titulo": {"pt": "✨ Estética", "de": "✨ Aufbereitung", "en": "✨ Detailing"}},
-    {"id": "cat_wrap", "titulo": {"pt": "🎨 Wrap & Proteção", "de": "🎨 Folierung & Schutz", "en": "🎨 Wrap & Protection"}},
+    {"id": "cat_limpeza", "titulo": {"pt": "💅 Mãos / Manicure", "de": "💅 Hände / Maniküre",
+                                     "en": "💅 Hands / Manicure"}},
+    {"id": "cat_estetica", "titulo": {"pt": "🦶 Pés / Pedicure", "de": "🦶 Füsse / Pediküre",
+                                      "en": "🦶 Feet / Pedicure"}},
 ]
 
+# O fluxo Wrap & Proteção NÃO foi apagado: as tabelas, migrations, rotas da
+# API e funções continuam todas lá, para não partir bases de dados nem
+# pedidos antigos. Só deixou de ter entrada nos menus públicos desta versão.
+CATEGORIA_WRAP_OCULTA = {"id": "cat_wrap",
+                         "titulo": {"pt": "🎨 Wrap & Proteção", "de": "🎨 Folierung & Schutz",
+                                    "en": "🎨 Wrap & Protection"}}
+
 NOME_CATEGORIA = {c["id"]: c["titulo"] for c in CATEGORIAS_MARCAR}
+NOME_CATEGORIA[CATEGORIA_WRAP_OCULTA["id"]] = CATEGORIA_WRAP_OCULTA["titulo"]
 
 
 # ---------------------------------------------------------------------------
@@ -1313,6 +1376,16 @@ def obter_bd():
     # sozinha (ver RESERVA_TEMPORARIA_MINUTOS) e nunca aparece no calendário
     # nem no painel. Uma linha por número: um cliente só configura uma
     # marcação de cada vez. Tabela nova -> migração automática e inofensiva.
+    # Mensagens JÁ PROCESSADAS, pelo id que a Meta atribui a cada uma
+    # (wamid...). A Meta reenvia o mesmo webhook quando não recebe o 200 a
+    # tempo; sem isto, um reenvio depois de uma confirmação voltava a correr
+    # o mesmo passo — e chegava a tentar gravar uma segunda marcação sobre
+    # uma sessão já reiniciada. Tabela nova: migração automática e inofensiva.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS mensagens_processadas ("
+        "id TEXT PRIMARY KEY, "
+        "recebida_em TEXT NOT NULL)"
+    )
     conn.execute(
         "CREATE TABLE IF NOT EXISTS reservas_temporarias ("
         "telefone TEXT PRIMARY KEY, "
@@ -1369,6 +1442,28 @@ def libertar_horario_ao_cancelar():
 def configuracoes_atuais():
     """Configurações tal como o painel as consome (já em booleano)."""
     return {CONFIG_LIBERTAR_AO_CANCELAR: libertar_horario_ao_cancelar()}
+
+
+# Quanto tempo se guarda o id de uma mensagem já tratada. Bem acima da
+# janela de reenvios da Meta, e curto o suficiente para a tabela não crescer.
+IDEMPOTENCIA_HORAS = 24
+
+
+def mensagem_ja_processada(id_mensagem):
+    """True se esta mensagem JÁ foi tratada — nesse caso não se volta a agir.
+    Regista-a atomicamente: o INSERT OR IGNORE só afeta uma linha na primeira
+    vez, por isso dois webhooks simultâneos com o mesmo id nunca passam os
+    dois. Sem id (mensagens de teste, formatos antigos) segue o fluxo normal."""
+    if not id_mensagem:
+        return False
+    agora = datetime.utcnow()
+    with obter_bd() as conn:
+        conn.execute("DELETE FROM mensagens_processadas WHERE recebida_em < ?",
+                     ((agora - timedelta(hours=IDEMPOTENCIA_HORAS)).isoformat(),))
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO mensagens_processadas (id, recebida_em) VALUES (?, ?)",
+            (str(id_mensagem), agora.isoformat()))
+        return cur.rowcount == 0
 
 
 def carregar_sessao(telefone):
@@ -1555,15 +1650,30 @@ DURACAO_DIA_INTEIRO_MIN = (CALENDARIO_HORA_FIM - CALENDARIO_HORA_INICIO) * 60
 # cancelado) é sempre comunicado à parte, por texto (ver ESTADO_CALENDARIO).
 # ---------------------------------------------------------------------------
 CORES_SERVICOS = {
-    "Interior": "#3878e8",              # azul
-    "Exterior": "#20a4b8",              # turquesa
-    "Interior + Exterior": "#6f5ae0",   # violeta-azulado
-    "Polimento": "#e8963c",             # laranja
-    "Proteção cerâmica": "#2ea05a",     # verde
-    "Polimento de faróis": "#d4c23a",   # amarelo-mostarda
-    "Wrap total": "#d1478f",            # magenta
-    "Wrap parcial": "#a45cc4",          # roxo
+    # Mãos / Manicure
+    "Gellack mãos": "#d1478f",          # magenta
+    "Aplicação de gel": "#a45cc4",      # roxo
+    "Reenchimento": "#6f5ae0",          # violeta-azulado
+    "Manicure clássica": "#e896c8",     # rosa claro
+    # Pés / Pedicure
+    "Pedicure clássica": "#20a4b8",     # turquesa
+    "Pedicure + Gellack": "#2ea05a",    # verde
+    "Spa pedicure": "#e8963c",          # laranja
+    # Serviços do catálogo ANTIGO: continuam aqui para as marcações já
+    # gravadas não perderem a cor no calendário nem no histórico.
+    "Interior": "#3878e8",
+    "Exterior": "#3d8f9e",
+    "Interior + Exterior": "#5a6fd0",
+    "Polimento": "#c08a3c",
+    "Proteção cerâmica": "#3f8f5f",
+    "Polimento de faróis": "#d4c23a",
+    "Wrap total": "#b0538c",
+    "Wrap parcial": "#8f63a8",
 }
+# Só os serviços ATUAIS entram na legenda do painel — os antigos continuam a
+# ter cor, mas não enchem a legenda com nomes que já não se podem marcar.
+SERVICOS_NA_LEGENDA = ("Gellack mãos", "Aplicação de gel", "Reenchimento", "Manicure clássica",
+                       "Pedicure clássica", "Pedicure + Gellack", "Spa pedicure")
 COR_SERVICO_OMISSAO = "#8b95a6"         # cinzento-azulado, para serviços desconhecidos
 
 
@@ -1573,9 +1683,11 @@ def cor_do_servico(servico_pt):
 
 
 def cores_servicos_legenda():
-    """Mapa nome -> cor para a legenda "Cores dos serviços" do painel,
-    incluindo a entrada de reserva para serviços fora do catálogo."""
-    return {**CORES_SERVICOS, "Outro serviço": COR_SERVICO_OMISSAO}
+    """Mapa nome -> cor para a legenda "Cores dos serviços" do painel: os
+    serviços atuais, mais a entrada de reserva para tudo o resto (incluindo
+    as marcações antigas, que mantêm a sua cor própria em CORES_SERVICOS)."""
+    return {**{n: CORES_SERVICOS[n] for n in SERVICOS_NA_LEGENDA},
+            "Outro serviço": COR_SERVICO_OMISSAO}
 
 
 # Estados de uma marcação tal como aparecem no calendário (texto sempre
@@ -2554,13 +2666,13 @@ def guardar_media_local(pedido_id, media_id, conteudo, mime_tipo):
 # SEMPRE recalculado a partir das linhas atuais (carrinho_total_centimos),
 # nunca somado/subtraído sobre um valor antigo guardado.
 # ---------------------------------------------------------------------------
-GRUPO_SERVICO_BASE = "servico_base"        # tipo de Limpeza / serviço de Estética
-GRUPO_TAMANHO_VEICULO = "tamanho_veiculo"  # tamanho (Limpeza) ou estado (Estética) do veículo
+GRUPO_SERVICO_BASE = "servico_base"        # serviço de Mãos ou de Pés
+GRUPO_TAMANHO_VEICULO = "tamanho_veiculo"  # comprimento das unhas (Mãos) ou remoção (Pés)
 GRUPO_WRAP_VEICULO = "wrap_veiculo"        # tipo de veículo (Wrap, passo 1)
 GRUPO_WRAP_TIPO = "wrap_tipo"              # wrap total / parcial
 GRUPO_WRAP_COR = "wrap_cor"                # cor (família + cor, ou personalizada)
 GRUPO_ACABAMENTO = "acabamento"            # acabamento do wrap (brilhante, mate, ...)
-GRUPO_EXTRA = "extra"                      # extras de Limpeza/Estética
+GRUPO_EXTRA = "extra"                      # extras de Mãos/Pés
 GRUPO_DESCONTO = "desconto"                # reservado para futuros descontos/promoções
 
 GRUPOS_CARRINHO = (GRUPO_SERVICO_BASE, GRUPO_TAMANHO_VEICULO, GRUPO_WRAP_VEICULO, GRUPO_WRAP_TIPO,
@@ -2678,6 +2790,17 @@ def nome_com_preco(nome, centimos, idioma, estilo="base"):
     return f"{nome}{SEPARADOR_PRECO}{rotulo}" if rotulo else nome
 
 
+def _encurtar_titulo(nome, limite=None):
+    """Encurta um título ao limite da API do WhatsApp sem partir palavras."""
+    limite = limite or MAX_TITULO_LINHA
+    if len(nome) <= limite:
+        return nome
+    corte = nome[:limite - 1].rstrip()
+    if " " in corte:
+        corte = corte[:corte.rfind(" ")].rstrip()
+    return corte + "…"
+
+
 def opcao_com_preco(opcao, centimos, idioma, estilo="base"):
     """Devolve uma CÓPIA da opção de catálogo com o preço visível, sem nunca
     tocar no catálogo original (os nomes canónicos em português, gravados no
@@ -2699,8 +2822,13 @@ def opcao_com_preco(opcao, centimos, idioma, estilo="base"):
         nova["titulo"] = titulo_com_preco
         nova["descricao"] = descricao or None
     else:
-        nova["titulo"] = nome
-        nova["descricao"] = f"{rotulo}{SEPARADOR_PRECO}{descricao}" if descricao else rotulo
+        # Nem com o preço fora do título o nome cabe? Então corta-se numa
+        # fronteira de palavra e o nome COMPLETO vai para a descrição — nunca
+        # se deixa uma palavra partida a meio na lista.
+        nova["titulo"] = _encurtar_titulo(nome)
+        detalhe = f"{nome}{SEPARADOR_PRECO}" if nova["titulo"] != nome else ""
+        nova["descricao"] = f"{detalhe}{rotulo}{SEPARADOR_PRECO}{descricao}".strip() \
+            if descricao else f"{detalhe}{rotulo}".strip()
     return nova
 
 
@@ -2827,7 +2955,7 @@ def _preco_servico_base_centimos(sessao):
 
 
 def delta_modificador_veiculo_centimos(sessao, catalogo, item_id):
-    """Acréscimo, em cêntimos, que um tamanho/estado de veículo vai somar ao
+    """Acréscimo, em cêntimos, que um comprimento/remoção vai somar ao
     carrinho. É EXATAMENTE a mesma conta de carrinho_definir_modificador_
     veiculo() — partilhada aqui para o preço mostrado na opção ser sempre
     idêntico ao que depois aparece no carrinho e no resumo."""
@@ -2846,7 +2974,7 @@ def carrinho_definir_servico_base(sessao, catalogo, item_id):
 
 
 def carrinho_definir_modificador_veiculo(sessao, catalogo, item_id):
-    """Tamanho (Limpeza) ou estado (Estética) do veículo: aplicam um FATOR
+    """Comprimento das unhas (Mãos) ou remoção de produto (Pés): aplicam um FATOR
     multiplicativo sobre o preço base — aqui é convertido no acréscimo em
     cêntimos correspondente, para poder ser somado como mais uma linha do
     carrinho (nunca se multiplica um total antigo)."""
@@ -3041,13 +3169,16 @@ def passo_resumo(de, idioma, sessao):
     linhas.append(t("resumo_total", idioma, total=formatar_centimos(total_centimos, idioma)))
     linhas.append("\n" + t("resumo_pergunta", idioma))
 
-    # com_voltar promove esta mensagem a lista, para caber o ⬅️ Voltar (que
-    # regressa ao passo da hora) sem perder Confirmar/Alterar/Cancelar.
+    # Exatamente 3 botões = o máximo da API do WhatsApp. Ficam VISÍVEIS de
+    # imediato, sem obrigar o cliente a abrir primeiro "Escolher opção" — é o
+    # passo em que isso mais custa. Por isso não se junta aqui o ⬅️ Voltar
+    # (que promoveria a mensagem a lista): "✏️ Não, alterar" faz o mesmo
+    # papel, devolve o horário retido e leva de volta à escolha do serviço.
     enviar_botoes(de, "\n".join(linhas), [
-        {"id": "confirmar", "titulo": t("botao_confirmar", idioma)},
-        {"id": "alterar", "titulo": t("botao_alterar", idioma)},
+        {"id": "confirmar", "titulo": t("botao_resumo_sim", idioma)},
+        {"id": "alterar", "titulo": t("botao_resumo_nao", idioma)},
         {"id": ID_CANCELAR, "titulo": t("botao_cancelar", idioma)},
-    ], idioma, rodape=t("rodape_padrao", idioma), com_voltar=True,
+    ], idioma, rodape=t("rodape_padrao", idioma),
         titulo_seccao=t("resumo_seccao", idioma), botao_lista=t("menu_botao", idioma))
 
 
@@ -4801,7 +4932,7 @@ def requer_autenticacao(func):
         if not auth or auth.username != DASHBOARD_USER or auth.password != DASHBOARD_PASSWORD:
             return Response(
                 "Autenticação necessária.", 401,
-                {"WWW-Authenticate": 'Basic realm="Painel Spotless"'},
+                {"WWW-Authenticate": 'Basic realm="Painel Daniela Nails"'},
             )
         return func(*args, **kwargs)
     return wrapper
@@ -5115,10 +5246,22 @@ def media(nome_ficheiro):
     return send_from_directory(MEDIA_DIR, nome_ficheiro)
 
 
+def _escapar_html(texto):
+    """Escape mínimo para injetar texto de configuração no HTML do painel."""
+    return (str(texto).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            .replace('"', "&quot;").replace("'", "&#39;"))
+
+
+def dashboard_html():
+    """HTML do painel com a identidade do negócio já substituída. O nome vem
+    sempre de BUSINESS_NAME (variável de ambiente), nunca escrito à mão."""
+    return DASHBOARD_HTML.replace("{{BUSINESS_NAME}}", _escapar_html(BUSINESS_NAME))
+
+
 @app.route("/dashboard", methods=["GET"])
 @requer_autenticacao
 def dashboard():
-    return DASHBOARD_HTML
+    return dashboard_html()
 
 
 # String RAW (r"""), para o Python não tentar interpretar sequências de escape
@@ -5131,11 +5274,14 @@ DASHBOARD_HTML = r"""
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Painel de Agendamentos</title>
+<title>{{BUSINESS_NAME}} — Agenda de Teste</title>
 <style>
   :root{
     --bg:#0d0f12; --panel:#15181d; --panel2:#1b1f26; --border:#262b33;
-    --gold:#e8b923; --text:#f2f3f5; --muted:#9aa1ac;
+    /* Cor principal da marca (Daniela Nails). O nome da variável mantém-se
+       --gold para não ter de tocar nas ~90 utilizações espalhadas pela CSS
+       e pelo JavaScript; o que muda é o valor. */
+    --gold:#e454a0; --text:#f2f3f5; --muted:#9aa1ac;
     /* laranja do indicador "Agora" — deliberadamente diferente do vermelho
        dos cancelamentos, para os dois nunca se confundirem */
     --agora:#ff7a59;
@@ -5179,6 +5325,7 @@ DASHBOARD_HTML = r"""
   .cascata .cal-agenda-dia h4{position:sticky;top:-10px;background:var(--panel);padding:0.25rem 0;margin:0 0 0.3125rem;z-index:1;}
   .cal-nota{padding:1.625rem 1rem;text-align:center;color:var(--muted);font-size:0.7812rem;line-height:1.6;}
   .lista{background:var(--panel);border:1px solid var(--border);border-radius:0.75rem;overflow:hidden;}
+  .marca{color:var(--gold);font-weight:700;letter-spacing:.2px;margin-left:0.375rem;text-transform:none;}
   .lista h2{font-size:0.7812rem;margin:0;padding:0.5625rem 0.75rem;border-bottom:1px solid var(--border);color:var(--muted);font-weight:600;letter-spacing:.4px;text-transform:uppercase;}
   table{width:100%;border-collapse:collapse;}
   th,td{text-align:left;padding:0.75rem 1.125rem;font-size:0.875rem;border-bottom:1px solid var(--border);}
@@ -5475,7 +5622,7 @@ DASHBOARD_HTML = r"""
 <div class="wrap">
   <div class="topo">
     <div class="lista">
-      <h2>📅 Calendário</h2>
+      <h2>📅 Calendário <span class="marca">{{BUSINESS_NAME}}</span></h2>
       <div class="cal-barra">
         <div class="cal-grupo">
           <button class="cal-btn" onclick="calHoje()">Hoje</button>
@@ -5539,7 +5686,11 @@ DASHBOARD_HTML = r"""
     <div id="conteudo"><div class="vazio">A carregar…</div></div>
   </div>
 
-  <div class="lista" style="margin-top:14px;">
+  <!-- Área de pedidos de orçamento (Wrap & Proteção): OCULTA nesta versão.
+       O bloco fica no HTML, e a rota /api/pedidos, as tabelas e as migrations
+       continuam todas a funcionar — só deixou de ser mostrada. Basta remover
+       o atributo hidden para a ter de volta. -->
+  <div class="lista" style="margin-top:14px;" id="painel-pedidos-wrap" hidden>
     <h2>Pedidos de orçamento (Wrap &amp; Proteção)</h2>
     <div id="conteudo-pedidos"><div class="vazio">A carregar…</div></div>
   </div>
@@ -7093,7 +7244,8 @@ abrirPedidoPeloHash();
 
 @app.route("/versao", methods=["GET"])
 def versao():
-    return jsonify(versao="v5.9-preencher-janela", fluxos=["limpeza", "estetica", "wrap"],
+    return jsonify(versao="daniela-v1.0-alpha", negocio=BUSINESS_NAME,
+                   fluxos=["maos", "pes"], fluxos_ocultos=["wrap"],
                    idiomas=list(IDIOMAS_VALIDOS)), 200
 
 
@@ -7288,6 +7440,13 @@ def receber_mensagem():
 
         msg = entry["messages"][0]
         de = msg["from"]
+
+        # IDEMPOTÊNCIA: a Meta reenvia o mesmo webhook se não receber o 200 a
+        # tempo. Uma mensagem já tratada é reconhecida e devolvida em silêncio
+        # — sem repetir o passo, sem responder outra vez ao cliente e, acima
+        # de tudo, sem duplicar marcações.
+        if mensagem_ja_processada(msg.get("id")):
+            return jsonify(status="repetida"), 200
 
         # --- Ações INTERNAS da equipa ---------------------------------------
         # Processadas antes de qualquer carregamento/tratamento de sessão,
@@ -7550,15 +7709,16 @@ def receber_mensagem():
                 return jsonify(status="ok"), 200
 
             if id_botao in NOME_CATEGORIA:  # categoria dentro de "Marcar"
-                if id_botao == "cat_wrap":
-                    # Entrada do Wrap: primeiro pergunta-se COMO avançar.
-                    sessao.update({"fluxo": "wrap", "categoria": "cat_wrap"})
-                    guardar_sessao(de, sessao)
-                    passo_wrap_modo(de, idioma, sessao)
-                else:
-                    sessao.update({"fluxo": "marcar", "categoria": id_botao})
-                    guardar_sessao(de, sessao)
-                    (passo_limpeza_tipo if id_botao == "cat_limpeza" else passo_estetica_servico)(de, idioma, sessao)
+                if id_botao == CATEGORIA_WRAP_OCULTA["id"]:
+                    # Categoria oculta nesta versão (ver CATEGORIA_WRAP_OCULTA).
+                    # Continua a existir na base de dados e no painel para as
+                    # marcações antigas, mas não se pode entrar nela por aqui.
+                    nova = reiniciar_sessao(de)
+                    enviar_menu_principal(de, idioma, saudacao=False, sessao=nova)
+                    return jsonify(status="ok"), 200
+                sessao.update({"fluxo": "marcar", "categoria": id_botao})
+                guardar_sessao(de, sessao)
+                (passo_limpeza_tipo if id_botao == "cat_limpeza" else passo_estetica_servico)(de, idioma, sessao)
                 return jsonify(status="ok"), 200
 
             # --- Escolha do modo de pedido Wrap ---------------------------
@@ -7649,6 +7809,14 @@ def receber_mensagem():
                 return jsonify(status="ok"), 200
 
             if id_botao == "confirmar":
+                # Um "Confirmar" de uma mensagem antiga pode chegar quando a
+                # sessão já foi reiniciada (marcação feita, processo cancelado).
+                # Sem serviço, data e hora não há nada para gravar: em vez de
+                # rebentar contra a base de dados, volta-se ao menu.
+                if not (sessao.get("servico") and sessao.get("data") and sessao.get("hora")):
+                    nova = reiniciar_sessao(de)
+                    enviar_menu_principal(de, idioma, saudacao=False, sessao=nova)
+                    return jsonify(status="ok"), 200
                 # Última verificação, atómica com a gravação: entre o resumo e
                 # este clique o horário pode ter sido ocupado por outro
                 # cliente. Nesse caso nada é gravado e volta-se ao passo da
@@ -7827,9 +7995,12 @@ def receber_mensagem():
                 iniciar_escolha_categoria(de, idioma, sessao)
                 return jsonify(status="ok"), 200
             if id_escolhido == "mp_orcamento":
-                sessao["fluxo"] = "orcamento"
-                guardar_sessao(de, sessao)
-                passo_orcamento_generico(de, idioma, sessao)
+                # Nesta versão o pedido de orçamento não está no menu público.
+                # O ID pode na mesma chegar de uma mensagem antiga que o
+                # cliente ainda tenha na conversa: em vez de arrancar um fluxo
+                # que já não existe aqui, volta-se em segurança ao menu.
+                nova = reiniciar_sessao(de)
+                enviar_menu_principal(de, idioma, saudacao=False, sessao=nova)
                 return jsonify(status="ok"), 200
             if id_escolhido == "mp_gerir":
                 mostrar_gestao_marcacao(de, idioma)
