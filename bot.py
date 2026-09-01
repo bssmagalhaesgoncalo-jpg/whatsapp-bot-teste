@@ -1307,6 +1307,22 @@ def obter_bd():
         "valor TEXT NOT NULL, "
         "atualizado_em TEXT NOT NULL)"
     )
+    # Reservas TEMPORÁRIAS: o horário que um cliente acabou de escolher fica
+    # retido em nome dele enquanto está a rever e a confirmar a marcação, e
+    # deixa de ser oferecido a mais ninguém. Não é uma marcação — expira
+    # sozinha (ver RESERVA_TEMPORARIA_MINUTOS) e nunca aparece no calendário
+    # nem no painel. Uma linha por número: um cliente só configura uma
+    # marcação de cada vez. Tabela nova -> migração automática e inofensiva.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS reservas_temporarias ("
+        "telefone TEXT PRIMARY KEY, "
+        "data TEXT NOT NULL, "
+        "hora TEXT NOT NULL, "
+        "servico TEXT, "
+        "duracao TEXT, "
+        "criado_em TEXT NOT NULL, "
+        "expira_em TEXT NOT NULL)"
+    )
     return conn
 
 
@@ -1397,8 +1413,11 @@ def guardar_agendamento(telefone, sessao):
     with obter_bd() as conn:
         conn.execute("BEGIN IMMEDIATE")
         if data_iso and hora:
-            existentes = _agendamentos_da_conexao(conn)
-            if conflitos_no_intervalo(existentes, data_iso, hora, sessao.get("servico"), duracao):
+            # Conta com as marcações gravadas E com os horários que outros
+            # clientes escolheram e ainda estão a confirmar (a retenção do
+            # próprio é ignorada — é exatamente esta que ele vem confirmar).
+            if conflitos_no_intervalo(ocupacoes(telefone, conn), data_iso, hora,
+                                      sessao.get("servico"), duracao):
                 raise HorarioOcupado(f"{data_iso} {hora}")
         cur = conn.execute(
             "INSERT INTO agendamentos "
@@ -2956,11 +2975,12 @@ def passo_data(de, idioma, passo_n=4, sessao=None):
 
 
 def passo_hora(de, idioma, passo_n=5, sessao=None):
-    """Mostra só os horários REALMENTE livres na data escolhida — um horário
-    bloqueado (marcação confirmada, concluída, ou cancelada que o negócio
-    decidiu manter ocupado) não aparece; um horário libertado volta a
+    """Mostra só os horários REALMENTE livres na data escolhida. Não aparece
+    um horário bloqueado (marcação confirmada, concluída, ou cancelada que o
+    negócio decidiu manter ocupado) nem um horário que outro cliente acabou
+    de ESCOLHER e ainda está a confirmar. Um horário libertado volta a
     aparecer de imediato, sem nada em cache."""
-    livres = horarios_livres_para_sessao(sessao)
+    livres = horarios_livres_para_sessao(sessao, telefone=de)
     if not livres:
         enviar_texto(de, t("hora_sem_vagas", idioma))
         passo_data(de, idioma, sessao=sessao)
@@ -3296,18 +3316,97 @@ def conflitos_de_horario(id_agendamento, data_iso, hora):
         alvo.get("servico"), alvo.get("duracao"), ignorar_id=id_agendamento)
 
 
-def horario_esta_livre(data_iso, hora, servico=None, duracao=None, ignorar_id=None):
-    """True quando NADA ocupa esse intervalo. Ponto de entrada simples para
-    o fluxo do WhatsApp (ver horarios_livres_para_sessao)."""
+# ---------------------------------------------------------------------------
+# RESERVAS TEMPORÁRIAS — o horário fica retido assim que é ESCOLHIDO
+# ---------------------------------------------------------------------------
+# Uma marcação confirmada bloqueia o horário para sempre (ver
+# agendamento_bloqueia_horario). Mas entre o momento em que um cliente escolhe
+# a hora e o momento em que confirma passam-se minutos, e nesse intervalo o
+# mesmo horário não pode continuar a ser oferecido a outra pessoa. É para isso
+# que serve esta retenção: dura poucos minutos, expira sozinha e desaparece
+# assim que o cliente confirma, cancela ou volta atrás.
+# ---------------------------------------------------------------------------
+RESERVA_TEMPORARIA_MINUTOS = 15
+
+
+def _limpar_reservas_expiradas(conn):
+    conn.execute("DELETE FROM reservas_temporarias WHERE expira_em <= ?",
+                 (datetime.utcnow().isoformat(),))
+
+
+def reter_horario(telefone, sessao):
+    """Retém, em nome deste número, o horário que ele acabou de escolher.
+    Substitui qualquer retenção anterior do mesmo número — um cliente só
+    configura uma marcação de cada vez."""
+    data, hora = sessao.get("data"), sessao.get("hora")
+    if not data or not hora:
+        return False
+    _, duracao_pt, servico_pt, _ = calcular_preco_duracao(sessao)
+    agora = datetime.utcnow()
+    with obter_bd() as conn:
+        _limpar_reservas_expiradas(conn)
+        conn.execute(
+            "INSERT INTO reservas_temporarias (telefone, data, hora, servico, duracao, criado_em, expira_em) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(telefone) DO UPDATE SET "
+            "data = excluded.data, hora = excluded.hora, servico = excluded.servico, "
+            "duracao = excluded.duracao, criado_em = excluded.criado_em, expira_em = excluded.expira_em",
+            (telefone, data, hora, sessao.get("servico") or servico_pt,
+             sessao.get("duracao") or duracao_pt, agora.isoformat(),
+             (agora + timedelta(minutes=RESERVA_TEMPORARIA_MINUTOS)).isoformat()))
+    return True
+
+
+def libertar_horario_retido(telefone):
+    """Devolve o horário ao mercado: chamado ao confirmar (aí passa a ser uma
+    marcação a sério), ao cancelar, ao voltar atrás e ao reiniciar a sessão."""
+    with obter_bd() as conn:
+        _limpar_reservas_expiradas(conn)
+        conn.execute("DELETE FROM reservas_temporarias WHERE telefone = ?", (telefone,))
+
+
+def horarios_retidos(excluir_telefone=None, conn=None):
+    """Retenções ainda válidas, no mesmo formato de uma marcação, para a
+    verificação de conflitos as tratar exatamente como qualquer outra
+    ocupação. A retenção do próprio cliente é sempre ignorada — senão ele
+    ficava impedido de confirmar o horário que escolheu."""
+    def _ler(c):
+        _limpar_reservas_expiradas(c)
+        return c.execute(
+            "SELECT telefone, data, hora, servico, duracao FROM reservas_temporarias "
+            "WHERE expira_em > ?", (datetime.utcnow().isoformat(),)).fetchall()
+
+    if conn is not None:
+        linhas = _ler(conn)
+    else:
+        with obter_bd() as ligacao:
+            linhas = _ler(ligacao)
+    return [{"id": None, "telefone": tel, "data": data, "hora": hora, "servico": servico,
+             "duracao": duracao, "estado": "confirmado", "bloqueia_horario": 1,
+             "retencao": True}
+            for (tel, data, hora, servico, duracao) in linhas if tel != excluir_telefone]
+
+
+def ocupacoes(excluir_telefone=None, conn=None):
+    """Tudo o que ocupa horários: marcações gravadas + retenções em curso."""
+    existentes = _agendamentos_da_conexao(conn) if conn is not None else listar_agendamentos()
+    return existentes + horarios_retidos(excluir_telefone, conn)
+
+
+def horario_esta_livre(data_iso, hora, servico=None, duracao=None, ignorar_id=None,
+                       excluir_telefone=None):
+    """True quando NADA ocupa esse intervalo — nem uma marcação gravada, nem
+    um horário que outro cliente acabou de escolher e ainda está a confirmar."""
     return not conflitos_no_intervalo(
-        listar_agendamentos(), data_iso, hora, servico, duracao, ignorar_id=ignorar_id)
+        ocupacoes(excluir_telefone), data_iso, hora, servico, duracao, ignorar_id=ignorar_id)
 
 
-def horarios_livres_para_sessao(sessao):
+def horarios_livres_para_sessao(sessao, telefone=None):
     """Dos HORARIOS do catálogo, os que estão mesmo livres na data escolhida
-    pelo cliente. É esta a "disponibilidade apresentada no WhatsApp": logo
-    que um horário é libertado no painel volta a aparecer aqui, e logo que
-    é bloqueado desaparece — sem nada em cache."""
+    pelo cliente. É esta a "disponibilidade apresentada no WhatsApp": um
+    horário desaparece daqui assim que é ESCOLHIDO por alguém (retenção
+    temporária) ou marcado, e volta a aparecer assim que é libertado — sem
+    nada em cache. `telefone` é o próprio cliente: a retenção dele não o pode
+    impedir de escolher o horário que já tinha escolhido."""
     sessao = sessao or {}
     data_iso = data_iso_de_texto(sessao.get("data"))
     if not data_iso:
@@ -3315,7 +3414,7 @@ def horarios_livres_para_sessao(sessao):
     _, duracao_pt, servico_pt, _ = calcular_preco_duracao(sessao)
     servico = sessao.get("servico") or servico_pt
     duracao = recuperar_duracao(servico, sessao.get("duracao") or duracao_pt)
-    existentes = listar_agendamentos()
+    existentes = ocupacoes(telefone)
     livres = []
     for etiqueta in HORARIOS:
         hora = hora_hhmm_de_texto(etiqueta)
@@ -5041,98 +5140,112 @@ DASHBOARD_HTML = r"""
        dos cancelamentos, para os dois nunca se confundirem */
     --agora:#ff7a59;
   }
+  /* ---------------------------------------------------------------------
+     ESCALA FLUIDA — tudo no painel (texto, botões, cartões, espaçamentos,
+     colunas) está em `rem`, e o rem acompanha a LARGURA do browser. Num
+     ecrã de 1280px o rem vale ~15px; num de 1990px vale ~19,5px; a partir
+     de ~2270px pára nos 21px para não ficar gigante. Assim a página cresce
+     e encolhe com a janela em vez de ficar minúscula num ecrã grande.
+     --------------------------------------------------------------------- */
+  html{font-size:clamp(14px, 0.636vw + 6.84px, 21px);}
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;}
   /* Sem cabeçalho próprio: esta página é apresentada dentro de outra
      aplicação, que já tem o seu. O conteúdo começa logo no calendário. */
-  .wrap{padding:12px 14px 22px;max-width:1680px;margin:0 auto;}
+  /* usa TODA a largura que a página lhe der — sem max-width a limitar */
+  .wrap{padding:0.5rem 0.625rem 1.25rem;max-width:none;margin:0;}
 
   /* --- Topo: calendário (flexível) + coluna de reservas (fixa) ----------- */
-  .topo{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:14px;align-items:start;}
-  .topo > .lista{min-width:0;}
+  /* O bloco do topo ocupa a ALTURA da janela e as duas colunas têm
+     sempre a mesma altura (align-items:stretch): a coluna de reservas
+     deixa de ser um cartão curto com um vazio enorme à volta, e o
+     calendário deixa de sobrar espaço por baixo. */
+  .topo{display:grid;grid-template-columns:minmax(0,1fr) clamp(16rem,20vw,24rem);gap:0.625rem;
+        align-items:stretch;min-height:calc(100vh - 1.25rem);}
+  .topo > .lista{min-width:0;min-height:0;display:flex;flex-direction:column;}
 
   /* estatísticas compactas, no topo da coluna de reservas */
-  .stats{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--border);
+  .stats{display:grid;grid-template-columns:1fr 1fr;gap:0.0625rem;background:var(--border);
          border-bottom:1px solid var(--border);}
-  .card{background:var(--panel);padding:8px 10px;}
-  .card .n{font-size:17px;font-weight:700;color:var(--gold);line-height:1.2;}
-  .card .l{color:var(--muted);font-size:10.5px;margin-top:1px;line-height:1.25;}
+  .card{background:var(--panel);padding:0.5rem 0.625rem;}
+  .card .n{font-size:1.0625rem;font-weight:700;color:var(--gold);line-height:1.2;}
+  .card .l{color:var(--muted);font-size:0.6562rem;margin-top:0.0625rem;line-height:1.25;}
 
   /* coluna de reservas em cascata */
-  .col-reservas{display:flex;flex-direction:column;max-height:calc(100vh - 26px);}
+  .col-reservas{display:flex;flex-direction:column;min-height:0;}
   .col-reservas h2{flex:0 0 auto;}
-  .cascata{flex:1 1 auto;overflow-y:auto;padding:10px 12px 14px;min-height:120px;}
-  .cascata .cal-agenda-dia{margin-bottom:10px;}
-  .cascata .cal-agenda-dia h4{position:sticky;top:-10px;background:var(--panel);padding:4px 0;margin:0 0 5px;z-index:1;}
-  .cal-nota{padding:26px 16px;text-align:center;color:var(--muted);font-size:12.5px;line-height:1.6;}
-  .lista{background:var(--panel);border:1px solid var(--border);border-radius:12px;overflow:hidden;}
-  .lista h2{font-size:12.5px;margin:0;padding:9px 12px;border-bottom:1px solid var(--border);color:var(--muted);font-weight:600;letter-spacing:.4px;text-transform:uppercase;}
+  .cascata{flex:1 1 auto;overflow-y:auto;min-height:0;padding:0.625rem 0.75rem 0.875rem;}
+  .cascata .cal-agenda-dia{margin-bottom:0.625rem;}
+  .cascata .cal-agenda-dia h4{position:sticky;top:-10px;background:var(--panel);padding:0.25rem 0;margin:0 0 0.3125rem;z-index:1;}
+  .cal-nota{padding:1.625rem 1rem;text-align:center;color:var(--muted);font-size:0.7812rem;line-height:1.6;}
+  .lista{background:var(--panel);border:1px solid var(--border);border-radius:0.75rem;overflow:hidden;}
+  .lista h2{font-size:0.7812rem;margin:0;padding:0.5625rem 0.75rem;border-bottom:1px solid var(--border);color:var(--muted);font-weight:600;letter-spacing:.4px;text-transform:uppercase;}
   table{width:100%;border-collapse:collapse;}
-  th,td{text-align:left;padding:12px 18px;font-size:14px;border-bottom:1px solid var(--border);}
-  th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.4px;}
+  th,td{text-align:left;padding:0.75rem 1.125rem;font-size:0.875rem;border-bottom:1px solid var(--border);}
+  th{color:var(--muted);font-weight:600;font-size:0.75rem;text-transform:uppercase;letter-spacing:.4px;}
   tr:last-child td{border-bottom:none;}
   tr:hover td{background:var(--panel2);}
-  .tag{display:inline-block;background:rgba(232,185,35,.15);color:var(--gold);padding:3px 9px;border-radius:20px;font-size:12px;font-weight:600;}
+  .tag{display:inline-block;background:rgba(232,185,35,.15);color:var(--gold);padding:0.1875rem 0.5625rem;border-radius:1.25rem;font-size:0.75rem;font-weight:600;}
   .estado-cancelado{color:#e05252;}
-  .vazio{padding:40px 18px;text-align:center;color:var(--muted);}
-  .refresh{color:var(--muted);font-size:12px;}
-  a.btn{background:var(--gold);color:#1a1400;padding:8px 14px;border-radius:8px;text-decoration:none;font-size:13px;font-weight:700;}
+  .vazio{padding:2.5rem 1.125rem;text-align:center;color:var(--muted);}
+  .refresh{color:var(--muted);font-size:0.75rem;}
+  a.btn{background:var(--gold);color:#1a1400;padding:0.5rem 0.875rem;border-radius:0.5rem;text-decoration:none;font-size:0.8125rem;font-weight:700;}
   tr.clicavel{cursor:pointer;}
   .modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);align-items:center;justify-content:center;z-index:50;}
   .modal-overlay.aberto{display:flex;}
-  .modal-caixa{background:var(--panel);border:1px solid var(--border);border-radius:12px;max-width:640px;width:92%;max-height:86vh;overflow-y:auto;}
-  .modal-cabecalho{display:flex;justify-content:space-between;align-items:center;padding:16px 18px;border-bottom:1px solid var(--border);}
-  .modal-cabecalho h3{margin:0;font-size:16px;}
-  .modal-fechar{cursor:pointer;color:var(--muted);font-size:18px;}
-  .modal-corpo{padding:18px;font-size:14px;line-height:1.7;}
-  .modal-corpo .linha{margin-bottom:6px;}
-  .galeria{display:grid;grid-template-columns:repeat(auto-fill,minmax(90px,1fr));gap:8px;margin-top:12px;}
-  .galeria img{width:100%;height:90px;object-fit:cover;border-radius:8px;cursor:zoom-in;border:1px solid var(--border);}
+  .modal-caixa{background:var(--panel);border:1px solid var(--border);border-radius:0.75rem;max-width:40rem;width:92%;max-height:86vh;overflow-y:auto;}
+  .modal-cabecalho{display:flex;justify-content:space-between;align-items:center;padding:1rem 1.125rem;border-bottom:1px solid var(--border);}
+  .modal-cabecalho h3{margin:0;font-size:1rem;}
+  .modal-fechar{cursor:pointer;color:var(--muted);font-size:1.125rem;}
+  .modal-corpo{padding:1.125rem;font-size:0.875rem;line-height:1.7;}
+  .modal-corpo .linha{margin-bottom:0.375rem;}
+  .galeria{display:grid;grid-template-columns:repeat(auto-fill,minmax(90px,1fr));gap:0.5rem;margin-top:0.75rem;}
+  .galeria img{width:100%;height:90px;object-fit:cover;border-radius:0.5rem;cursor:zoom-in;border:1px solid var(--border);}
   .lightbox{display:none;position:fixed;inset:0;background:rgba(0,0,0,.88);align-items:center;justify-content:center;z-index:60;cursor:zoom-out;}
   .lightbox.aberto{display:flex;}
-  .lightbox img{max-width:92vw;max-height:92vh;border-radius:8px;}
-  .orc-tabela{width:100%;border-collapse:collapse;margin-top:8px;}
-  .orc-tabela th,.orc-tabela td{padding:6px 4px;font-size:13px;border-bottom:1px solid var(--border);}
-  .orc-tabela input,.orc-tabela textarea{background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:5px 7px;font-size:13px;width:100%;}
-  .orc-campo{margin-top:8px;}
-  .orc-campo label{display:block;color:var(--muted);font-size:12px;margin-bottom:3px;}
-  .orc-total{font-size:15px;margin-top:10px;}
-  .orc-acoes{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;}
-  .orc-acoes button,.orc-acoes a{cursor:pointer;border:none;border-radius:8px;padding:8px 12px;font-size:13px;font-weight:700;text-decoration:none;display:inline-block;}
+  .lightbox img{max-width:92vw;max-height:92vh;border-radius:0.5rem;}
+  .orc-tabela{width:100%;border-collapse:collapse;margin-top:0.5rem;}
+  .orc-tabela th,.orc-tabela td{padding:0.375rem 0.25rem;font-size:0.8125rem;border-bottom:1px solid var(--border);}
+  .orc-tabela input,.orc-tabela textarea{background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:0.375rem;padding:0.3125rem 0.4375rem;font-size:0.8125rem;width:100%;}
+  .orc-campo{margin-top:0.5rem;}
+  .orc-campo label{display:block;color:var(--muted);font-size:0.75rem;margin-bottom:0.1875rem;}
+  .orc-total{font-size:0.9375rem;margin-top:0.625rem;}
+  .orc-acoes{display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.875rem;}
+  .orc-acoes button,.orc-acoes a{cursor:pointer;border:none;border-radius:0.5rem;padding:0.5rem 0.75rem;font-size:0.8125rem;font-weight:700;text-decoration:none;display:inline-block;}
   .btn-primario{background:var(--gold);color:#1a1400;}
   .btn-secundario{background:var(--panel2);color:var(--text);border:1px solid var(--border) !important;}
   .btn-perigo{background:#3a1a1a;color:#f2a3a3;}
-  .orc-erro{color:#e05252;font-size:12.5px;margin-top:6px;}
-  .orc-mini{background:transparent;border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:3px 8px;font-size:12px;cursor:pointer;}
+  .orc-erro{color:#e05252;font-size:0.7812rem;margin-top:0.375rem;}
+  .orc-mini{background:transparent;border:1px solid var(--border);color:var(--muted);border-radius:0.375rem;padding:0.1875rem 0.5rem;font-size:0.75rem;cursor:pointer;}
 
   /* --- Calendário ------------------------------------------------------- */
-  .cal-barra{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--border);}
-  .cal-barra-filtros{gap:14px;}
-  .cal-grupo{display:flex;gap:6px;flex-wrap:wrap;}
-  .cal-btn{background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:8px;
-           padding:6px 11px;font-size:13px;cursor:pointer;white-space:nowrap;}
+  .cal-barra{display:flex;flex-wrap:wrap;gap:0.5rem;align-items:center;padding:0.5rem 0.75rem;border-bottom:1px solid var(--border);}
+  .cal-barra-filtros{gap:0.875rem;}
+  .cal-grupo{display:flex;gap:0.375rem;flex-wrap:wrap;}
+  .cal-btn{background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:0.5rem;
+           padding:0.375rem 0.6875rem;font-size:0.8125rem;cursor:pointer;white-space:nowrap;}
   .cal-btn:hover{border-color:var(--gold);}
   .cal-btn.ativo{background:var(--gold);color:#1a1400;border-color:var(--gold);font-weight:700;}
-  .cal-periodo{margin-left:auto;color:var(--text);font-size:14px;font-weight:600;}
-  .cal-filtro{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--muted);cursor:pointer;
-              border:1px solid var(--border);border-radius:20px;padding:4px 10px;}
+  .cal-periodo{margin-left:auto;color:var(--text);font-size:0.875rem;font-weight:600;}
+  .cal-filtro{display:inline-flex;align-items:center;gap:0.375rem;font-size:0.7812rem;color:var(--muted);cursor:pointer;
+              border:1px solid var(--border);border-radius:1.25rem;padding:0.25rem 0.625rem;}
   .cal-filtro input{accent-color:var(--gold);margin:0;}
-  .cal-legenda{display:flex;gap:12px;flex-wrap:wrap;margin-left:auto;font-size:12px;color:var(--muted);}
-  .cal-legenda span{display:inline-flex;align-items:center;gap:5px;}
-  .cal-ponto{width:10px;height:10px;border-radius:3px;display:inline-block;}
-  .cal-aviso{margin:10px 18px 0;padding:8px 12px;border-radius:8px;font-size:12.5px;
+  .cal-legenda{display:flex;gap:0.75rem;flex-wrap:wrap;margin-left:auto;font-size:0.75rem;color:var(--muted);}
+  .cal-legenda span{display:inline-flex;align-items:center;gap:0.3125rem;}
+  .cal-ponto{width:.625rem;height:.625rem;border-radius:0.1875rem;display:inline-block;}
+  .cal-aviso{margin:0.625rem 1.125rem 0;padding:0.5rem 0.75rem;border-radius:0.5rem;font-size:0.7812rem;
              background:rgba(232,185,35,.12);color:var(--gold);border:1px solid rgba(232,185,35,.35);}
-  .cal-erro{margin:10px 18px 0;padding:8px 12px;border-radius:8px;font-size:12.5px;
+  .cal-erro{margin:0.625rem 1.125rem 0;padding:0.5rem 0.75rem;border-radius:0.5rem;font-size:0.7812rem;
             background:rgba(224,82,82,.12);color:#e88;border:1px solid rgba(224,82,82,.35);}
-  .cal-conteudo{padding:10px 12px 12px;overflow-x:auto;overflow-y:auto;}
-  .cal-carregando{color:var(--muted);font-size:12.5px;padding:6px 0;}
+  .cal-conteudo{padding:0.625rem 0.75rem 0.75rem;overflow-x:auto;overflow-y:auto;flex:1 1 auto;min-height:0;}
+  .cal-carregando{color:var(--muted);font-size:0.7812rem;padding:0.375rem 0;}
 
   /* A COR do evento vem do SERVIÇO (inline, ver cor_do_servico em bot.py).
      Estas classes tratam só do ESTADO — nunca da cor identificadora. */
   .est-reagendado{opacity:.62;}
   .est-reagendado .ev-t{text-decoration:line-through;}
-  .ev-badge{display:inline-block;padding:0 4px;border-radius:4px;font-size:9.5px;font-weight:700;
-            background:rgba(255,255,255,.16);color:var(--text);margin-left:4px;vertical-align:middle;
+  .ev-badge{display:inline-block;padding:0 0.25rem;border-radius:0.25rem;font-size:0.5938rem;font-weight:700;
+            background:rgba(255,255,255,.16);color:var(--text);margin-left:0.25rem;vertical-align:middle;
             letter-spacing:.2px;max-width:100%;overflow:hidden;text-overflow:ellipsis;}
 
   /* --- Cancelado: bloqueado vs. livre -----------------------------------
@@ -5149,22 +5262,22 @@ DASHBOARD_HTML = r"""
      .cal-mes-ev (que vive no fluxo normal) precisa de position:relative. */
   .cal-evento.bloqueado,.cal-mes-ev.bloqueado{
       background:#3d1414 !important;border:1px solid #e05252 !important;border-left:none !important;
-      color:#f4c9c9;padding:2px 6px 2px 11px;}
+      color:#f4c9c9;padding:0.125rem 0.375rem 0.125rem 0.6875rem;}
   .cal-evento.livre,.cal-mes-ev.livre{
       background:rgba(224,82,82,.09) !important;border:1px dashed #e05252 !important;border-left:none !important;
-      color:#e7b3b3;padding:2px 6px 2px 11px;}
+      color:#e7b3b3;padding:0.125rem 0.375rem 0.125rem 0.6875rem;}
   .cal-mes-ev.bloqueado,.cal-mes-ev.livre{position:relative;}
   /* faixa com a cor original do serviço, à esquerda do cartão vermelho */
   .cal-evento.bloqueado::before,.cal-evento.livre::before,
   .cal-mes-ev.bloqueado::before,.cal-mes-ev.livre::before{
-      content:'';position:absolute;left:2px;top:3px;bottom:3px;width:4px;border-radius:3px;
+      content:'';position:absolute;left:2px;top:3px;bottom:3px;width:4px;border-radius:0.1875rem;
       background:var(--cor-servico,#8b95a6);}
   .cal-evento.livre .ev-t,.cal-evento.bloqueado .ev-t{text-decoration:line-through;}
   .cal-evento.livre .ev-disp,.cal-evento.bloqueado .ev-disp{text-decoration:none;font-weight:700;}
-  .ev-disp{display:block;font-size:9.5px;letter-spacing:0;line-height:1.2;}
+  .ev-disp{display:block;font-size:0.5938rem;letter-spacing:0;line-height:1.2;}
   /* texto mais compacto nos cartões cancelados: assim o nome do serviço cabe
      sempre, mesmo num bloco de 45 minutos */
-  .cal-evento.bloqueado,.cal-evento.livre{font-size:10.5px;line-height:1.22;}
+  .cal-evento.bloqueado,.cal-evento.livre{font-size:0.6562rem;line-height:1.22;}
   .cal-evento.bloqueado .ev-s,.cal-evento.livre .ev-s{color:inherit;opacity:.85;}
   /* uma marcação cancelada e LIBERTADA não pode parecer que ocupa o horário:
      encosta-se à direita, estreita e por cima, deixando o slot visualmente
@@ -5172,23 +5285,23 @@ DASHBOARD_HTML = r"""
   .cal-evento.livre{opacity:.9;}
 
   /* grelha semana/dia */
-  .cal-grelha{display:grid;position:relative;min-width:680px;border:1px solid var(--border);border-radius:10px;overflow:hidden;}
-  .cal-grelha.dia{min-width:320px;}
-  .cal-cab{background:var(--panel2);padding:5px 6px;text-align:center;font-size:12px;border-bottom:1px solid var(--border);
+  .cal-grelha{display:grid;position:relative;min-width:42.5rem;border:1px solid var(--border);border-radius:0.625rem;overflow:hidden;}
+  .cal-grelha.dia{min-width:20rem;}
+  .cal-cab{background:var(--panel2);padding:0.3125rem 0.375rem;text-align:center;font-size:0.75rem;border-bottom:1px solid var(--border);
            position:sticky;top:0;z-index:2;line-height:1.25;}
   .cal-cab.hoje{color:var(--gold);font-weight:700;}
   .cal-cab-hora{background:var(--panel2);border-bottom:1px solid var(--border);border-right:1px solid var(--border);}
   .cal-horas{border-right:1px solid var(--border);position:relative;}
   /* --faixa é recalculada em JavaScript para a semana inteira caber no ecrã
      sem scroll (ver calAjustarAlturaFaixa). O 28px é só o valor de arranque. */
-  .cal-hora{height:var(--faixa,28px);font-size:10.5px;color:var(--muted);text-align:right;padding-right:6px;
+  .cal-hora{height:var(--faixa,28px);font-size:0.6562rem;color:var(--muted);text-align:right;padding-right:0.375rem;
             border-bottom:1px dashed rgba(255,255,255,.05);box-sizing:border-box;
             overflow:hidden;line-height:1.1;}
   .cal-coluna{position:relative;border-right:1px solid var(--border);}
   .cal-coluna:last-child{border-right:none;}
   .cal-faixa{height:var(--faixa,28px);border-bottom:1px dashed rgba(255,255,255,.05);box-sizing:border-box;}
   .cal-faixa.hora-cheia{border-bottom-color:rgba(255,255,255,.12);}
-  .cal-evento{position:absolute;border-radius:6px;padding:3px 6px;font-size:11.5px;line-height:1.28;overflow:hidden;
+  .cal-evento{position:absolute;border-radius:0.375rem;padding:0.1875rem 0.375rem;font-size:0.7188rem;line-height:1.28;overflow:hidden;
               cursor:pointer;box-sizing:border-box;color:var(--text);}
   .cal-evento:hover{filter:brightness(1.25);}
   .cal-evento .ev-t{font-weight:700;}
@@ -5197,10 +5310,21 @@ DASHBOARD_HTML = r"""
      cortado a meio de uma palavra nem transborda o cartão */
   .cal-evento .ev-t,.cal-evento .ev-s,.cal-evento .ev-disp{
       white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-  .cal-evento.compacto{padding:1px 5px;line-height:1.18;}
-  .cal-evento.compacto .ev-t{font-size:10px;}
+  /* Prioridade quando o cartão é estreito (marcações sobrepostas): a HORA
+     nunca desaparece, o crachá do estado encolhe a seguir, e o nome é o
+     primeiro a ser encurtado. Nenhum dos dois pode ficar a zero. */
+  .cal-evento .ev-t{display:flex;align-items:baseline;gap:0.25rem;}
+  .cal-evento .ev-quem{flex:1 1 auto;min-width:5.5ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .cal-evento .ev-badge{flex:0 1 auto;min-width:0;margin-left:0;overflow:hidden;text-overflow:ellipsis;}
+  /* cartão estreito: o estado ganha uma linha só para ele */
+  .cal-evento .ev-estado{line-height:1.3;margin:0.0625rem 0;}
+  .cal-evento .ev-estado .ev-badge{margin-left:0;}
+  .cal-agenda-ev .ev-t{display:block;}
+  .cal-agenda-ev .ev-quem{white-space:normal;}
+  .cal-evento.compacto{padding:0.0625rem 0.3125rem;line-height:1.18;}
+  .cal-evento.compacto .ev-t{font-size:0.625rem;}
   .cal-agenda-ev .ev-t,.cal-agenda-ev .ev-s,.cal-agenda-ev .ev-disp{white-space:normal;}
-  .cal-dia-inteiro{margin:0 0 6px;}
+  .cal-dia-inteiro{margin:0 0 0.375rem;}
   /* --- Indicador da hora atual ------------------------------------------
      Linha FINA a toda a largura da coluna do dia de hoje, com uma etiqueta
      "Agora · HH:MM" — nunca um traço vermelho solto que parece um elemento
@@ -5208,104 +5332,104 @@ DASHBOARD_HTML = r"""
      não recebe cliques e não entra na disposição dos eventos). */
   .cal-agora{position:absolute;left:0;right:0;height:0;z-index:6;pointer-events:none;
              border-top:1px solid var(--agora,#ff7a59);}
-  .cal-agora .agora-etiqueta{position:absolute;left:3px;top:-9px;padding:1px 6px;border-radius:9px;
-             font-size:9.5px;font-weight:700;line-height:1.5;white-space:nowrap;letter-spacing:.2px;
+  .cal-agora .agora-etiqueta{position:absolute;left:.1875rem;top:-.56rem;padding:0.0625rem 0.375rem;border-radius:0.5625rem;
+             font-size:0.5938rem;font-weight:700;line-height:1.5;white-space:nowrap;letter-spacing:.2px;
              background:var(--agora,#ff7a59);color:#25120c;box-shadow:0 1px 5px rgba(0,0,0,.45);}
   /* cabeçalho do dia de hoje: destaque DISCRETO (não grita, mas vê-se) */
   .cal-cab.hoje{color:var(--agora,#ff7a59);font-weight:700;
                 background:linear-gradient(180deg,rgba(255,122,89,.16),rgba(255,122,89,0));
                 box-shadow:inset 0 -2px 0 var(--agora,#ff7a59);}
-  .cal-cab .cab-hoje{display:block;font-size:9px;letter-spacing:.6px;text-transform:uppercase;opacity:.85;}
+  .cal-cab .cab-hoje{display:block;font-size:0.5625rem;letter-spacing:.6px;text-transform:uppercase;opacity:.85;}
   /* telemóvel (agenda vertical): a mesma informação, sem grelha horária */
-  .cal-agora-agenda{display:flex;align-items:center;gap:8px;margin:2px 0 8px;
-                    font-size:10.5px;font-weight:700;color:var(--agora,#ff7a59);}
+  .cal-agora-agenda{display:flex;align-items:center;gap:0.5rem;margin:0.125rem 0 0.5rem;
+                    font-size:0.6562rem;font-weight:700;color:var(--agora,#ff7a59);}
   .cal-agora-agenda::after{content:'';flex:1;height:1px;background:var(--agora,#ff7a59);opacity:.55;}
 
   /* mês */
-  .cal-mes{display:grid;grid-template-columns:repeat(7,minmax(90px,1fr));gap:1px;background:var(--border);
-           border:1px solid var(--border);border-radius:10px;overflow:hidden;min-width:660px;}
-  .cal-mes-cab{background:var(--panel2);padding:7px 4px;text-align:center;font-size:12px;color:var(--muted);}
-  .cal-mes-cel{background:var(--panel);min-height:96px;padding:5px;}
+  .cal-mes{display:grid;grid-template-columns:repeat(7,minmax(90px,1fr));gap:0.0625rem;background:var(--border);
+           border:1px solid var(--border);border-radius:0.625rem;overflow:hidden;min-width:41.25rem;}
+  .cal-mes-cab{background:var(--panel2);padding:0.4375rem 0.25rem;text-align:center;font-size:0.75rem;color:var(--muted);}
+  .cal-mes-cel{background:var(--panel);min-height:6rem;padding:0.3125rem;}
   .cal-mes-cel.fora{opacity:.45;}
   .cal-mes-cel.hoje{outline:1px solid var(--gold);outline-offset:-1px;}
-  .cal-mes-num{font-size:11.5px;color:var(--muted);margin-bottom:4px;}
+  .cal-mes-num{font-size:0.7188rem;color:var(--muted);margin-bottom:0.25rem;}
   .cal-mes-cel.hoje .cal-mes-num{color:var(--gold);font-weight:700;}
-  .cal-mes-ev{border-radius:5px;padding:2px 5px;font-size:11px;margin-bottom:3px;cursor:pointer;
+  .cal-mes-ev{border-radius:0.3125rem;padding:0.125rem 0.3125rem;font-size:0.6875rem;margin-bottom:0.1875rem;cursor:pointer;
               white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-  .cal-mes-mais{font-size:10.5px;color:var(--muted);}
+  .cal-mes-mais{font-size:0.6562rem;color:var(--muted);}
 
   /* agenda vertical (telemóvel) */
-  .cal-agenda-dia{margin-bottom:14px;}
-  .cal-agenda-dia h4{margin:0 0 6px;font-size:13px;color:var(--gold);font-weight:600;}
-  .cal-agenda-ev{border-radius:8px;padding:8px 10px;margin-bottom:6px;font-size:13px;cursor:pointer;}
+  .cal-agenda-dia{margin-bottom:0.875rem;}
+  .cal-agenda-dia h4{margin:0 0 0.375rem;font-size:0.8125rem;color:var(--gold);font-weight:600;}
+  .cal-agenda-ev{border-radius:0.5rem;padding:0.5rem 0.625rem;margin-bottom:0.375rem;font-size:0.8125rem;cursor:pointer;}
 
   /* pré-visualização (hover, só em ecrãs com rato) */
   /* pointer-events:auto -> os botões da pré-visualização são mesmo clicáveis */
-  .cal-preview{position:fixed;z-index:70;max-width:300px;background:var(--panel);border:1px solid var(--border);
-               border-radius:10px;padding:11px 13px;font-size:12.5px;line-height:1.55;
+  .cal-preview{position:fixed;z-index:70;max-width:18.75rem;background:var(--panel);border:1px solid var(--border);
+               border-radius:0.625rem;padding:0.6875rem 0.8125rem;font-size:0.7812rem;line-height:1.55;
                box-shadow:0 10px 30px rgba(0,0,0,.55);pointer-events:auto;}
-  .cal-preview img{width:100%;height:78px;object-fit:cover;border-radius:6px;margin-top:7px;}
-  .cal-preview .pv-t{font-weight:700;margin-bottom:3px;}
-  .pv-acoes{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;padding-top:9px;border-top:1px solid var(--border);}
+  .cal-preview img{width:100%;height:4.875rem;object-fit:cover;border-radius:0.375rem;margin-top:0.4375rem;}
+  .cal-preview .pv-t{font-weight:700;margin-bottom:0.1875rem;}
+  .pv-acoes{display:flex;gap:0.375rem;flex-wrap:wrap;margin-top:0.625rem;padding-top:0.5625rem;border-top:1px solid var(--border);}
   .pv-acoes button{cursor:pointer;border:1px solid var(--border);background:var(--panel2);color:var(--text);
-                   border-radius:7px;padding:5px 9px;font-size:11.5px;white-space:nowrap;}
+                   border-radius:0.4375rem;padding:0.3125rem 0.5625rem;font-size:0.7188rem;white-space:nowrap;}
   .pv-acoes button:hover{border-color:var(--gold);}
   .pv-acoes button.perigo{background:#3a1a1a;color:#f2a3a3;border-color:#5a2a2a;}
-  .cal-legenda-servicos{display:flex;gap:9px;flex-wrap:wrap;font-size:11px;color:var(--muted);
-                        padding:7px 12px;border-bottom:1px solid var(--border);}
+  .cal-legenda-servicos{display:flex;gap:0.5625rem;flex-wrap:wrap;font-size:0.6875rem;color:var(--muted);
+                        padding:0.4375rem 0.75rem;border-bottom:1px solid var(--border);}
   /* diálogo de confirmação (cancelar / reagendar) */
   .dlg-fundo{display:none;position:fixed;inset:0;background:rgba(0,0,0,.62);z-index:90;
-             align-items:center;justify-content:center;padding:16px;}
+             align-items:center;justify-content:center;padding:1rem;}
   .dlg-fundo.aberto{display:flex;}
-  .dlg{background:var(--panel);border:1px solid var(--border);border-radius:12px;max-width:440px;width:100%;
+  .dlg{background:var(--panel);border:1px solid var(--border);border-radius:0.75rem;max-width:27.5rem;width:100%;
        max-height:88vh;overflow-y:auto;}
-  .dlg-cab{display:flex;justify-content:space-between;align-items:center;padding:14px 18px;
+  .dlg-cab{display:flex;justify-content:space-between;align-items:center;padding:0.875rem 1.125rem;
            border-bottom:1px solid var(--border);}
-  .dlg-cab h3{margin:0;font-size:15px;}
-  .dlg-corpo{padding:16px 18px;font-size:13.5px;line-height:1.7;}
-  .dlg-corpo .linha{margin-bottom:5px;}
-  .dlg-corpo label{display:block;color:var(--muted);font-size:12px;margin:10px 0 4px;}
+  .dlg-cab h3{margin:0;font-size:0.9375rem;}
+  .dlg-corpo{padding:1rem 1.125rem;font-size:0.8438rem;line-height:1.7;}
+  .dlg-corpo .linha{margin-bottom:0.3125rem;}
+  .dlg-corpo label{display:block;color:var(--muted);font-size:0.75rem;margin:0.625rem 0 0.25rem;}
   .dlg-corpo input{background:var(--panel2);border:1px solid var(--border);color:var(--text);
-                   border-radius:7px;padding:7px 9px;font-size:14px;width:100%;}
-  .dlg-aviso{margin-top:12px;padding:8px 11px;border-radius:8px;font-size:12.5px;
+                   border-radius:0.4375rem;padding:0.4375rem 0.5625rem;font-size:0.875rem;width:100%;}
+  .dlg-aviso{margin-top:0.75rem;padding:0.5rem 0.6875rem;border-radius:0.5rem;font-size:0.7812rem;
              background:rgba(232,185,35,.12);color:var(--gold);border:1px solid rgba(232,185,35,.35);}
   /* escolha "libertar / manter" dentro do diálogo de cancelamento */
-  .dlg-escolha{margin-top:14px;padding-top:12px;border-top:1px solid var(--border);}
-  .dlg-escolha > strong{display:block;font-size:13px;margin-bottom:8px;}
-  .dlg-opcao{display:flex;gap:9px;align-items:flex-start;padding:9px 11px;margin-bottom:7px;cursor:pointer;
-             border:1px solid var(--border);border-radius:9px;background:var(--panel2);font-size:13px;}
+  .dlg-escolha{margin-top:0.875rem;padding-top:0.75rem;border-top:1px solid var(--border);}
+  .dlg-escolha > strong{display:block;font-size:0.8125rem;margin-bottom:0.5rem;}
+  .dlg-opcao{display:flex;gap:0.5625rem;align-items:flex-start;padding:0.5625rem 0.6875rem;margin-bottom:0.4375rem;cursor:pointer;
+             border:1px solid var(--border);border-radius:0.5625rem;background:var(--panel2);font-size:0.8125rem;}
   .dlg-opcao:hover{border-color:var(--gold);}
-  .dlg-opcao input{width:auto;margin:3px 0 0;accent-color:var(--gold);flex:0 0 auto;}
-  .dlg-opcao .op-desc{display:block;color:var(--muted);font-size:11.5px;margin-top:2px;line-height:1.45;}
+  .dlg-opcao input{width:auto;margin:0.1875rem 0 0;accent-color:var(--gold);flex:0 0 auto;}
+  .dlg-opcao .op-desc{display:block;color:var(--muted);font-size:0.7188rem;margin-top:0.125rem;line-height:1.45;}
   .dlg-opcao.escolhida{border-color:var(--gold);background:rgba(232,185,35,.08);}
-  .dlg-padrao{display:flex;gap:8px;align-items:center;font-size:12.5px;color:var(--muted);margin-top:4px;cursor:pointer;}
+  .dlg-padrao{display:flex;gap:0.5rem;align-items:center;font-size:0.7812rem;color:var(--muted);margin-top:0.25rem;cursor:pointer;}
   .dlg-padrao input{width:auto;margin:0;accent-color:var(--gold);}
 
   /* --- Definições do painel --------------------------------------------- */
-  .def-linha{display:flex;gap:14px;align-items:flex-start;justify-content:space-between;
-             flex-wrap:wrap;padding:14px 18px;}
-  .def-texto{max-width:640px;}
-  .def-texto strong{display:block;font-size:13.5px;margin-bottom:3px;}
-  .def-texto span{color:var(--muted);font-size:12.5px;line-height:1.6;}
-  .interruptor{display:inline-flex;align-items:center;gap:10px;cursor:pointer;font-size:12.5px;
+  .def-linha{display:flex;gap:0.875rem;align-items:flex-start;justify-content:space-between;
+             flex-wrap:wrap;padding:0.875rem 1.125rem;}
+  .def-texto{max-width:40rem;}
+  .def-texto strong{display:block;font-size:0.8438rem;margin-bottom:0.1875rem;}
+  .def-texto span{color:var(--muted);font-size:0.7812rem;line-height:1.6;}
+  .interruptor{display:inline-flex;align-items:center;gap:0.625rem;cursor:pointer;font-size:0.7812rem;
                color:var(--muted);white-space:nowrap;}
   .interruptor input{position:absolute;opacity:0;width:0;height:0;}
-  .interruptor .calha{width:44px;height:24px;border-radius:20px;background:#3a3f4a;position:relative;
+  .interruptor .calha{width:2.75rem;height:1.5rem;border-radius:1.25rem;background:#3a3f4a;position:relative;
                       transition:background .15s ease;flex:0 0 auto;}
-  .interruptor .calha::after{content:'';position:absolute;top:3px;left:3px;width:18px;height:18px;
+  .interruptor .calha::after{content:'';position:absolute;top:.1875rem;left:.1875rem;width:1.125rem;height:1.125rem;
                       border-radius:50%;background:#c9ced8;transition:transform .15s ease,background .15s ease;}
   .interruptor input:checked + .calha{background:var(--gold);}
-  .interruptor input:checked + .calha::after{transform:translateX(20px);background:#1a1400;}
+  .interruptor input:checked + .calha::after{transform:translateX(1.25rem);background:#1a1400;}
   .interruptor input:focus-visible + .calha{outline:2px solid var(--gold);outline-offset:2px;}
-  .def-estado{font-size:12px;padding:0 18px 14px;color:var(--muted);}
-  .dlg-erro{margin-top:10px;color:#e88;font-size:12.5px;}
-  .dlg-acoes{display:flex;gap:8px;justify-content:flex-end;padding:0 18px 18px;flex-wrap:wrap;}
-  .dlg-acoes button{cursor:pointer;border:1px solid var(--border);border-radius:8px;padding:8px 14px;
-                    font-size:13px;background:var(--panel2);color:var(--text);}
+  .def-estado{font-size:0.75rem;padding:0 1.125rem 0.875rem;color:var(--muted);}
+  .dlg-erro{margin-top:0.625rem;color:#e88;font-size:0.7812rem;}
+  .dlg-acoes{display:flex;gap:0.5rem;justify-content:flex-end;padding:0 1.125rem 1.125rem;flex-wrap:wrap;}
+  .dlg-acoes button{cursor:pointer;border:1px solid var(--border);border-radius:0.5rem;padding:0.5rem 0.875rem;
+                    font-size:0.8125rem;background:var(--panel2);color:var(--text);}
   .dlg-acoes button.principal{background:var(--gold);color:#1a1400;border-color:var(--gold);font-weight:700;}
   .dlg-acoes button.perigo{background:#e05252;color:#fff;border-color:#e05252;font-weight:700;}
-  .toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);z-index:95;padding:11px 16px;
-         border-radius:10px;font-size:13px;max-width:92vw;box-shadow:0 8px 26px rgba(0,0,0,.5);}
+  .toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);z-index:95;padding:0.6875rem 1rem;
+         border-radius:0.625rem;font-size:0.8125rem;max-width:92vw;box-shadow:0 8px 26px rgba(0,0,0,.5);}
   .toast.ok{background:#173a26;color:#9fe0b8;border:1px solid #2ea05a;}
   .toast.aviso{background:#3a3417;color:#ecd98a;border:1px solid #e8b923;}
   .toast.erro{background:#3a1a1a;color:#f2a3a3;border:1px solid #e05252;}
@@ -5313,35 +5437,35 @@ DASHBOARD_HTML = r"""
   /* painel lateral (dossiê da marcação) */
   .painel-fundo{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:80;}
   .painel-fundo.aberto{display:block;}
-  .painel{position:fixed;top:0;right:0;height:100%;width:420px;max-width:94vw;background:var(--panel);
+  .painel{position:fixed;top:0;right:0;height:100%;width:26rem;max-width:94vw;background:var(--panel);
           border-left:1px solid var(--border);z-index:81;transform:translateX(102%);transition:transform .18s ease;
           display:flex;flex-direction:column;}
   .painel.aberto{transform:translateX(0);}
-  .painel-cabecalho{display:flex;justify-content:space-between;align-items:center;padding:15px 18px;
+  .painel-cabecalho{display:flex;justify-content:space-between;align-items:center;padding:0.9375rem 1.125rem;
                     border-bottom:1px solid var(--border);}
-  .painel-cabecalho h3{margin:0;font-size:15px;}
-  .painel-corpo{padding:16px 18px 26px;overflow-y:auto;font-size:13.5px;line-height:1.7;}
-  .painel-corpo .linha{margin-bottom:5px;}
-  .painel-corpo h4{margin:16px 0 6px;font-size:12px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted);}
+  .painel-cabecalho h3{margin:0;font-size:0.9375rem;}
+  .painel-corpo{padding:1rem 1.125rem 1.625rem;overflow-y:auto;font-size:0.8438rem;line-height:1.7;}
+  .painel-corpo .linha{margin-bottom:0.3125rem;}
+  .painel-corpo h4{margin:1rem 0 0.375rem;font-size:0.75rem;text-transform:uppercase;letter-spacing:.4px;color:var(--muted);}
   .painel-corpo a{color:var(--gold);}
-  .painel-acoes{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0 4px;}
-  .painel-acoes a{background:var(--gold);color:#1a1400;padding:7px 12px;border-radius:8px;text-decoration:none;
-                  font-size:12.5px;font-weight:700;}
-  .estado-chip{display:inline-block;padding:2px 9px;border-radius:20px;font-size:11.5px;font-weight:700;}
+  .painel-acoes{display:flex;gap:0.5rem;flex-wrap:wrap;margin:0.75rem 0 0.25rem;}
+  .painel-acoes a{background:var(--gold);color:#1a1400;padding:0.4375rem 0.75rem;border-radius:0.5rem;text-decoration:none;
+                  font-size:0.7812rem;font-weight:700;}
+  .estado-chip{display:inline-block;padding:0.125rem 0.5625rem;border-radius:1.25rem;font-size:0.7188rem;font-weight:700;}
 
   /* Abaixo de 1100px passa a uma coluna só: primeiro o calendário, logo a
      seguir a coluna de reservas em cascata. */
   @media (max-width: 1100px){
-    .topo{grid-template-columns:minmax(0,1fr);}
+    .topo{grid-template-columns:minmax(0,1fr);min-height:0;align-items:start;}
     .col-reservas{max-height:none;}
     .cascata{max-height:70vh;}
     .stats{grid-template-columns:repeat(4,1fr);}
   }
   @media (max-width: 720px){
-    .wrap{padding:10px 10px 20px;}
+    .wrap{padding:0.625rem 0.625rem 1.25rem;}
     .cal-periodo{margin-left:0;width:100%;}
     .cal-legenda{margin-left:0;}
-    .cal-conteudo{padding:10px;}
+    .cal-conteudo{padding:0.625rem;}
     .stats{grid-template-columns:1fr 1fr;}
     .painel{width:100%;}
   }
@@ -5804,10 +5928,20 @@ let CAL_INICIO = 8, CAL_FIM = 19, CAL_PASSO = 30;
 // espaço que sobra realmente abaixo da barra do calendário, e recalculada
 // sempre que a janela muda de tamanho ou se muda de vista.
 // ---------------------------------------------------------------------------
+// Estes valores estão em "pixels a 16px de rem". A grelha é desenhada em JS,
+// por isso não herda o `rem` da folha de estilos automaticamente: escalaRem()
+// lê a escala atual (que acompanha a largura do browser, ver html{font-size})
+// e multiplica-os, para a grelha crescer e encolher como o resto da página.
 const CAL_ALTURA_FAIXA_OMISSAO = 28;   // valor de arranque, antes de medir
 const CAL_ALTURA_FAIXA_MIN = 14;       // abaixo disto deixa de ser legível
 const CAL_ALTURA_FAIXA_MAX = 34;       // acima disto só ficava esticado
 let CAL_ALTURA_FAIXA = CAL_ALTURA_FAIXA_OMISSAO;
+
+function escalaRem(){
+  const base = parseFloat(getComputedStyle(document.documentElement).fontSize);
+  return (base && isFinite(base) ? base : 16) / 16;
+}
+const emEscala = px => px * escalaRem();
 const alturaPorMinuto = () => CAL_ALTURA_FAIXA / CAL_PASSO;
 const calNumeroDeFaixas = () => Math.round((CAL_FIM - CAL_INICIO) * 60 / CAL_PASSO);
 
@@ -5819,22 +5953,23 @@ function calAjustarAlturaFaixa(){
   const cont = document.getElementById('cal-conteudo');
   if(!cont){ return false; }
   if(calVista === 'mes'){
-    CAL_ALTURA_FAIXA = CAL_ALTURA_FAIXA_OMISSAO;
+    CAL_ALTURA_FAIXA = emEscala(CAL_ALTURA_FAIXA_OMISSAO);
     cont.style.maxHeight = '';
     document.documentElement.style.setProperty('--faixa', CAL_ALTURA_FAIXA + 'px');
     return false;
   }
   const faixas = calNumeroDeFaixas();
   const topo = cont.getBoundingClientRect().top;      // já em coordenadas do ecrã
-  const cabecalhoDias = 28;                           // linha "seg 31/08 · hoje"
-  const respiro = 24;                                 // padding do cartão + folga
+  const cabecalhoDias = emEscala(28);                 // linha "seg 31/08 · hoje"
+  const respiro = emEscala(24);                       // padding do cartão + folga
   const disponivel = window.innerHeight - topo - cabecalhoDias - respiro;
   const alvo = Math.floor(disponivel / faixas);
-  const apertado = alvo < CAL_ALTURA_FAIXA_MIN;
-  CAL_ALTURA_FAIXA = Math.max(CAL_ALTURA_FAIXA_MIN, Math.min(CAL_ALTURA_FAIXA_MAX, alvo || CAL_ALTURA_FAIXA_OMISSAO));
-  document.documentElement.style.setProperty('--faixa', CAL_ALTURA_FAIXA + 'px');
+  const minimo = emEscala(CAL_ALTURA_FAIXA_MIN), maximo = emEscala(CAL_ALTURA_FAIXA_MAX);
+  const apertado = alvo < minimo;
+  CAL_ALTURA_FAIXA = Math.max(minimo, Math.min(maximo, alvo || emEscala(CAL_ALTURA_FAIXA_OMISSAO)));
+  document.documentElement.style.setProperty('--faixa', CAL_ALTURA_FAIXA.toFixed(2) + 'px');
   // Só quando nem o mínimo cabe é que a grelha passa a ter scroll próprio.
-  cont.style.maxHeight = apertado ? Math.max(220, disponivel + cabecalhoDias) + 'px' : '';
+  cont.style.maxHeight = apertado ? Math.max(emEscala(220), disponivel + cabecalhoDias) + 'px' : '';
   return apertado;
 }
 
@@ -6256,7 +6391,7 @@ function calDisporSobrepostos(eventos){
 // texto transbordar ou ser cortado a meio, o cartão mostra menos linhas —
 // mas a HORA, o NOME e o SERVIÇO estão sempre lá, nem que seja tudo na
 // mesma linha.
-function calHtmlEvento(ev, estilo, classeExtra, altura){
+function calHtmlEvento(ev, estilo, classeExtra, altura, estreito){
   const info = infoEstado(ev.estado);
   const disp = classeDisponibilidade(ev);
   // nos cartões em cascata a altura é livre -> cabe a frase toda
@@ -6269,7 +6404,7 @@ function calHtmlEvento(ev, estilo, classeExtra, altura){
   const cadeado = disp === 'bloqueado' ? '🔒 ' : disp === 'livre' ? '🔓 ' : '';
 
   const abre = '<div class="cal-evento ' + info.classe + ' ' + disp + ' ' + (classeExtra || '')
-       + (!cascata && altura !== undefined && altura < 34 ? ' compacto' : '') + '" style="'
+       + (!cascata && altura !== undefined && altura < emEscala(34) ? ' compacto' : '') + '" style="'
        + estiloCorEvento(ev) + (estilo || '') + '"'
        + ' data-id="' + esc(ev.id) + '" tabindex="0" role="button"'
        + ' title="' + esc(hhmmDeIso(ev.inicio) + ' · ' + (ev.nome || ev.telefone || '') + ' · '
@@ -6277,21 +6412,29 @@ function calHtmlEvento(ev, estilo, classeExtra, altura){
                           + (disp ? ' · ' + textoDisponibilidade(ev).replace(/^\S+\s/, '') : '')) + '">';
 
   // muito baixo: uma linha só, com hora + nome + serviço
-  if(!cascata && altura !== undefined && altura < 34){
+  if(!cascata && altura !== undefined && altura < emEscala(34)){
     return abre + '<div class="ev-t">' + cadeado + hora + ' · ' + quem
          + (servico ? ' · ' + servico : '') + '</div></div>';
   }
   // baixo: hora + nome (com estado) e o serviço
-  const cabeca = '<div class="ev-t">' + hora + ' · ' + quem
-       + '<span class="ev-badge">' + esc(info.nome) + '</span></div>'
-       + '<div class="ev-s">' + (cadeado && altura !== undefined && altura < 52 ? cadeado : '') + linha2 + '</div>';
-  if(!cascata && altura !== undefined && altura < 52){
-    return abre + cabeca + '</div>';
+  // Num cartão ESTREITO (marcações sobrepostas na mesma hora) a hora, o nome
+  // e o estado não cabem na mesma linha sem cortar a hora a meio — por isso
+  // o crachá do estado passa para uma linha própria, em vez de espremer
+  // tudo. Nos cartões de largura normal fica tudo na primeira linha.
+  const crachar = '<span class="ev-badge">' + esc(info.nome) + '</span>';
+  const cabeca = estreito
+    ? '<div class="ev-t"><span class="ev-quem">' + hora + ' · ' + quem + '</span></div>'
+      + '<div class="ev-estado">' + crachar + '</div>'
+    : '<div class="ev-t"><span class="ev-quem">' + hora + ' · ' + quem + '</span>' + crachar + '</div>';
+  const corpo = cabeca
+       + '<div class="ev-s">' + (cadeado && altura !== undefined && altura < emEscala(52) ? cadeado : '') + linha2 + '</div>';
+  if(!cascata && altura !== undefined && altura < emEscala(52)){
+    return abre + corpo + '</div>';
   }
   // altura normal: o SERVIÇO vem sempre antes da linha de disponibilidade, e
   // num cartão cancelado o total é omitido — continua no painel de detalhes
   // e na pré-visualização.
-  return abre + cabeca
+  return abre + corpo
        + (disp ? '<div class="ev-disp">' + esc(cascata ? textoDisponibilidade(ev)
                                                        : textoDisponibilidadeCurto(ev)) + '</div>' : '')
        + (total && !disp ? '<div class="ev-s">' + esc(total) + '</div>' : '')
@@ -6340,7 +6483,7 @@ function calHtmlGrelha(eventos){
     const geometria = (ini, fim) => {
       const topo = Math.max(0, (ini - CAL_INICIO * 60)) * alturaPorMinuto();
       const alturaMax = faixas * CAL_ALTURA_FAIXA - topo;
-      const altura = Math.max(Math.min(24, CAL_ALTURA_FAIXA),
+      const altura = Math.max(Math.min(emEscala(24), CAL_ALTURA_FAIXA),
         Math.min((fim - Math.max(ini, CAL_INICIO * 60)) * alturaPorMinuto(), alturaMax));
       return {topo: topo, altura: altura};
     };
@@ -6350,13 +6493,13 @@ function calHtmlGrelha(eventos){
       const largura = 100 / p.total;
       blocos += calHtmlEvento(p.ev,
         'top:' + g.topo.toFixed(1) + 'px;height:' + g.altura.toFixed(1) + 'px;left:calc(' + (largura * p.coluna).toFixed(3)
-        + '% + 2px);width:calc(' + largura.toFixed(3) + '% - 4px);', '', g.altura);
+        + '% + 2px);width:calc(' + largura.toFixed(3) + '% - 4px);', '', g.altura, p.total > 1);
     });
     libertados.forEach(ev => {
       const ini = minutosDeIso(ev.inicio);
       const g = geometria(ini, Math.max(ini + 15, minutosDeIso(ev.fim)));
       blocos += calHtmlEvento(ev, 'top:' + g.topo.toFixed(1) + 'px;height:' + g.altura.toFixed(1)
-        + 'px;right:2px;width:44%;z-index:4;', '', g.altura);
+        + 'px;right:2px;width:44%;z-index:4;', '', g.altura, true);
     });
     colunas += '<div class="cal-coluna" data-dia="' + chave + '">' + celulas + blocos + '</div>';
   });
@@ -6586,8 +6729,8 @@ function mostrarPreview(id, elemento){
 function posicionarPreview(elemento){
   const caixa = document.getElementById('cal-preview');
   const r = elemento.getBoundingClientRect();
-  const margem = 10;
-  const largura = caixa.offsetWidth || 300, altura = caixa.offsetHeight || 200;
+  const margem = emEscala(10);
+  const largura = caixa.offsetWidth || emEscala(300), altura = caixa.offsetHeight || emEscala(200);
   let x = r.right + margem, y = r.top;
   if(x + largura > window.innerWidth - 8) x = Math.max(8, r.left - largura - margem);
   if(y + altura > window.innerHeight - 8) y = Math.max(8, window.innerHeight - altura - 8);
@@ -6950,7 +7093,7 @@ abrirPedidoPeloHash();
 
 @app.route("/versao", methods=["GET"])
 def versao():
-    return jsonify(versao="v5.7-layout-calendario", fluxos=["limpeza", "estetica", "wrap"],
+    return jsonify(versao="v5.9-preencher-janela", fluxos=["limpeza", "estetica", "wrap"],
                    idiomas=list(IDIOMAS_VALIDOS)), 200
 
 
@@ -6980,6 +7123,9 @@ def reiniciar_sessao(de, manter_nome=True):
     recomeçar, pelo que nenhum pedido abandonado fica visível como novo."""
     sessao_antiga = carregar_sessao(de)
     arquivar_rascunho_wrap(sessao_antiga)
+    # cancelar, voltar ao menu, falar com a equipa ou esvaziar o carrinho
+    # devolvem imediatamente ao mercado o horário que estivesse retido
+    libertar_horario_retido(de)
     nova = sessao_preservando_perfil(sessao_antiga) if manter_nome else \
         ({"idioma": sessao_antiga["idioma"]} if sessao_antiga.get("idioma") else {})
     guardar_sessao(de, nova)
@@ -7094,6 +7240,8 @@ def voltar_um_passo(de, idioma, sessao):
 
     if categoria in ("cat_limpeza", "cat_estetica"):
         if "hora" in sessao:
+            # desfazer a escolha da hora devolve logo o horário ao mercado
+            libertar_horario_retido(de)
             sessao.pop("hora", None); guardar_sessao(de, sessao); passo_hora(de, idioma, sessao=sessao)
         elif "data" in sessao:
             sessao.pop("data", None); guardar_sessao(de, sessao); passo_data(de, idioma, sessao=sessao)
@@ -7508,11 +7656,14 @@ def receber_mensagem():
                 try:
                     id_ag = guardar_agendamento(de, sessao)
                 except HorarioOcupado:
+                    libertar_horario_retido(de)
                     sessao.pop("hora", None)
                     guardar_sessao(de, sessao)
                     enviar_texto(de, t("hora_entretanto_ocupada", idioma))
                     passo_hora(de, idioma, sessao=sessao)
                     return jsonify(status="ok"), 200
+                # a retenção cumpriu o seu papel: agora há uma marcação a sério
+                libertar_horario_retido(de)
                 enviar_texto(de, mensagem_confirmacao_final(sessao, idioma))
                 # Em vez de mandar escrever comandos no próprio texto: botões.
                 enviar_botoes(de, t("e_agora_pergunta", idioma), [
@@ -7524,6 +7675,7 @@ def receber_mensagem():
                 return jsonify(status="ok"), 200
 
             if id_botao == "alterar":
+                libertar_horario_retido(de)     # a hora vai ser reescolhida
                 categoria = sessao.get("categoria")
                 for campo in ("tipo_id", "tamanho_id", "estado_id", "extra_id", "data", "hora",
                               "servico", "extra", "preco", "duracao"):
@@ -7850,6 +8002,10 @@ def receber_mensagem():
                     sessao["data"] = msg["interactive"]["list_reply"]["title"]; guardar_sessao(de, sessao); passo_hora(de, idioma, sessao=sessao)
                 elif "hora" not in sessao:
                     sessao["hora"] = msg["interactive"]["list_reply"]["title"]; guardar_sessao(de, sessao)
+                    # A partir daqui o horário fica RETIDO em nome deste
+                    # cliente: deixa de ser oferecido a mais ninguém enquanto
+                    # ele revê e confirma (ver reter_horario).
+                    reter_horario(de, sessao)
                     passo_resumo(de, idioma, sessao)
                 return jsonify(status="ok"), 200
 
@@ -7871,6 +8027,10 @@ def receber_mensagem():
                     sessao["data"] = msg["interactive"]["list_reply"]["title"]; guardar_sessao(de, sessao); passo_hora(de, idioma, sessao=sessao)
                 elif "hora" not in sessao:
                     sessao["hora"] = msg["interactive"]["list_reply"]["title"]; guardar_sessao(de, sessao)
+                    # A partir daqui o horário fica RETIDO em nome deste
+                    # cliente: deixa de ser oferecido a mais ninguém enquanto
+                    # ele revê e confirma (ver reter_horario).
+                    reter_horario(de, sessao)
                     passo_resumo(de, idioma, sessao)
                 return jsonify(status="ok"), 200
 
