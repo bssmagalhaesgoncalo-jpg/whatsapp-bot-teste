@@ -2653,7 +2653,97 @@ def api_cliente(customer_id):
             (customer_id,)).fetchall()
     historico = [dict(zip(("id", "servico", "data", "hora", "data_iso", "hora_hhmm",
                            "estado", "preco_cents", "op_status"), m)) for m in marc]
-    return jsonify(cliente=cust, historico=historico), 200
+    from billing import engine as _bi
+    faturas = _bi.faturas_do_cliente(customer_id, _TENANT)
+    return jsonify(cliente=cust, historico=historico, faturas=faturas), 200
+
+
+# --- Faturação --------------------------------------------------------------
+_FATURA_ERRO_HTTP = {"PrecoEmFalta": 409, "TransicaoInvalida": 409,
+                     "FaturaNaoEncontrada": 404, "ErroFaturacao": 400}
+
+
+def _faturas_engine():
+    from billing import engine as _bi
+    return _bi
+
+
+def _resp_erro_fatura(e):
+    from billing import engine as _bi
+    codigo = _FATURA_ERRO_HTTP.get(type(e).__name__, 400)
+    corpo = {"erro": str(e)}
+    if isinstance(e, _bi.PrecoEmFalta):
+        corpo["precisa_preco"] = True
+    return jsonify(corpo), codigo
+
+
+@app.route("/api/agendamentos/<int:id_agendamento>/fatura", methods=["POST"])
+@requer_autenticacao
+def api_agendamento_fatura(id_agendamento):
+    """Gera (ou devolve, se já existir) a fatura desta marcação. Se a marcação
+    não tem preço, o corpo tem de trazer preco_cents."""
+    bi = _faturas_engine()
+    d = request.get_json(silent=True) or {}
+    preco = d.get("preco_cents")
+    if preco is not None:
+        try:
+            preco = int(preco)
+        except (TypeError, ValueError):
+            return jsonify(erro="preco_cents tem de ser um número inteiro."), 400
+    try:
+        inv = bi.gerar_fatura_de_marcacao(id_agendamento, preco_cents=preco, tenant_id=_TENANT)
+    except bi.ErroFaturacao as e:
+        return _resp_erro_fatura(e)
+    return jsonify(inv), 201
+
+
+@app.route("/api/faturas", methods=["GET"])
+@requer_autenticacao
+def api_faturas():
+    bi = _faturas_engine()
+    return jsonify(bi.listar_faturas(_TENANT, status=request.args.get("estado"))), 200
+
+
+@app.route("/api/faturas/<int:invoice_id>", methods=["GET", "PATCH"])
+@requer_autenticacao
+def api_fatura(invoice_id):
+    bi = _faturas_engine()
+    if request.method == "PATCH":
+        try:
+            inv = bi.atualizar_rascunho(invoice_id, request.get_json(silent=True) or {}, _TENANT)
+        except bi.ErroFaturacao as e:
+            return _resp_erro_fatura(e)
+        return jsonify(inv), 200
+    inv = bi.obter_fatura(invoice_id, _TENANT)
+    if not inv:
+        return jsonify(erro="Fatura não encontrada."), 404
+    return jsonify(inv), 200
+
+
+@app.route("/api/faturas/<int:invoice_id>/<accao>", methods=["POST"])
+@requer_autenticacao
+def api_fatura_accao(invoice_id, accao):
+    bi = _faturas_engine()
+    fn = {"emitir": bi.emitir_fatura, "pagar": bi.marcar_paga, "anular": bi.anular_fatura}.get(accao)
+    if not fn:
+        return jsonify(erro="Ação inválida (emitir / pagar / anular)."), 400
+    try:
+        return jsonify(fn(invoice_id, _TENANT)), 200
+    except bi.ErroFaturacao as e:
+        return _resp_erro_fatura(e)
+
+
+@app.route("/api/definicoes/faturacao", methods=["GET", "PUT"])
+@requer_autenticacao
+def api_definicoes_faturacao():
+    bi = _faturas_engine()
+    if request.method == "PUT":
+        try:
+            cfg = bi.guardar_definicoes_faturacao(request.get_json(silent=True) or {}, _TENANT)
+        except bi.ErroFaturacao as e:
+            return jsonify(erro=str(e)), 400
+        return jsonify(cfg), 200
+    return jsonify(bi.definicoes_faturacao(_TENANT)), 200
 
 
 @app.route("/painel", methods=["GET"])
@@ -5087,7 +5177,8 @@ def _drenar_eventos_apos_escrita(resposta):
     passa a cron worker em V1.5. Nunca deixa uma exceção afetar a resposta."""
     try:
         p = request.path or ""
-        if p == "/webhook" or (p.startswith("/api/agendamentos/") and request.method == "POST"):
+        if p == "/webhook" or (request.method == "POST" and (
+                p.startswith("/api/agendamentos/") or p.startswith("/api/faturas"))):
             disparar_automacoes()
     except Exception:                        # noqa: BLE001
         log.exception("_drenar_eventos_apos_escrita")
