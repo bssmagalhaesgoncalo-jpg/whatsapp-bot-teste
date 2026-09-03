@@ -53,3 +53,11 @@ def test_20b_verificacao_get_webhook(cliente_http):
     assert r.status_code == 200 and r.data == b"xyz"
     r = cliente_http.get("/webhook?hub.mode=subscribe&hub.verify_token=errado&hub.challenge=xyz")
     assert r.status_code == 403
+
+
+def test_painel_401_sem_credenciais_header_ascii(cliente_http):
+    r = cliente_http.get("/dashboard")
+    assert r.status_code == 401
+    wa = r.headers.get("WWW-Authenticate", "")
+    assert wa.encode("ascii")            # não rebenta = header é ASCII (gunicorn exige)
+    assert "Basic" in wa

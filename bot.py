@@ -4893,9 +4893,10 @@ def requer_autenticacao(func):
         auth = request.authorization
         if (not auth or not hmac.compare_digest(auth.username or "", DASHBOARD_USER)
                 or not hmac.compare_digest(auth.password or "", DASHBOARD_PASSWORD)):
+            # O valor de um header HTTP tem de ser ASCII — realm fixo e simples.
             return Response(
-                "Autenticação necessária.", 401,
-                {"WWW-Authenticate": f'Basic realm="{BUSINESS_NAME} — Painel"'},
+                "Autenticacao necessaria.", 401,
+                {"WWW-Authenticate": 'Basic realm="Painel", charset="UTF-8"'},
             )
         return func(*args, **kwargs)
     return wrapper
