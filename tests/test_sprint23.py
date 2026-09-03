@@ -101,7 +101,7 @@ def test_cartao_proxima_cliente(base_dados, monkeypatch):
     assert ck["kind"] == "next"
     assert ck["marcacao"]["cliente"] == "Ana Müller"
     assert ck["faltam_min"] == 30
-    assert ck["marcacao"]["cliente_visitas"] == 1
+    assert ck["marcacao"]["cliente_visitas"] == 0   # #3: 1ª vez, ainda sem visita realizada
 
 
 def test_cartao_em_curso_pelo_relogio(base_dados, monkeypatch):
@@ -127,6 +127,51 @@ def test_transicoes_chegou_iniciar_concluir(base_dados):
     assert ag["op_status"] == "done" and ag["completed_at"]
     assert bot.chave_estado(ag["estado"]) == "completed"
     assert "booking.completed" in {e["type"] for e in db.eventos_por_processar()}
+
+
+def _marcar_hoje(tel):
+    d = tempo.hoje_zurique()
+    return marcar(tel, "limpeza_pele", _hoje_txt() if d.weekday() != 6 else data_pt(SEG), "16:00")
+
+
+def test_op_salto_absurdo_precisa_confirmacao(base_dados):
+    a = _marcar_hoje("41790020010")
+    # scheduled -> done directo é absurdo (ninguém chegou/começou)
+    with pytest.raises(op.TransicaoAbsurda):
+        op.transicao_operacional(a, "done")
+    assert bot.obter_agendamento(a)["op_status"] == "scheduled"
+    # com confirmação: salta e preenche os timestamps intermédios
+    op.transicao_operacional(a, "done", forcar=True)
+    ag = bot.obter_agendamento(a)
+    assert ag["op_status"] == "done"
+    assert ag["arrived_at"] and ag["started_at"] and ag["completed_at"]
+
+
+def test_op_nao_recua_sem_confirmacao(base_dados):
+    a = _marcar_hoje("41790020011")
+    op.transicao_operacional(a, "arrived")
+    op.transicao_operacional(a, "in_progress")
+    # recuar de in_progress para arrived não é aceite sem forçar
+    with pytest.raises(op.TransicaoAbsurda):
+        op.transicao_operacional(a, "arrived")
+    assert bot.obter_agendamento(a)["op_status"] == "in_progress"
+
+
+def test_op_nao_mexe_em_no_show_sem_confirmacao(base_dados):
+    a = _marcar_hoje("41790020012")
+    bot.atualizar_estado_agendamento(a, "no_show")
+    with pytest.raises(op.TransicaoAbsurda):
+        op.transicao_operacional(a, "arrived")
+
+
+def test_api_op_salto_devolve_409(cliente_http, base_dados):
+    a = _marcar_hoje("41790020013")
+    r = cliente_http.post(f"/api/agendamentos/{a}/op", json={"op": "done"}, headers=AUTH)
+    assert r.status_code == 409
+    assert (r.get_json() or {}).get("precisa_confirmacao") is True
+    r = cliente_http.post(f"/api/agendamentos/{a}/op",
+                          json={"op": "done", "confirmar": True}, headers=AUTH)
+    assert r.status_code == 200
 
 
 def test_atraso_nao_envia_e_calcula_afetadas(cliente_http, base_dados, monkeypatch):

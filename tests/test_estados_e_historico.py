@@ -48,7 +48,20 @@ def test_api_estado_rejeita_estado_invalido(cliente_http, base_dados):
     h = {"Authorization": "Basic " + base64.b64encode(b"painel:painel-pw").decode()}
     r = cliente_http.post(f"/api/agendamentos/{idag}/estado", json={"estado": "banana"}, headers=h)
     assert r.status_code == 400
+    # #9: a marcação é no futuro -> concluir/faltar exige confirmação
     r = cliente_http.post(f"/api/agendamentos/{idag}/estado", json={"estado": "no_show"}, headers=h)
+    assert r.status_code == 409 and (r.get_json() or {}).get("precisa_confirmacao") is True
+    r = cliente_http.post(f"/api/agendamentos/{idag}/estado",
+                          json={"estado": "no_show", "confirmar": True}, headers=h)
     assert r.status_code == 200
-    r = cliente_http.post(f"/api/agendamentos/{idag}/estado", json={"estado": "completed"}, headers=h)
+    r = cliente_http.post(f"/api/agendamentos/{idag}/estado",
+                          json={"estado": "completed", "confirmar": True}, headers=h)
     assert r.status_code == 409          # já não está ativa
+
+
+def test_api_estado_no_passado_nao_precisa_confirmacao(cliente_http, base_dados):
+    import base64
+    idag = marcar("41790000204", "limpeza_pele", data_pt("2026-08-20"), "🕘 09:00")
+    h = {"Authorization": "Basic " + base64.b64encode(b"painel:painel-pw").decode()}
+    r = cliente_http.post(f"/api/agendamentos/{idag}/estado", json={"estado": "completed"}, headers=h)
+    assert r.status_code == 200

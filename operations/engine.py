@@ -125,7 +125,7 @@ def _resumo(m: dict, tenant_id: int) -> dict:
         with db.ligacao() as c:
             r = c.execute(
                 "SELECT data_iso FROM agendamentos WHERE customer_id = ? AND servico_id = ? "
-                "AND id <> ? AND LOWER(estado) IN ('confirmed','completed') "
+                "AND id <> ? AND LOWER(estado) IN (" + estados.sql_lista(estados.CONFIRMED, estados.COMPLETED) + ") "
                 "ORDER BY data_iso DESC LIMIT 1", (cust["id"], m["servico_id"], m["id"])).fetchone()
             ultima_do_servico = r[0] if r else None
     return {
@@ -157,10 +157,25 @@ _TRANSICOES = {
     "done": ("in_progress", "completed_at"),
 }
 
+# Ordem do ciclo operacional. Uma transição normal avança UM passo. Saltar
+# passos (ex.: scheduled -> done) ou recuar (done -> arrived) é "temporalmente
+# absurdo" e só é aceite com forcar=True (o painel pede confirmação primeiro).
+_ORDEM_OP = ["scheduled", "arrived", "in_progress", "done"]
 
-def transicao_operacional(id_agendamento: int, novo: str, tenant_id: int = 1) -> dict:
+
+class TransicaoAbsurda(ValueError):
+    """Transição operacional fora de ordem sem confirmação explícita."""
+
+
+def transicao_operacional(id_agendamento: int, novo: str, tenant_id: int = 1,
+                          forcar: bool = False) -> dict:
     """arrived / in_progress / done. Regista o timestamp e (para 'done') passa
-    também o estado comercial a 'completed'. Devolve o card atualizado."""
+    também o estado comercial a 'completed'. Devolve o card atualizado.
+
+    Sem `forcar`, só avança UM passo de cada vez e nunca recua, e recusa mexer
+    numa marcação cancelada/não-comparecida — evita gravar um `done` numa
+    marcação que nunca teve ninguém à frente. `forcar=True` (confirmado no
+    painel) faz o salto e preenche os timestamps intermédios em falta."""
     if novo not in _TRANSICOES:
         raise ValueError(f"transição inválida: {novo}")
     coluna_ts = _TRANSICOES[novo][1]
@@ -169,7 +184,30 @@ def transicao_operacional(id_agendamento: int, novo: str, tenant_id: int = 1) ->
                       "data, hora FROM agendamentos WHERE id = ?", (id_agendamento,)).fetchone()
         if not r:
             raise LookupError("Marcação não encontrada.")
+
+        atual = r[0] or "scheduled"
+        estado_com = estados.normalizar(r[1])
+        i_atual = _ORDEM_OP.index(atual) if atual in _ORDEM_OP else 0
+        i_novo = _ORDEM_OP.index(novo)
+        if not forcar:
+            if estado_com in (estados.CANCELLED, estados.NO_SHOW):
+                raise TransicaoAbsurda(
+                    f"marcação está '{estado_com}' — confirme antes de a pôr em '{novo}'.")
+            if i_novo == i_atual:
+                return cartao_operacional(tenant_id)          # no-op idempotente
+            if i_novo != i_atual + 1:
+                raise TransicaoAbsurda(
+                    f"não se pode ir de '{atual}' para '{novo}' — passe pelos passos "
+                    f"intermédios ou confirme o salto.")
+
         agora = tempo.iso_utc()
+        if forcar and i_novo > i_atual:
+            # preenche os timestamps dos passos saltados (COALESCE não os toca
+            # se já existirem)
+            for passo in _ORDEM_OP[i_atual + 1:i_novo]:
+                col = _TRANSICOES[passo][1]
+                c.execute(f"UPDATE agendamentos SET {col} = COALESCE({col}, ?) WHERE id = ?",
+                          (agora, id_agendamento))
         c.execute(f"UPDATE agendamentos SET op_status = ?, {coluna_ts} = COALESCE({coluna_ts}, ?) "
                   "WHERE id = ?", (novo, agora, id_agendamento))
         if novo == "done":
@@ -240,7 +278,7 @@ def attention_items(tenant_id: int = 1, agora: datetime | None = None) -> list[d
         pend = c.execute(
             "SELECT a.id, a.nome, a.servico, a.data, a.hora FROM agendamentos a "
             "WHERE a.tenant_id = ? AND a.preco_cents IS NULL AND a.servico_id IS NOT NULL "
-            "AND LOWER(a.estado) IN ('confirmed','pending') AND COALESCE(a.data_iso,'') >= ?",
+            "AND LOWER(a.estado) IN (" + estados.sql_lista(*estados.ATIVOS) + ") AND COALESCE(a.data_iso,'') >= ?",
             (tenant_id, hoje)).fetchall()
     for (aid, nome, servico, data, hora) in pend:
         itens.append({"nivel": "hoje", "tipo": "preco_pendente",
@@ -305,7 +343,7 @@ def resumo_hoje(tenant_id: int = 1, agora: datetime | None = None) -> dict:
             "SELECT COUNT(*) FROM customers WHERE tenant_id = ? AND substr(first_seen,1,10) = ?",
             (tenant_id, hoje)).fetchone()[0]
         cancel = c.execute(
-            "SELECT COUNT(*) FROM agendamentos WHERE tenant_id = ? AND LOWER(estado) = 'cancelled' "
+            "SELECT COUNT(*) FROM agendamentos WHERE tenant_id = ? AND LOWER(estado) = '" + estados.CANCELLED + "' "
             "AND (data_iso = ? OR data LIKE ?)",
             (tenant_id, hoje, f"%{hoje[8:10]}.{hoje[5:7]}.{hoje[0:4]}%")).fetchone()[0]
     return {

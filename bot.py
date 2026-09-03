@@ -88,6 +88,22 @@ log = logging.getLogger("bot")
 eventos.registar("*", notif_negocio.handler_evento)
 
 
+def _notificar_criacao_marcacao(ev):
+    """PONTO ÚNICO da notificação privada de uma marcação NOVA: o texto vem do
+    formatador único (notif_negocio.render_evento) e é enviado com a lista de
+    ações da equipa. Uma marcação -> um evento booking.created/pending -> uma
+    notificação. O webhook já NÃO envia diretamente (ver receber_mensagem)."""
+    if ev["type"] not in ("booking.created", "booking.pending"):
+        return
+    texto = notif_negocio.render_evento(ev)
+    if texto:
+        enviar_notificacao_interna_marcacao(ev.get("entity_id"), texto)
+
+
+eventos.registar("booking.created", _notificar_criacao_marcacao)
+eventos.registar("booking.pending", _notificar_criacao_marcacao)
+
+
 def disparar_automacoes():
     """Processa a outbox de eventos (síncrono, V1). Chamado no fim de cada
     request que possa ter gravado eventos. Nunca deixa uma exceção escapar —
@@ -519,23 +535,25 @@ CONFIGURACOES_OMISSAO = {
 }
 
 
-def obter_configuracao(chave, omissao=None):
+def obter_configuracao(chave, omissao=None, tenant_id=1):
     """Valor guardado de uma configuração, ou o valor por omissão quando
-    ainda nunca foi gravada (base de dados antiga, primeira utilização)."""
+    ainda nunca foi gravada (base de dados antiga, primeira utilização).
+    A identidade da linha é (tenant_id, chave) — ver migração 15."""
     with obter_bd() as conn:
-        linha = conn.execute("SELECT valor FROM configuracoes WHERE chave = ?", (chave,)).fetchone()
+        linha = conn.execute("SELECT valor FROM configuracoes WHERE tenant_id = ? AND chave = ?",
+                             (tenant_id, chave)).fetchone()
     if linha:
         return linha[0]
     return CONFIGURACOES_OMISSAO.get(chave) if omissao is None else omissao
 
 
-def guardar_configuracao(chave, valor):
+def guardar_configuracao(chave, valor, tenant_id=1):
     with obter_bd() as conn:
         conn.execute(
-            "INSERT INTO configuracoes (chave, valor, atualizado_em) VALUES (?, ?, ?) "
-            "ON CONFLICT(chave) DO UPDATE SET valor = excluded.valor, "
+            "INSERT INTO configuracoes (tenant_id, chave, valor, atualizado_em) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(tenant_id, chave) DO UPDATE SET valor = excluded.valor, "
             "atualizado_em = excluded.atualizado_em",
-            (chave, str(valor), tempo.iso_utc()),
+            (tenant_id, chave, str(valor), tempo.iso_utc()),
         )
     return str(valor)
 
@@ -552,48 +570,31 @@ def configuracoes_atuais():
     return {CONFIG_LIBERTAR_AO_CANCELAR: libertar_horario_ao_cancelar()}
 
 
-# Quanto tempo se guarda o wamid de uma mensagem já tratada — bem acima da
-# janela de reenvios da Meta, curto o suficiente para a tabela não crescer.
-IDEMPOTENCIA_HORAS = 24
+# Idempotência do webhook: máquina de estados claimed/processed/failed em
+# db.py (reclamar_mensagem / confirmar_mensagem / falhar_mensagem). Um retry
+# da Meta a seguir a um processamento FALHADO volta a ser processado.
 
 
-def mensagem_ja_processada(id_mensagem):
-    """True se esta mensagem (wamid) JÁ foi tratada. Regista-a atomicamente:
-    o INSERT OR IGNORE só afeta uma linha na primeira vez, por isso dois
-    webhooks simultâneos com o mesmo id nunca passam ambos. Sem id (mensagens
-    de teste / formatos antigos) segue o fluxo normal."""
-    if not id_mensagem:
-        return False
-    agora = tempo.agora_utc()
-    with obter_bd() as conn:
-        conn.execute("DELETE FROM mensagens_processadas WHERE recebida_em < ?",
-                     (tempo.iso_utc(agora - timedelta(hours=IDEMPOTENCIA_HORAS)),))
-        cur = conn.execute(
-            "INSERT OR IGNORE INTO mensagens_processadas (id, recebida_em) VALUES (?, ?)",
-            (str(id_mensagem), tempo.iso_utc(agora)))
-        return cur.rowcount == 0
-
-
-def carregar_sessao(telefone):
+def carregar_sessao(telefone, tenant_id=1):
     with obter_bd() as conn:
         linha = conn.execute(
-            "SELECT dados FROM sessoes WHERE telefone = ?", (telefone,)
+            "SELECT dados FROM sessoes WHERE tenant_id = ? AND telefone = ?", (tenant_id, telefone)
         ).fetchone()
     return json.loads(linha[0]) if linha else {}
 
 
-def guardar_sessao(telefone, sessao):
+def guardar_sessao(telefone, sessao, tenant_id=1):
     with obter_bd() as conn:
         conn.execute(
-            "INSERT INTO sessoes (telefone, dados) VALUES (?, ?) "
-            "ON CONFLICT(telefone) DO UPDATE SET dados = excluded.dados",
-            (telefone, json.dumps(sessao)),
+            "INSERT INTO sessoes (tenant_id, telefone, dados) VALUES (?, ?, ?) "
+            "ON CONFLICT(tenant_id, telefone) DO UPDATE SET dados = excluded.dados",
+            (tenant_id, telefone, json.dumps(sessao)),
         )
 
 
-def apagar_sessao(telefone):
+def apagar_sessao(telefone, tenant_id=1):
     with obter_bd() as conn:
-        conn.execute("DELETE FROM sessoes WHERE telefone = ?", (telefone,))
+        conn.execute("DELETE FROM sessoes WHERE tenant_id = ? AND telefone = ?", (tenant_id, telefone))
 
 
 # Colunas de `agendamentos` lidas em todo o lado — uma lista só, para nunca
@@ -671,10 +672,11 @@ def guardar_agendamento(telefone, sessao):
                                {"nome": sessao.get("nome"), "telefone": telefone},
                                dedupe_key=f"customer.created:{cust['id']}", tenant_id=tenant_id)
         bd.registar_evento(
-            conn, "booking.pending" if estado == "pending" else "booking.created",
+            conn, "booking.pending" if estado == estados.PENDING else "booking.created",
             "appointment", id_ag,
             {"servico_id": servico_id, "servico": sessao.get("servico"),
              "data": sessao.get("data"), "hora": sessao.get("hora"),
+             "duracao_min": duracao_min,
              "preco_cents": preco_cents, "cliente": sessao.get("nome"),
              "telefone": telefone, "customer_id": cust["id"]},
             dedupe_key=f"booking.created:{id_ag}", tenant_id=tenant_id)
@@ -703,7 +705,7 @@ def ultimo_agendamento_ativo(telefone):
     with obter_bd() as conn:
         linha = conn.execute(
             "SELECT id, servico, data, hora, preco, duracao FROM agendamentos "
-            "WHERE telefone = ? AND estado IN ('confirmed', 'pending') ORDER BY id DESC LIMIT 1",
+            "WHERE telefone = ? AND estado IN (" + estados.sql_lista(*estados.ATIVOS) + ") ORDER BY id DESC LIMIT 1",
             (telefone,),
         ).fetchone()
     if not linha:
@@ -729,7 +731,7 @@ def agendamentos_confirmados_por_telefone(telefone):
     with obter_bd() as conn:
         linhas = conn.execute(
             f"SELECT {SQL_COLUNAS_AGENDAMENTO} FROM agendamentos "
-            "WHERE telefone = ? AND estado IN ('confirmed', 'pending') ORDER BY id DESC",
+            "WHERE telefone = ? AND estado IN (" + estados.sql_lista(*estados.ATIVOS) + ") ORDER BY id DESC",
             (telefone,),
         ).fetchall()
     return [dict(zip(CAMPOS_AGENDAMENTO, l)) for l in linhas]
@@ -902,7 +904,7 @@ def horario_livre_de_uma_marcacao(agendamento):
     """True quando o registo existe mas o horário está livre — cancelada e
     libertada. Usado para a distinguir visualmente de uma cancelada que
     continua a ocupar o horário."""
-    return chave_estado((agendamento or {}).get("estado")) == "cancelado" \
+    return chave_estado((agendamento or {}).get("estado")) == estados.CANCELLED \
         and not agendamento_bloqueia_horario(agendamento)
 
 
@@ -944,8 +946,8 @@ def evento_calendario(agendamento, pedido=None):
         "dia": data_iso,
         "dia_inteiro": dia_inteiro,
         "duracao_minutos": minutos,
-        "estado": agendamento.get("estado") or "confirmado",
-        "estado_chave": chave_estado(agendamento.get("estado") or "confirmado"),
+        "estado": agendamento.get("estado") or estados.CONFIRMED,
+        "estado_chave": chave_estado(agendamento.get("estado") or estados.CONFIRMED),
         # A cor diz o SERVIÇO; estes dois dizem, por texto, o que a cor nunca
         # diz: se o registo ainda ocupa o horário ou se este já está livre.
         "bloqueia_horario": agendamento_bloqueia_horario(agendamento),
@@ -1008,23 +1010,24 @@ def _agora_iso():
     return tempo.iso_utc()
 
 
-def registar_interacao_cliente(telefone):
+def registar_interacao_cliente(telefone, tenant_id=1):
     """Marca "agora" como a última mensagem recebida deste número — usado só
     para saber se ainda estamos dentro da janela de 24h de atendimento ao
     cliente da Meta (ver dentro_da_janela_24h). Tabela à parte da sessão."""
     agora = _agora_iso()
     with obter_bd() as conn:
         conn.execute(
-            "INSERT INTO interacoes_cliente (telefone, ultima_mensagem_em) VALUES (?, ?) "
-            "ON CONFLICT(telefone) DO UPDATE SET ultima_mensagem_em = excluded.ultima_mensagem_em",
-            (telefone, agora),
+            "INSERT INTO interacoes_cliente (tenant_id, telefone, ultima_mensagem_em) VALUES (?, ?, ?) "
+            "ON CONFLICT(tenant_id, telefone) DO UPDATE SET ultima_mensagem_em = excluded.ultima_mensagem_em",
+            (tenant_id, telefone, agora),
         )
 
 
-def dentro_da_janela_24h(telefone):
+def dentro_da_janela_24h(telefone, tenant_id=1):
     with obter_bd() as conn:
         linha = conn.execute(
-            "SELECT ultima_mensagem_em FROM interacoes_cliente WHERE telefone = ?", (telefone,)
+            "SELECT ultima_mensagem_em FROM interacoes_cliente WHERE tenant_id = ? AND telefone = ?",
+            (tenant_id, telefone)
         ).fetchone()
     if not linha or not linha[0]:
         return False
@@ -1493,26 +1496,9 @@ def mensagem_confirmacao_final(sessao, idioma):
     return "\n".join(linhas)
 
 
-def mensagem_notificacao_provider(de, sessao, id_agendamento):
-    """Sempre em português — idioma de trabalho da equipa. Deixa CLARO quando
-    o preço ainda não está definido. (Ver notificar_negocio para os outros
-    eventos — este é o formato da criação.)"""
-    servico = bd.obter_servico(sessao.get("servico_id")) or {}
-    estado = estado_inicial_marcacao()
-    cabec = "🔔 *Nova marcação" if estado == "confirmed" else "⏳ *Nova marcação (a APROVAR)"
-    linhas = [f"{cabec} · #{id_agendamento}*", ""]
-    linhas.append(f"👤 {sessao.get('nome') or 'Cliente'}")
-    linhas.append(f"✨ {catalogo.nome_pt(servico)}")
-    linhas.append(f"📅 {sessao['data']}")
-    linhas.append(f"🕒 {sessao['hora']}")
-    linhas.append(f"⏱️ {catalogo.duracao_label(servico.get('duracao_min'))}")
-    cents = servico.get("preco_cents")
-    linhas.append("💰 Preço a confirmar" if cents is None
-                  else f"💰 {catalogo.formatar_cents(cents, 'pt')}")
-    linhas.append("")
-    linhas.append(f"📱 {formatar_telefone(de)}")
-    linhas.append("✅ Confirmada" if estado == "confirmed" else "⏳ A aguardar aprovação")
-    return "\n".join(linhas)
+# A notificação privada de criação foi UNIFICADA em
+# notifications/business.py::render_evento (formato único de todos os eventos)
+# + bot._notificar_criacao_marcacao (envio com a lista de ações da equipa).
 
 
 # ---------------------------------------------------------------------------
@@ -1785,10 +1771,11 @@ def _limpar_reservas_expiradas(conn):
                  (tempo.iso_utc(),))
 
 
-def reter_horario(telefone, sessao):
+def reter_horario(telefone, sessao, tenant_id=1):
     """Retém, em nome deste número, o horário que ele acabou de escolher.
     Substitui qualquer retenção anterior do mesmo número — um cliente só
-    configura uma marcação de cada vez."""
+    configura uma marcação de cada vez. Identidade da linha: (tenant_id,
+    telefone) — ver migração 15."""
     data, hora = sessao.get("data"), sessao.get("hora")
     if not data or not hora:
         return False
@@ -1797,25 +1784,27 @@ def reter_horario(telefone, sessao):
     with obter_bd() as conn:
         _limpar_reservas_expiradas(conn)
         conn.execute(
-            "INSERT INTO reservas_temporarias (telefone, data, hora, servico, duracao, criado_em, expira_em) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(telefone) DO UPDATE SET "
+            "INSERT INTO reservas_temporarias "
+            "(tenant_id, telefone, data, hora, servico, duracao, criado_em, expira_em) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(tenant_id, telefone) DO UPDATE SET "
             "data = excluded.data, hora = excluded.hora, servico = excluded.servico, "
             "duracao = excluded.duracao, criado_em = excluded.criado_em, expira_em = excluded.expira_em",
-            (telefone, data, hora, sessao.get("servico") or servico_pt,
+            (tenant_id, telefone, data, hora, sessao.get("servico") or servico_pt,
              sessao.get("duracao") or duracao_pt, agora.isoformat(),
              (agora + timedelta(minutes=RESERVA_TEMPORARIA_MINUTOS)).isoformat()))
     return True
 
 
-def libertar_horario_retido(telefone):
+def libertar_horario_retido(telefone, tenant_id=1):
     """Devolve o horário ao mercado: chamado ao confirmar (aí passa a ser uma
     marcação a sério), ao cancelar, ao voltar atrás e ao reiniciar a sessão."""
     with obter_bd() as conn:
         _limpar_reservas_expiradas(conn)
-        conn.execute("DELETE FROM reservas_temporarias WHERE telefone = ?", (telefone,))
+        conn.execute("DELETE FROM reservas_temporarias WHERE tenant_id = ? AND telefone = ?",
+                     (tenant_id, telefone))
 
 
-def horarios_retidos(excluir_telefone=None, conn=None):
+def horarios_retidos(excluir_telefone=None, conn=None, tenant_id=1):
     """Retenções ainda válidas, no mesmo formato de uma marcação, para a
     verificação de conflitos as tratar exatamente como qualquer outra
     ocupação. A retenção do próprio cliente é sempre ignorada — senão ele
@@ -1824,7 +1813,7 @@ def horarios_retidos(excluir_telefone=None, conn=None):
         _limpar_reservas_expiradas(c)
         return c.execute(
             "SELECT telefone, data, hora, servico, duracao FROM reservas_temporarias "
-            "WHERE expira_em > ?", (tempo.iso_utc(),)).fetchall()
+            "WHERE tenant_id = ? AND expira_em > ?", (tenant_id, tempo.iso_utc())).fetchall()
 
     if conn is not None:
         linhas = _ler(conn)
@@ -1832,7 +1821,7 @@ def horarios_retidos(excluir_telefone=None, conn=None):
         with obter_bd() as ligacao:
             linhas = _ler(ligacao)
     return [{"id": None, "telefone": tel, "data": data, "hora": hora, "servico": servico,
-             "duracao": duracao, "estado": "confirmado", "bloqueia_horario": 1,
+             "duracao": duracao, "estado": estados.CONFIRMED, "bloqueia_horario": 1,
              "retencao": True}
             for (tel, data, hora, servico, duracao) in linhas if tel != excluir_telefone]
 
@@ -1906,18 +1895,22 @@ def reagendar_agendamento(id_agendamento, data_iso, hora, origem="dashboard", av
             "UPDATE agendamentos SET data = ?, hora = ?, data_iso = ?, hora_hhmm = ?, "
             "bloqueia_horario = 1 WHERE id = ?",
             (data_texto, hora_texto, data_iso, hora, id_agendamento))
-        conn.execute(
+        cur_hist = conn.execute(
             "INSERT INTO agendamento_historico (agendamento_id, data_anterior, hora_anterior, "
             "data_nova, hora_nova, origem, alterado_em) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (id_agendamento, data_antiga, hora_antiga, data_texto, hora_texto, origem, _agora_iso()))
-        # OUTBOX — o histórico do reagendamento é sempre único por movimento.
+        historico_id = cur_hist.lastrowid
+        # OUTBOX — a dedupe_key é o id da LINHA de histórico, não a data/hora de
+        # destino: cada movimento é único mesmo num ciclo A->B->A (que produziria
+        # a mesma chave se fosse "id:data:hora"). Estável em retries do drain.
         bd.registar_evento(
             conn, "booking.rescheduled", "appointment", id_agendamento,
             {"servico": alvo.get("servico"), "servico_id": alvo.get("servico_id"),
              "cliente": alvo.get("nome"), "customer_id": alvo.get("customer_id"),
+             "historico_id": historico_id,
              "data_antiga": data_antiga, "hora_antiga": hora_antiga,
              "data_nova": data_texto, "hora_nova": hora_texto, "origem": origem},
-            dedupe_key=f"booking.rescheduled:{id_agendamento}:{data_iso}:{hora}",
+            dedupe_key=f"booking.rescheduled:{historico_id}",
             tenant_id=alvo.get("tenant_id") or 1)
         if alvo.get("customer_id"):
             bd.recalcular_customer(alvo["customer_id"], conn=conn)
@@ -2000,9 +1993,9 @@ def processar_acao_equipa_marcacao(de, id_botao):
         return True
 
     if acao == "cancelar":
-        if ag["estado"] != "confirmado":
-            _responder_equipa(f"ℹ️ A marcação #{id_agendamento} já não está confirmada "
-                              f"(estado atual: {ag['estado']}).")
+        if chave_estado(ag["estado"]) not in estados.GERIVEIS_PELO_CLIENTE:
+            _responder_equipa(f"ℹ️ A marcação #{id_agendamento} já não está ativa "
+                              f"(estado atual: {estados.ROTULO_PT.get(chave_estado(ag['estado']), ag['estado'])}).")
             return True
         # "✅ Confirmar cancelamento" tem 24 caracteres e a API do WhatsApp
         # corta os títulos de botão aos 20 (MAX_TITULO_BOTAO) — ficaria
@@ -2025,8 +2018,9 @@ def processar_acao_equipa_marcacao(de, id_botao):
         try:
             _, notificado, libertado = cancelar_agendamento(id_agendamento)
         except (EstadoInvalido, LookupError):
-            _responder_equipa(f"ℹ️ A marcação #{id_agendamento} já não está confirmada "
-                              f"(estado atual: {obter_agendamento(id_agendamento)['estado']}).")
+            _est = chave_estado((obter_agendamento(id_agendamento) or {}).get("estado"))
+            _responder_equipa(f"ℹ️ A marcação #{id_agendamento} já não está ativa "
+                              f"(estado atual: {estados.ROTULO_PT.get(_est, _est)}).")
             return True
         _responder_equipa(f"❌ Marcação {resumo} cancelada — "
                           + ("cliente avisado." if notificado
@@ -2036,9 +2030,9 @@ def processar_acao_equipa_marcacao(de, id_botao):
         return True
 
     if acao == "concluir":
-        if ag["estado"] != "confirmado":
-            _responder_equipa(f"ℹ️ A marcação #{id_agendamento} já não está confirmada "
-                              f"(estado atual: {ag['estado']}).")
+        if chave_estado(ag["estado"]) not in estados.GERIVEIS_PELO_CLIENTE:
+            _responder_equipa(f"ℹ️ A marcação #{id_agendamento} já não está ativa "
+                              f"(estado atual: {estados.ROTULO_PT.get(chave_estado(ag['estado']), ag['estado'])}).")
             return True
         # Mesma razão do cancelamento: "✅ Confirmar conclusão" tem 21
         # caracteres e seria cortado pela API aos 20.
@@ -2122,7 +2116,8 @@ def mostrar_gestao_marcacao(de, idioma, id_agendamento=None):
     "🗓️ Ver/Gerir marcação" do carrinho, quando há mais do que uma."""
     if id_agendamento is not None:
         completo = obter_agendamento(id_agendamento)
-        if not completo or completo["telefone"] != de or completo["estado"] != "confirmado":
+        if (not completo or completo["telefone"] != de
+                or chave_estado(completo["estado"]) not in estados.GERIVEIS_PELO_CLIENTE):
             enviar_texto(de, t("carrinho_marcacao_nao_encontrada", idioma))
             return
         ag = {"id": completo["id"], "servico": completo["servico"], "data": completo["data"],
@@ -2368,6 +2363,14 @@ def api_agendamento_estado(id_agendamento):
     if chave_estado(ag.get("estado")) not in (estados.CONFIRMED, estados.PENDING):
         return jsonify(erro=f"Esta marcação já não está ativa (estado atual: {ag.get('estado')}).",
                        estado=ag.get("estado")), 409
+    # Regra temporal: concluir / marcar falta numa marcação AINDA no futuro é
+    # absurdo (o serviço não aconteceu). Aceite só com confirmação explícita.
+    inicio = tempo.combinar_local(ag.get("data_iso") or "", ag.get("hora_hhmm") or "")
+    if inicio and inicio > tempo.agora_zurique() and not dados.get("confirmar"):
+        return jsonify(precisa_confirmacao=True,
+                       erro=f"A marcação #{id_agendamento} é no futuro "
+                            f"({ag.get('data_iso')} {ag.get('hora_hhmm')}). "
+                            "Confirme para a marcar como '{}'.".format(novo)), 409
     atualizar_estado_agendamento(id_agendamento, novo)
     return _resposta_evento(id_agendamento, False)
 
@@ -2435,9 +2438,13 @@ def api_painel_hoje():
 def api_agendamento_op(id_agendamento):
     """Transição operacional: arrived / in_progress / done (Fase E3-E5)."""
     from operations import engine as op
-    novo = (request.get_json(silent=True) or {}).get("op") or ""
+    d = request.get_json(silent=True) or {}
+    novo = d.get("op") or ""
     try:
-        cartao = op.transicao_operacional(id_agendamento, novo, _TENANT)
+        cartao = op.transicao_operacional(id_agendamento, novo, _TENANT,
+                                          forcar=bool(d.get("confirmar")))
+    except op.TransicaoAbsurda as e:
+        return jsonify(precisa_confirmacao=True, erro=str(e)), 409
     except ValueError:
         return jsonify(erro="Transição inválida (arrived / in_progress / done)."), 400
     except LookupError:
@@ -2446,13 +2453,39 @@ def api_agendamento_op(id_agendamento):
     return jsonify(ok=True, cartao=cartao), 200
 
 
+class _EntradaInvalida(ValueError):
+    """Erro de validação de input do painel -> HTTP 400 (nunca 500)."""
+
+
+def _inteiro(valor, *, minimo=None, maximo=None, permite_none=False, campo="valor"):
+    """Converte input do utilizador para int com limites. Levanta
+    _EntradaInvalida (->400) em vez de deixar rebentar um int()/500."""
+    if valor in (None, "", "null"):
+        if permite_none:
+            return None
+        raise _EntradaInvalida(f"{campo} é obrigatório.")
+    try:
+        n = int(valor)
+    except (TypeError, ValueError):
+        raise _EntradaInvalida(f"{campo} tem de ser um número inteiro.")
+    if minimo is not None and n < minimo:
+        raise _EntradaInvalida(f"{campo} não pode ser inferior a {minimo}.")
+    if maximo is not None and n > maximo:
+        raise _EntradaInvalida(f"{campo} não pode ser superior a {maximo}.")
+    return n
+
+
 @app.route("/api/painel/atraso", methods=["POST"])
 @requer_autenticacao
 def api_painel_atraso():
     """Pré-visualização de um atraso: quem fica afetado. NÃO envia nada
     (Fase E6 — nunca avisar automaticamente sem confirmação)."""
     from operations import engine as op
-    minutos = int((request.get_json(silent=True) or {}).get("minutos") or 0)
+    try:
+        minutos = _inteiro((request.get_json(silent=True) or {}).get("minutos"),
+                           minimo=1, maximo=240, campo="minutos")
+    except _EntradaInvalida as e:
+        return jsonify(erro=str(e)), 400
     if minutos <= 0 or minutos > 240:
         return jsonify(erro="Minutos fora do intervalo (1-240)."), 400
     return jsonify(op.marcacoes_afetadas_por_atraso(minutos, _TENANT)), 200
@@ -2476,12 +2509,10 @@ def api_servicos():
     if not str(d.get("nome_pt") or "").strip():
         return jsonify(erro="Nome (PT) obrigatório."), 400
     try:
-        dur = int(d.get("duracao_min"))
-        assert 5 <= dur <= 600
-    except (TypeError, ValueError, AssertionError):
-        return jsonify(erro="Duração inválida (5-600 min)."), 400
-    pc = d.get("preco_cents")
-    pc = None if pc in (None, "", "null") else int(pc)
+        dur = _inteiro(d.get("duracao_min"), minimo=5, maximo=600, campo="Duração")
+        pc = _inteiro(d.get("preco_cents"), minimo=0, permite_none=True, campo="Preço")
+    except _EntradaInvalida as e:
+        return jsonify(erro=str(e)), 400
     bd.criar_servico({"id": sid, "nome_pt": d["nome_pt"], "nome_de": d.get("nome_de"),
                       "nome_en": d.get("nome_en"), "duracao_min": dur, "preco_cents": pc,
                       "ativo": bool(d.get("ativo", True)), "cor": d.get("cor"),
@@ -2499,23 +2530,25 @@ def api_servico_editar(servico_id):
     for k in ("nome_pt", "nome_de", "nome_en", "cor"):
         if k in d:
             patch[k] = d[k]
-    if "duracao_min" in d:
-        try:
-            patch["duracao_min"] = int(d["duracao_min"])
-            assert 5 <= patch["duracao_min"] <= 600
-        except (TypeError, ValueError, AssertionError):
-            return jsonify(erro="Duração inválida (5-600 min)."), 400
-    if "preco_cents" in d:
-        v = d["preco_cents"]
-        patch["preco_cents"] = None if v in (None, "", "null") else int(v)
+    try:
+        if "duracao_min" in d:
+            patch["duracao_min"] = _inteiro(d["duracao_min"], minimo=5, maximo=600, campo="Duração")
+        if "preco_cents" in d:
+            patch["preco_cents"] = _inteiro(d["preco_cents"], minimo=0, permite_none=True, campo="Preço")
+        if "rebook_days" in d:
+            rd = _inteiro(d["rebook_days"], minimo=0, maximo=3650,
+                          permite_none=True, campo="Dias de reagendamento")
+            patch["rebook_days"] = rd or None      # 0 == desativado
+        if "buffer_before_min" in d:
+            patch["buffer_before_min"] = _inteiro(d["buffer_before_min"] or 0, minimo=0,
+                                                  maximo=240, campo="Buffer antes")
+        if "buffer_after_min" in d:
+            patch["buffer_after_min"] = _inteiro(d["buffer_after_min"] or 0, minimo=0,
+                                                 maximo=240, campo="Buffer depois")
+    except _EntradaInvalida as e:
+        return jsonify(erro=str(e)), 400
     if "ativo" in d:
         patch["ativo"] = bool(d["ativo"])
-    if "rebook_days" in d:
-        patch["rebook_days"] = None if not d["rebook_days"] else int(d["rebook_days"])
-    if "buffer_before_min" in d:
-        patch["buffer_before_min"] = max(0, int(d["buffer_before_min"] or 0))
-    if "buffer_after_min" in d:
-        patch["buffer_after_min"] = max(0, int(d["buffer_after_min"] or 0))
     bd.atualizar_servico(servico_id, patch)
     return jsonify(ok=True, servico=bd.obter_servico(servico_id)), 200
 
@@ -2534,9 +2567,12 @@ def api_horarios():
         return jsonify(erro="grelha tem de ter 7 dias."), 400
     hhmm = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
     for x in dias:
+        if not isinstance(x, dict):
+            return jsonify(erro="Cada dia da grelha tem de ser um objeto."), 400
         for campo in ("opens", "closes", "break_start", "break_end"):
-            if x.get(campo) and not hhmm.match(x[campo]):
-                return jsonify(erro=f"Hora inválida em {campo}: {x[campo]}"), 400
+            v = x.get(campo)
+            if v and (not isinstance(v, str) or not hhmm.match(v)):
+                return jsonify(erro=f"Hora inválida em {campo}: {v}"), 400
     bh_mod.definir_grelha(_TENANT, dias)
     return jsonify(ok=True, grelha=bh_mod.grelha_semanal(_TENANT)), 200
 
@@ -2547,18 +2583,22 @@ def api_excecao_criar():
     d = request.get_json(silent=True) or {}
     di = str(d.get("data_inicio") or "").strip()
     df = str(d.get("data_fim") or "").strip() or None
-    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", di):
-        return jsonify(erro="data_inicio inválida (YYYY-MM-DD)."), 400
+    try:
+        dd_ini = date.fromisoformat(di)
+        d1 = date.fromisoformat(df) if df else dd_ini
+    except ValueError:
+        return jsonify(erro="Data inválida (formato YYYY-MM-DD)."), 400
+    if d1 < dd_ini:
+        return jsonify(erro="data_fim é anterior a data_inicio."), 400
     # Fase W: marcações afetadas — informar, nunca cancelar automaticamente.
     afetadas = []
     with obter_bd() as conn:
-        d1 = date.fromisoformat(df) if df else date.fromisoformat(di)
-        dd = date.fromisoformat(di)
+        dd = dd_ini
         while dd <= d1:
             dmy = f"{dd.strftime('%d.%m.%Y')}"
             for (aid, nome, servico, hora) in conn.execute(
                     "SELECT id, nome, servico, hora FROM agendamentos WHERE tenant_id = ? "
-                    "AND LOWER(estado) IN ('confirmed','pending') AND (data_iso = ? OR data LIKE ?)",
+                    "AND LOWER(estado) IN (" + estados.sql_lista(*estados.ATIVOS) + ") AND (data_iso = ? OR data LIKE ?)",
                     (_TENANT, dd.isoformat(), f"%{dmy}%")).fetchall():
                 afetadas.append({"id": aid, "cliente": nome, "servico": servico,
                                  "data": dd.isoformat(), "hora": hora})
@@ -5054,6 +5094,23 @@ def _drenar_eventos_apos_escrita(resposta):
     return resposta
 
 
+@app.teardown_request
+def _finalizar_idempotencia_webhook(exc):
+    """Fecha a máquina de estados do wamid: sucesso -> 'processed' (retry
+    descartado); exceção não tratada -> 'failed' (retry da Meta VOLTA a
+    processar, sem se perder)."""
+    wamid = request.environ.get("_webhook_wamid") if request else None
+    if not wamid:
+        return
+    try:
+        if exc is None:
+            bd.confirmar_mensagem(wamid)
+        else:
+            bd.falhar_mensagem(wamid)
+    except Exception:                        # noqa: BLE001
+        log.exception("_finalizar_idempotencia_webhook")
+
+
 @app.route("/webhook", methods=["POST"])
 def receber_mensagem():
     corpo_bruto = request.get_data()
@@ -5072,10 +5129,14 @@ def receber_mensagem():
         msg = entry["messages"][0]
         de = msg["from"]
 
-        # IDEMPOTÊNCIA: a Meta reenvia o mesmo webhook se não receber o 200 a
-        # tempo. Uma mensagem já tratada é reconhecida em silêncio — sem
-        # repetir o passo, sem responder de novo, sem duplicar marcações.
-        if mensagem_ja_processada(msg.get("id")):
+        # IDEMPOTÊNCIA: reclama-se o wamid. 'duplicada' = já processada, ou a
+        # ser processada agora por outro webhook -> ignora em silêncio. 'nova'
+        # inclui um RETRY de um processamento que falhou antes (não se perde).
+        # O resultado (processed/failed) é gravado no teardown do request.
+        wamid = msg.get("id")
+        request.environ["_webhook_wamid"] = wamid
+        if wamid and bd.reclamar_mensagem(wamid) == "duplicada":
+            request.environ["_webhook_wamid"] = None    # não confirmar de novo
             return jsonify(status="repetida"), 200
 
         # --- Ações INTERNAS da equipa ---------------------------------------
@@ -5333,7 +5394,9 @@ def receber_mensagem():
                     {"id": ACAO_GERIR, "titulo": t("botao_gerir_marcacao", idioma)},
                     {"id": ACAO_MENU, "titulo": t("botao_menu_principal", idioma)},
                 ], idioma)
-                enviar_notificacao_interna_marcacao(id_ag, mensagem_notificacao_provider(de, sessao, id_ag))
+                # A notificação privada ao negócio é o evento booking.created
+                # (ver _notificar_criacao_marcacao), drenado no after_request.
+                # NÃO se envia aqui, para a marcação gerar exatamente UMA.
                 reiniciar_sessao(de)
                 return jsonify(status="ok"), 200
 

@@ -60,10 +60,37 @@ def _preco_linha(payload: dict) -> str:
     return "💰 Preço a confirmar" if cents is None else f"💰 {catalogo.formatar_cents(cents, 'pt')}"
 
 
+def _duracao_linha(payload: dict) -> str | None:
+    m = payload.get("duracao_min")
+    if not m:
+        sid = payload.get("servico_id")
+        s = db.obter_servico(sid) if sid else None
+        m = s.get("duracao_min") if s else None
+    return f"⏱️ {catalogo.duracao_label(m)}" if m else None
+
+
 def render_evento(ev: dict) -> str | None:
     t = ev["type"]
     p = ev.get("payload") or {}
     ident = ev.get("entity_id")
+
+    if t in ("booking.created", "booking.pending"):
+        # Formato ÚNICO da criação (o envio com a lista de ações da equipa é
+        # feito pelo handler de bot.py — ver _notificar_criacao_marcacao).
+        aprovar = t == "booking.pending"
+        cab = "⏳ *Nova marcação (a APROVAR)" if aprovar else "🔔 *Nova marcação"
+        linhas = [f"{cab} · #{ident}*", "",
+                  f"👤 {p.get('cliente') or 'Cliente'}",
+                  f"✨ {_servico_nome(p)}",
+                  f"📅 {p.get('data') or '-'}",
+                  f"🕒 {p.get('hora') or '-'}"]
+        dur = _duracao_linha(p)
+        if dur:
+            linhas.append(dur)
+        linhas += [_preco_linha(p), "",
+                   f"📱 {p.get('telefone') or '-'}",
+                   "⏳ A aguardar aprovação" if aprovar else "✅ Confirmada"]
+        return "\n".join(linhas)
 
     if t == "booking.rescheduled":
         return (f"✏️ *Marcação reagendada · #{ident}*\n\n"
@@ -106,9 +133,10 @@ def render_evento(ev: dict) -> str | None:
 
 def handler_evento(ev: dict):
     """Handler registado no barramento (core.events). Formata e envia. A
-    criação (`booking.created`) é tratada à parte em bot.py, com a lista de
-    ações da equipa — por isso NÃO é enviada aqui, para não duplicar."""
-    if ev["type"] == "booking.created":
+    criação (`booking.created` / `booking.pending`) é enviada pelo handler
+    dedicado de bot.py (com a lista de ações da equipa) — NÃO aqui, para a
+    marcação gerar exatamente UMA notificação privada."""
+    if ev["type"] in ("booking.created", "booking.pending"):
         return
     texto = render_evento(ev)
     if texto:

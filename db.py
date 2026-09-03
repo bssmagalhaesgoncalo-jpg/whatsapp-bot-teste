@@ -462,6 +462,103 @@ def _m12_business_hours(conn):
     _add_coluna_se_falta(conn, "servicos", "rebook_days", "INTEGER")
 
 
+def _m13_webhook_idempotencia_estado(conn):
+    """Máquina de estados para os wamid: claimed -> processed | failed.
+    A versão antiga gravava o wamid ANTES de processar — se rebentasse a
+    seguir, o retry da Meta era descartado como 'repetido' e a marcação
+    perdia-se. Agora um retry de um processamento FALHADO volta a ser
+    processado, mantendo a proteção contra dois webhooks concorrentes.
+    (As linhas antigas ficam 'processed' — já foram tratadas e são podadas
+    às 24h.)"""
+    _add_coluna_se_falta(conn, "mensagens_processadas", "status",
+                         "TEXT NOT NULL DEFAULT 'processed'")
+    _add_coluna_se_falta(conn, "mensagens_processadas", "tenant_id",
+                         "INTEGER NOT NULL DEFAULT 1")
+
+
+def _m14_recalcular_customers(conn):
+    """Recalcula os contadores dos customers com a NOVA semântica (visitas =
+    completed, spend = completed, next_visit = próximo confirmed/pending
+    futuro em hora LOCAL). A migração 9 foi aplicada com a semântica antiga
+    (confirmed contava como visita) — esta corrige o que ela deixou."""
+    import estados as _est
+    from tempo import hoje_zurique
+    hoje = hoje_zurique().isoformat()
+    ids = [r[0] for r in conn.execute("SELECT id FROM customers").fetchall()]
+    for cid in ids:
+        rows = conn.execute(
+            "SELECT estado, data_iso, preco_cents, preco FROM agendamentos WHERE customer_id = ?",
+            (cid,)).fetchall()
+        visits = spend = no_show = cancel = 0
+        last_visit = None
+        next_visit = None
+        for estado, data_iso, pc, preco in rows:
+            e = _est.normalizar(estado)
+            cents = pc if pc is not None else (int(round(float(preco) * 100)) if preco else 0)
+            if e == _est.COMPLETED:
+                visits += 1
+                spend += cents or 0
+                if data_iso and (last_visit is None or data_iso > last_visit):
+                    last_visit = data_iso
+            elif e in (_est.CONFIRMED, _est.PENDING):
+                if data_iso and data_iso >= hoje and (next_visit is None or data_iso < next_visit):
+                    next_visit = data_iso
+            elif e == _est.NO_SHOW:
+                no_show += 1
+            elif e == _est.CANCELLED:
+                cancel += 1
+        conn.execute(
+            "UPDATE customers SET visits_count = ?, spend_cents = ?, no_show_count = ?, "
+            "cancel_count = ?, last_visit = ?, next_visit = ?, updated_at = ? WHERE id = ?",
+            (visits, spend, no_show, cancel, last_visit, next_visit, iso_utc(), cid))
+
+
+def _m15_identidade_por_tenant(conn):
+    """TENANT FOUNDATION (fase 2): tornar `tenant_id` PARTE DA IDENTIDADE, não
+    uma coluna decorativa. As tabelas keyed só por telefone/chave passam a ter
+    PK composta (tenant_id, <chave>) — o 2.º negócio deixa de colidir com o 1.º
+    no SQLite. Routing por tenant continua DESATIVADO (todas as linhas ficam
+    tenant_id=1); só a estrutura muda. Rebuild padrão do SQLite (create/copy/
+    drop/rename) — tabelas pequenas e efémeras, sem perda de dados.
+
+    servicos: mantém `id` (slug) como PK e ganha UNIQUE(tenant_id, id) — o
+    catálogo é por tenant mas o slug continua a ser a referência em
+    agendamentos.servico_id."""
+    rebuilds = {
+        "sessoes": (
+            "tenant_id INTEGER NOT NULL DEFAULT 1, telefone TEXT NOT NULL, "
+            "dados TEXT NOT NULL, PRIMARY KEY (tenant_id, telefone)",
+            "tenant_id, telefone, dados"),
+        "interacoes_cliente": (
+            "tenant_id INTEGER NOT NULL DEFAULT 1, telefone TEXT NOT NULL, "
+            "ultima_mensagem_em TEXT NOT NULL, PRIMARY KEY (tenant_id, telefone)",
+            "tenant_id, telefone, ultima_mensagem_em"),
+        "reservas_temporarias": (
+            "tenant_id INTEGER NOT NULL DEFAULT 1, telefone TEXT NOT NULL, "
+            "data TEXT NOT NULL, hora TEXT NOT NULL, servico TEXT, duracao TEXT, "
+            "criado_em TEXT NOT NULL, expira_em TEXT NOT NULL, "
+            "PRIMARY KEY (tenant_id, telefone)",
+            "tenant_id, telefone, data, hora, servico, duracao, criado_em, expira_em"),
+        "configuracoes": (
+            "tenant_id INTEGER NOT NULL DEFAULT 1, chave TEXT NOT NULL, "
+            "valor TEXT NOT NULL, atualizado_em TEXT NOT NULL, "
+            "PRIMARY KEY (tenant_id, chave)",
+            "tenant_id, chave, valor, atualizado_em"),
+    }
+    for tabela, (schema, colunas) in rebuilds.items():
+        if not _tabela_existe(conn, tabela):
+            continue
+        conn.execute(f"ALTER TABLE {tabela} RENAME TO _mig15_{tabela}")
+        conn.execute(f"CREATE TABLE {tabela} ({schema})")
+        conn.execute(f"INSERT INTO {tabela} ({colunas}) "
+                     f"SELECT {colunas} FROM _mig15_{tabela}")
+        conn.execute(f"DROP TABLE _mig15_{tabela}")
+
+    if _tabela_existe(conn, "servicos"):
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS ix_servicos_tenant_id "
+                     "ON servicos (tenant_id, id)")
+
+
 MIGRACOES = [
     (1, "baseline", _m1_baseline),
     (2, "colunas_legadas", _m2_colunas_legadas),
@@ -475,6 +572,9 @@ MIGRACOES = [
     (10, "events_outbox", _m10_events),
     (11, "operational_status", _m11_operational_status),
     (12, "business_hours", _m12_business_hours),
+    (13, "webhook_idempotencia_estado", _m13_webhook_idempotencia_estado),
+    (14, "recalcular_customers", _m14_recalcular_customers),
+    (15, "identidade_por_tenant", _m15_identidade_por_tenant),
 ]
 
 
@@ -705,23 +805,29 @@ def recalcular_customer(customer_id: int, conn=None):
     qualquer mudança de estado de uma marcação do cliente."""
     def _run(c):
         import estados as _est
+        from tempo import hoje_zurique
+        # "hoje" em data LOCAL (Europe/Zurique): uma marcação às 20h de hoje
+        # continua a ser "futura" mesmo já sendo amanhã em UTC.
+        hoje = hoje_zurique().isoformat()
         rows = c.execute(
             "SELECT estado, data_iso, preco_cents, preco FROM agendamentos WHERE customer_id = ?",
             (customer_id,)).fetchall()
         visits = spend = no_show = cancel = 0
         last_visit = next_visit = None
-        hoje = iso_utc()[:10]
         for estado, data_iso, pc, preco in rows:
             e = _est.normalizar(estado)
-            if e in (_est.CONFIRMED, _est.COMPLETED):
+            cents = pc if pc is not None else (int(round(float(preco) * 100)) if preco else 0)
+            if e == _est.COMPLETED:
+                # visita REALIZADA + gasto efetivo (até existirem pagamentos)
                 visits += 1
-                cents = pc if pc is not None else (int(round(float(preco) * 100)) if preco else 0)
                 spend += cents or 0
-                if data_iso:
-                    if data_iso <= hoje:
-                        last_visit = max(last_visit or "", data_iso)
-                    else:
-                        next_visit = min(next_visit or "9999", data_iso)
+                if data_iso and (last_visit is None or data_iso > last_visit):
+                    last_visit = data_iso
+            elif e in (_est.CONFIRMED, _est.PENDING):
+                # marcação futura ativa -> candidata a next_visit; NÃO conta
+                # como visita nem como gasto (ainda não aconteceu)
+                if data_iso and data_iso >= hoje and (next_visit is None or data_iso < next_visit):
+                    next_visit = data_iso
             elif e == _est.NO_SHOW:
                 no_show += 1
             elif e == _est.CANCELLED:
@@ -729,8 +835,7 @@ def recalcular_customer(customer_id: int, conn=None):
         c.execute(
             "UPDATE customers SET visits_count = ?, spend_cents = ?, no_show_count = ?, "
             "cancel_count = ?, last_visit = ?, next_visit = ?, updated_at = ? WHERE id = ?",
-            (visits, spend, no_show, cancel, last_visit,
-             None if next_visit in (None, "9999") else next_visit, iso_utc(), customer_id))
+            (visits, spend, no_show, cancel, last_visit, next_visit, iso_utc(), customer_id))
 
     if conn is not None:
         return _run(conn)
@@ -778,6 +883,61 @@ def eventos_por_processar(limite: int = 100) -> list[dict]:
 def marcar_evento_processado(evento_id: int):
     with ligacao() as c:
         c.execute("UPDATE events SET processed_at = ? WHERE id = ?", (iso_utc(), evento_id))
+
+
+# ---------------------------------------------------------------------------
+# Idempotência do webhook — máquina de estados por wamid
+#   claimed   -> reclamado por um webhook, a processar
+#   processed -> tratado com sucesso; retry é descartado
+#   failed    -> o processamento rebentou; um retry da Meta VOLTA a processar
+# ---------------------------------------------------------------------------
+IDEMPOTENCIA_HORAS = 24
+_CLAIM_PRESO_SEGUNDOS = 90          # claim 'preso' há mais que isto = worker crashou
+
+
+def reclamar_mensagem(wamid, tenant_id: int = 1) -> str:
+    """Devolve 'nova' (deve processar-se) ou 'duplicada' (ignorar: já
+    processada, ou a ser processada AGORA por outro webhook concorrente).
+    O BEGIN IMMEDIATE serializa dois webhooks com o mesmo wamid."""
+    if not wamid:
+        return "nova"
+    from datetime import datetime, timedelta
+    agora = datetime.now(__import__("tempo").FUSO_UTC)
+    agora_iso = iso_utc(agora)
+    prune = iso_utc(agora - timedelta(hours=IDEMPOTENCIA_HORAS))
+    preso = iso_utc(agora - timedelta(seconds=_CLAIM_PRESO_SEGUNDOS))
+    with ligacao() as c:
+        c.execute("BEGIN IMMEDIATE")
+        c.execute("DELETE FROM mensagens_processadas WHERE recebida_em < ?", (prune,))
+        row = c.execute("SELECT status, recebida_em FROM mensagens_processadas WHERE id = ?",
+                        (str(wamid),)).fetchone()
+        if row is None:
+            c.execute("INSERT INTO mensagens_processadas (id, recebida_em, status, tenant_id) "
+                      "VALUES (?, ?, 'claimed', ?)", (str(wamid), agora_iso, tenant_id))
+            return "nova"
+        status, quando = row
+        if status == "processed":
+            return "duplicada"
+        if status == "claimed" and (quando or "") >= preso:
+            return "duplicada"          # outro webhook está a tratar agora mesmo
+        # 'failed', ou um claim preso há muito tempo -> volta a reclamar
+        c.execute("UPDATE mensagens_processadas SET status = 'claimed', recebida_em = ? WHERE id = ?",
+                  (agora_iso, str(wamid)))
+        return "nova"
+
+
+def confirmar_mensagem(wamid):
+    if not wamid:
+        return
+    with ligacao() as c:
+        c.execute("UPDATE mensagens_processadas SET status = 'processed' WHERE id = ?", (str(wamid),))
+
+
+def falhar_mensagem(wamid):
+    if not wamid:
+        return
+    with ligacao() as c:
+        c.execute("UPDATE mensagens_processadas SET status = 'failed' WHERE id = ?", (str(wamid),))
 
 
 # ---------------------------------------------------------------------------
