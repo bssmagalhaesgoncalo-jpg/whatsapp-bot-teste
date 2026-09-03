@@ -80,6 +80,17 @@ def _coluna_existe(conn, tabela, coluna) -> bool:
     return any(l[1] == coluna for l in linhas)
 
 
+def _tabela_existe(conn, tabela) -> bool:
+    return bool(conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (tabela,)).fetchone())
+
+
+def _limpo_env(nome):
+    import os
+    v = os.environ.get(nome)
+    return v.strip() if v and v.strip() else None
+
+
 def _add_coluna_se_falta(conn, tabela, coluna, definicao):
     if not _coluna_existe(conn, tabela, coluna):
         conn.execute(f"ALTER TABLE {tabela} ADD COLUMN {coluna} {definicao}")
@@ -284,6 +295,173 @@ def _m7_estados_canonicos(conn):
             conn.execute("UPDATE agendamentos SET estado = ? WHERE estado IS ?", (canonico, valor))
 
 
+def _m8_tenants(conn):
+    """Fundação multi-tenant (row-level, schema partilhado). tenant #1 =
+    Daniela Beauty. O routing por tenant NÃO é ativado aqui — só a estrutura,
+    para o 2.º negócio não exigir reescrita."""
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS tenants ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "nome TEXT NOT NULL, "
+        "slug TEXT UNIQUE, "
+        "timezone TEXT NOT NULL DEFAULT 'Europe/Zurich', "
+        "moeda TEXT NOT NULL DEFAULT 'CHF', "
+        "idioma_omissao TEXT NOT NULL DEFAULT 'pt', "
+        "tipo TEXT NOT NULL DEFAULT 'beauty', "
+        "estado TEXT NOT NULL DEFAULT 'ativo', "
+        "criado_em TEXT NOT NULL)"
+    )
+    nome = _limpo_env("BUSINESS_NAME") or "Daniela Beauty"
+    existe = conn.execute("SELECT 1 FROM tenants WHERE id = 1").fetchone()
+    if not existe:
+        conn.execute(
+            "INSERT INTO tenants (id, nome, slug, criado_em) VALUES (1, ?, 'daniela-beauty', ?)",
+            (nome, iso_utc()))
+
+    # tenant_id em todas as tabelas de negócio (default 1, backfill implícito).
+    for tabela in ("agendamentos", "sessoes", "servicos", "configuracoes",
+                   "agendamento_historico", "reservas_temporarias", "interacoes_cliente",
+                   "mensagens_processadas"):
+        if _tabela_existe(conn, tabela):
+            _add_coluna_se_falta(conn, tabela, "tenant_id", "INTEGER NOT NULL DEFAULT 1")
+
+
+def _m9_customers(conn):
+    """Entidade `customers` — hoje o cliente é só telefone+nome desnormalizados.
+    Backfill: um customer por (tenant_id, telefone) distinto das marcações."""
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS customers ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "tenant_id INTEGER NOT NULL DEFAULT 1, "
+        "phone TEXT NOT NULL, "
+        "name TEXT, "
+        "locale TEXT, "
+        "first_seen TEXT, "
+        "last_visit TEXT, "
+        "next_visit TEXT, "
+        "visits_count INTEGER NOT NULL DEFAULT 0, "
+        "spend_cents INTEGER NOT NULL DEFAULT 0, "
+        "no_show_count INTEGER NOT NULL DEFAULT 0, "
+        "cancel_count INTEGER NOT NULL DEFAULT 0, "
+        "tags TEXT NOT NULL DEFAULT '[]', "
+        "vip INTEGER NOT NULL DEFAULT 0, "
+        "blocked INTEGER NOT NULL DEFAULT 0, "
+        "notes_internal TEXT, "
+        "created_at TEXT NOT NULL, "
+        "updated_at TEXT NOT NULL, "
+        "UNIQUE(tenant_id, phone))"
+    )
+    _add_coluna_se_falta(conn, "agendamentos", "customer_id", "INTEGER")
+
+    agora = iso_utc()
+    telefones = conn.execute(
+        "SELECT DISTINCT tenant_id, telefone FROM agendamentos WHERE telefone IS NOT NULL"
+    ).fetchall()
+    for tenant_id, phone in telefones:
+        tenant_id = tenant_id or 1
+        ja = conn.execute("SELECT id FROM customers WHERE tenant_id = ? AND phone = ?",
+                          (tenant_id, phone)).fetchone()
+        if ja:
+            cust_id = ja[0]
+        else:
+            nome = conn.execute(
+                "SELECT nome FROM agendamentos WHERE tenant_id = ? AND telefone = ? "
+                "AND nome IS NOT NULL ORDER BY id DESC LIMIT 1", (tenant_id, phone)).fetchone()
+            criado = conn.execute(
+                "SELECT MIN(criado_em) FROM agendamentos WHERE tenant_id = ? AND telefone = ?",
+                (tenant_id, phone)).fetchone()[0] or agora
+            cur = conn.execute(
+                "INSERT INTO customers (tenant_id, phone, name, first_seen, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (tenant_id, phone, nome[0] if nome else None, criado, agora, agora))
+            cust_id = cur.lastrowid
+        conn.execute("UPDATE agendamentos SET customer_id = ? WHERE customer_id IS NULL "
+                     "AND tenant_id = ? AND telefone = ?", (cust_id, tenant_id, phone))
+
+
+def _m10_events(conn):
+    """Outbox de eventos de domínio + base para automações/notificações.
+    Um evento é escrito na MESMA transação que a mudança de estado."""
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS events ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "tenant_id INTEGER NOT NULL DEFAULT 1, "
+        "type TEXT NOT NULL, "
+        "entity_type TEXT, "
+        "entity_id INTEGER, "
+        "payload TEXT NOT NULL DEFAULT '{}', "
+        "dedupe_key TEXT UNIQUE, "
+        "created_at TEXT NOT NULL, "
+        "processed_at TEXT)"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS ix_events_unprocessed "
+                 "ON events (processed_at) WHERE processed_at IS NULL")
+
+
+def _m11_operational_status(conn):
+    """Estado OPERACIONAL da marcação, separado do estado comercial
+    (confirmed/cancelled/...). scheduled -> arrived -> in_progress -> done.
+    Ver bot.estado_operacional / OPERATION ENGINE."""
+    _add_coluna_se_falta(conn, "agendamentos", "op_status", "TEXT NOT NULL DEFAULT 'scheduled'")
+    _add_coluna_se_falta(conn, "agendamentos", "arrived_at", "TEXT")
+    _add_coluna_se_falta(conn, "agendamentos", "started_at", "TEXT")
+    _add_coluna_se_falta(conn, "agendamentos", "completed_at", "TEXT")
+    # marcações já concluídas ficam com op_status coerente
+    conn.execute("UPDATE agendamentos SET op_status = 'done' "
+                 "WHERE LOWER(COALESCE(estado,'')) IN ('completed','concluido','concluído')")
+
+
+def _m12_business_hours(conn):
+    """Horário de funcionamento por dia da semana + exceções (fechado,
+    feriados, férias, bloqueios). Substitui a lista fixa HORARIOS.
+    Semeado com um horário-tipo (seg-sáb 09:00-18:00, dom fechado) que a
+    Daniela ajusta no painel."""
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS business_hours ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "tenant_id INTEGER NOT NULL DEFAULT 1, "
+        "staff_id INTEGER, "                         # NULL = horário do negócio
+        "weekday INTEGER NOT NULL, "                 # 0=segunda ... 6=domingo
+        "opens TEXT, "                               # 'HH:MM' ou NULL = fechado
+        "closes TEXT, "
+        "break_start TEXT, "                         # pausa opcional
+        "break_end TEXT)"
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS business_hours_exceptions ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "tenant_id INTEGER NOT NULL DEFAULT 1, "
+        "staff_id INTEGER, "
+        "date TEXT NOT NULL, "                       # 'YYYY-MM-DD'
+        "closed INTEGER NOT NULL DEFAULT 1, "
+        "opens TEXT, closes TEXT, "                  # se closed=0, horário especial
+        "reason TEXT, "
+        "created_at TEXT NOT NULL)"
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS booking_policy ("
+        "tenant_id INTEGER PRIMARY KEY, "
+        "min_notice_min INTEGER NOT NULL DEFAULT 120, "      # antecedência mínima
+        "max_notice_days INTEGER NOT NULL DEFAULT 60, "      # antecedência máxima
+        "same_day INTEGER NOT NULL DEFAULT 1, "              # permitir marcar hoje
+        "slot_granularity_min INTEGER NOT NULL DEFAULT 15, " # passo da grelha
+        "default_buffer_after_min INTEGER NOT NULL DEFAULT 0)"
+    )
+    if not conn.execute("SELECT 1 FROM business_hours WHERE tenant_id = 1 AND staff_id IS NULL").fetchone():
+        for wd in range(6):     # segunda a sábado
+            conn.execute(
+                "INSERT INTO business_hours (tenant_id, weekday, opens, closes) VALUES (1, ?, '09:00', '18:00')",
+                (wd,))
+        conn.execute("INSERT INTO business_hours (tenant_id, weekday, opens, closes) VALUES (1, 6, NULL, NULL)")
+    if not conn.execute("SELECT 1 FROM booking_policy WHERE tenant_id = 1").fetchone():
+        conn.execute("INSERT INTO booking_policy (tenant_id) VALUES (1)")
+
+    # buffers por serviço (o motor de disponibilidade usa-os)
+    _add_coluna_se_falta(conn, "servicos", "buffer_before_min", "INTEGER NOT NULL DEFAULT 0")
+    _add_coluna_se_falta(conn, "servicos", "buffer_after_min", "INTEGER NOT NULL DEFAULT 0")
+    _add_coluna_se_falta(conn, "servicos", "rebook_days", "INTEGER")
+
+
 MIGRACOES = [
     (1, "baseline", _m1_baseline),
     (2, "colunas_legadas", _m2_colunas_legadas),
@@ -292,6 +470,11 @@ MIGRACOES = [
     (5, "servicos_catalogo", _m5_servicos),
     (6, "backfill_estruturado", _m6_backfill_estruturado),
     (7, "estados_canonicos", _m7_estados_canonicos),
+    (8, "tenants_foundation", _m8_tenants),
+    (9, "customers", _m9_customers),
+    (10, "events_outbox", _m10_events),
+    (11, "operational_status", _m11_operational_status),
+    (12, "business_hours", _m12_business_hours),
 ]
 
 
@@ -346,7 +529,8 @@ def resetar_estado_migracao_para_testes():
 # Leitura do catálogo de serviços (tabela `servicos`)
 # ---------------------------------------------------------------------------
 _CAMPOS_SERVICO = ("id", "nome_pt", "nome_de", "nome_en", "duracao_min",
-                   "preco_cents", "ativo", "cor", "ordem")
+                   "preco_cents", "ativo", "cor", "ordem",
+                   "buffer_before_min", "buffer_after_min", "rebook_days")
 
 
 def _linha_servico(row) -> dict:
@@ -357,7 +541,7 @@ def _linha_servico(row) -> dict:
 
 def listar_servicos(incluir_inativos: bool = False, conn=None) -> list[dict]:
     def _ler(c):
-        sql = ("SELECT id, nome_pt, nome_de, nome_en, duracao_min, preco_cents, ativo, cor, ordem "
+        sql = ("SELECT id, nome_pt, nome_de, nome_en, duracao_min, preco_cents, ativo, cor, ordem, buffer_before_min, buffer_after_min, rebook_days "
                "FROM servicos")
         if not incluir_inativos:
             sql += " WHERE ativo = 1"
@@ -376,7 +560,7 @@ def obter_servico(servico_id: str, conn=None) -> dict | None:
 
     def _ler(c):
         r = c.execute(
-            "SELECT id, nome_pt, nome_de, nome_en, duracao_min, preco_cents, ativo, cor, ordem "
+            "SELECT id, nome_pt, nome_de, nome_en, duracao_min, preco_cents, ativo, cor, ordem, buffer_before_min, buffer_after_min, rebook_days "
             "FROM servicos WHERE id = ?", (servico_id,)).fetchone()
         return _linha_servico(r) if r else None
 
@@ -394,7 +578,7 @@ def servico_por_nome_pt(nome_pt: str, conn=None) -> dict | None:
 
     def _ler(c):
         r = c.execute(
-            "SELECT id, nome_pt, nome_de, nome_en, duracao_min, preco_cents, ativo, cor, ordem "
+            "SELECT id, nome_pt, nome_de, nome_en, duracao_min, preco_cents, ativo, cor, ordem, buffer_before_min, buffer_after_min, rebook_days "
             "FROM servicos WHERE nome_pt = ?", (nome_pt.strip(),)).fetchone()
         return _linha_servico(r) if r else None
 
@@ -402,3 +586,264 @@ def servico_por_nome_pt(nome_pt: str, conn=None) -> dict | None:
         return _ler(conn)
     with ligacao() as c:
         return _ler(c)
+
+
+def criar_servico(dados: dict) -> str:
+    """Cria um serviço no catálogo (CRUD do dashboard). `dados` tem id,
+    nome_pt/de/en, duracao_min, preco_cents (ou None), ativo, cor, ordem."""
+    with ligacao() as c:
+        c.execute(
+            "INSERT INTO servicos (id, nome_pt, nome_de, nome_en, duracao_min, preco_cents, "
+            "ativo, cor, ordem, atualizado_em, tenant_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
+            (dados["id"], dados["nome_pt"], dados.get("nome_de") or dados["nome_pt"],
+             dados.get("nome_en") or dados["nome_pt"], int(dados["duracao_min"]),
+             dados.get("preco_cents"), 1 if dados.get("ativo", True) else 0,
+             dados.get("cor") or catalogo.COR_OMISSAO, int(dados.get("ordem", 99)), iso_utc()))
+    return dados["id"]
+
+
+def atualizar_servico(servico_id: str, dados: dict):
+    campos, valores = [], []
+    for col in ("nome_pt", "nome_de", "nome_en", "duracao_min", "preco_cents", "ativo", "cor",
+                "ordem", "rebook_days", "buffer_before_min", "buffer_after_min"):
+        if col in dados:
+            v = dados[col]
+            if col == "ativo":
+                v = 1 if v else 0
+            campos.append(f"{col} = ?")
+            valores.append(v)
+    if not campos:
+        return
+    campos.append("atualizado_em = ?")
+    valores.append(iso_utc())
+    valores.append(servico_id)
+    with ligacao() as c:
+        c.execute(f"UPDATE servicos SET {', '.join(campos)} WHERE id = ?", valores)
+
+
+# ---------------------------------------------------------------------------
+# Clientes (CRM) — a verdade é a tabela `customers`
+# ---------------------------------------------------------------------------
+_CAMPOS_CUSTOMER = ("id", "tenant_id", "phone", "name", "locale", "first_seen", "last_visit",
+                    "next_visit", "visits_count", "spend_cents", "no_show_count",
+                    "cancel_count", "tags", "vip", "blocked", "notes_internal",
+                    "created_at", "updated_at")
+
+
+def _linha_customer(row) -> dict:
+    import json as _j
+    d = dict(zip(_CAMPOS_CUSTOMER, row))
+    d["vip"] = bool(d["vip"])
+    d["blocked"] = bool(d["blocked"])
+    try:
+        d["tags"] = _j.loads(d["tags"] or "[]")
+    except (ValueError, TypeError):
+        d["tags"] = []
+    return d
+
+
+_SQL_CUSTOMER = ", ".join(_CAMPOS_CUSTOMER)
+
+
+def obter_ou_criar_customer(telefone: str, nome: str | None = None, locale: str | None = None,
+                            tenant_id: int = 1, conn=None) -> dict:
+    """Devolve o customer deste telefone (cria se não existir). Atualiza o
+    nome/locale se vierem preenchidos e ainda faltarem. NÃO conta visitas —
+    isso é `registar_visita_customer`, chamado ao gravar a marcação."""
+    def _run(c):
+        agora = iso_utc()
+        r = c.execute(f"SELECT {_SQL_CUSTOMER} FROM customers WHERE tenant_id = ? AND phone = ?",
+                      (tenant_id, telefone)).fetchone()
+        if r:
+            cust = _linha_customer(r)
+            mudou = []
+            if nome and not cust["name"]:
+                mudou.append(("name", nome))
+            if locale and not cust["locale"]:
+                mudou.append(("locale", locale))
+            if mudou:
+                sets = ", ".join(f"{k} = ?" for k, _ in mudou) + ", updated_at = ?"
+                c.execute(f"UPDATE customers SET {sets} WHERE id = ?",
+                          [v for _, v in mudou] + [agora, cust["id"]])
+                r = c.execute(f"SELECT {_SQL_CUSTOMER} FROM customers WHERE id = ?",
+                              (cust["id"],)).fetchone()
+            return _linha_customer(r)
+        cur = c.execute(
+            "INSERT INTO customers (tenant_id, phone, name, locale, first_seen, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (tenant_id, telefone, nome, locale, agora, agora, agora))
+        r = c.execute(f"SELECT {_SQL_CUSTOMER} FROM customers WHERE id = ?", (cur.lastrowid,)).fetchone()
+        return _linha_customer(r)
+
+    if conn is not None:
+        return _run(conn)
+    with ligacao() as c:
+        return _run(c)
+
+
+def obter_customer(customer_id: int, conn=None) -> dict | None:
+    def _run(c):
+        r = c.execute(f"SELECT {_SQL_CUSTOMER} FROM customers WHERE id = ?", (customer_id,)).fetchone()
+        return _linha_customer(r) if r else None
+    if conn is not None:
+        return _run(conn)
+    with ligacao() as c:
+        return _run(c)
+
+
+def listar_customers(tenant_id: int = 1) -> list[dict]:
+    with ligacao() as c:
+        rows = c.execute(
+            f"SELECT {_SQL_CUSTOMER} FROM customers WHERE tenant_id = ? "
+            "ORDER BY COALESCE(last_visit, first_seen) DESC", (tenant_id,)).fetchall()
+    return [_linha_customer(r) for r in rows]
+
+
+def recalcular_customer(customer_id: int, conn=None):
+    """Recalcula contadores (visitas/gasto/no-shows/cancelamentos/últimas
+    datas) a partir das marcações. Barato e sempre correto — chamado após
+    qualquer mudança de estado de uma marcação do cliente."""
+    def _run(c):
+        import estados as _est
+        rows = c.execute(
+            "SELECT estado, data_iso, preco_cents, preco FROM agendamentos WHERE customer_id = ?",
+            (customer_id,)).fetchall()
+        visits = spend = no_show = cancel = 0
+        last_visit = next_visit = None
+        hoje = iso_utc()[:10]
+        for estado, data_iso, pc, preco in rows:
+            e = _est.normalizar(estado)
+            if e in (_est.CONFIRMED, _est.COMPLETED):
+                visits += 1
+                cents = pc if pc is not None else (int(round(float(preco) * 100)) if preco else 0)
+                spend += cents or 0
+                if data_iso:
+                    if data_iso <= hoje:
+                        last_visit = max(last_visit or "", data_iso)
+                    else:
+                        next_visit = min(next_visit or "9999", data_iso)
+            elif e == _est.NO_SHOW:
+                no_show += 1
+            elif e == _est.CANCELLED:
+                cancel += 1
+        c.execute(
+            "UPDATE customers SET visits_count = ?, spend_cents = ?, no_show_count = ?, "
+            "cancel_count = ?, last_visit = ?, next_visit = ?, updated_at = ? WHERE id = ?",
+            (visits, spend, no_show, cancel, last_visit,
+             None if next_visit in (None, "9999") else next_visit, iso_utc(), customer_id))
+
+    if conn is not None:
+        return _run(conn)
+    with ligacao() as c:
+        return _run(c)
+
+
+# ---------------------------------------------------------------------------
+# Eventos (outbox) — escritos na MESMA transação que a mudança de estado
+# ---------------------------------------------------------------------------
+def registar_evento(conn, tipo: str, entity_type: str | None, entity_id: int | None,
+                    payload: dict | None = None, dedupe_key: str | None = None,
+                    tenant_id: int = 1):
+    """Escreve uma linha em `events`. RECEBE a conexão — para correr dentro da
+    transação da operação de domínio (transactional outbox). `dedupe_key`
+    UNIQUE evita eventos duplicados (webhook reenviado, retry)."""
+    import json as _j
+    try:
+        conn.execute(
+            "INSERT INTO events (tenant_id, type, entity_type, entity_id, payload, dedupe_key, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (tenant_id, tipo, entity_type, entity_id, _j.dumps(payload or {}, ensure_ascii=False),
+             dedupe_key, iso_utc()))
+    except sqlite3.IntegrityError:
+        pass  # dedupe_key colidiu — evento já registado, ignora em silêncio
+
+
+def eventos_por_processar(limite: int = 100) -> list[dict]:
+    import json as _j
+    with ligacao() as c:
+        rows = c.execute(
+            "SELECT id, tenant_id, type, entity_type, entity_id, payload, created_at "
+            "FROM events WHERE processed_at IS NULL ORDER BY id ASC LIMIT ?", (limite,)).fetchall()
+    out = []
+    for r in rows:
+        d = dict(zip(("id", "tenant_id", "type", "entity_type", "entity_id", "payload", "created_at"), r))
+        try:
+            d["payload"] = _j.loads(d["payload"] or "{}")
+        except (ValueError, TypeError):
+            d["payload"] = {}
+        out.append(d)
+    return out
+
+
+def marcar_evento_processado(evento_id: int):
+    with ligacao() as c:
+        c.execute("UPDATE events SET processed_at = ? WHERE id = ?", (iso_utc(), evento_id))
+
+
+# ---------------------------------------------------------------------------
+# Ocupação de um dia — para o motor de disponibilidade (scheduling.availability)
+# ---------------------------------------------------------------------------
+def ocupacao_do_dia(data_iso: str, tenant_id: int = 1, conn=None) -> list[dict]:
+    """Marcações que BLOQUEIAM o horário + reservas temporárias ativas nesse
+    dia. Cada item: {inicio_min, dur_min, buffer_before, buffer_after, id,
+    telefone}. `inicio_min` = minutos desde a meia-noite."""
+    import estados as _est
+    import parsing as _p
+
+    def _run(c):
+        c.execute("DELETE FROM reservas_temporarias WHERE expira_em <= ?", (iso_utc(),))
+        itens = []
+        rows = c.execute(
+            "SELECT a.id, a.telefone, a.estado, a.bloqueia_horario, a.hora_hhmm, a.hora, "
+            "a.duracao_min, a.duracao, a.servico, s.buffer_before_min, s.buffer_after_min "
+            "FROM agendamentos a LEFT JOIN servicos s ON s.id = a.servico_id "
+            "WHERE a.tenant_id = ? AND (a.data_iso = ? OR a.data LIKE ?)",
+            (tenant_id, data_iso, f"%{_iso_para_dmy(data_iso)}%")).fetchall()
+        for (aid, tel, estado, bloq, hhmm, hora_txt, dmin, dur_txt, servico, bb, ba) in rows:
+            if not _est.bloqueia_horario(estado, bloq):
+                continue
+            hh = hhmm or _p.hora_hhmm_de_texto(hora_txt)
+            mins = dmin
+            if mins is None:
+                mins, _ = _p.duracao_para_minutos(dur_txt)
+            im = _hhmm_para_min(hh)
+            if im is None or not mins:
+                continue
+            itens.append({"id": aid, "telefone": tel, "inicio_min": im, "dur_min": int(mins),
+                          "buffer_before": bb or 0, "buffer_after": ba or 0})
+        for (tel, hora_txt, servico, dur_txt) in c.execute(
+                "SELECT telefone, hora, servico, duracao FROM reservas_temporarias "
+                "WHERE tenant_id = ? AND expira_em > ? AND (data LIKE ? OR data = ?)",
+                (tenant_id, iso_utc(), f"%{_iso_para_dmy(data_iso)}%", data_iso)).fetchall():
+            hh = _p.hora_hhmm_de_texto(hora_txt)
+            mins, _ = _p.duracao_para_minutos(dur_txt)
+            im = _hhmm_para_min(hh)
+            if im is None or not mins:
+                continue
+            itens.append({"id": None, "telefone": tel, "inicio_min": im, "dur_min": int(mins),
+                          "buffer_before": 0, "buffer_after": 0, "retencao": True})
+        return itens
+
+    if conn is not None:
+        return _run(conn)
+    with ligacao() as c:
+        return _run(c)
+
+
+def _hhmm_para_min(v):
+    if not v:
+        return None
+    try:
+        h, m = str(v).split(":")
+        return int(h) * 60 + int(m)
+    except (ValueError, AttributeError):
+        return None
+
+
+def _iso_para_dmy(data_iso: str) -> str:
+    """'2026-09-07' -> '07.09.2026' (a coluna legada `data` usa este formato)."""
+    try:
+        a, m, d = data_iso.split("-")
+        return f"{d}.{m}.{a}"
+    except ValueError:
+        return data_iso
