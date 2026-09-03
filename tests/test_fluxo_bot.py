@@ -136,7 +136,8 @@ def test_servico_preco_a_confirmar_no_resumo_e_notificacao(cliente_http, base_da
     _post(cliente_http, _botao("confirmar", "p7"))
     ag = [a for a in bot.listar_agendamentos() if a["telefone"] == CLIENTE][0]
     assert ag["preco_cents"] is None and ag["preco"] is None
-    assert internas and "NÃO DEFINIDO" in internas[0]
+    # notificação interna deixa claro que o preço não está definido, sem "CHF 0"
+    assert internas and "Preço a confirmar" in internas[0] and "CHF 0" not in internas[0]
 
 
 def test_id_legado_spotless_leva_ao_menu(cliente_http, base_dados, enviados):
