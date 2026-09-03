@@ -439,18 +439,6 @@ TEXTOS = {
               "happy to arrange a new date whenever you'd like."},
 }
 
-# Nomes traduzidos dos estados de um pedido de orçamento, para apresentação
-# ao CLIENTE no carrinho persistente (a base de dados guarda sempre o valor
-# canónico em português — ver ESTADOS_PEDIDO).
-ESTADO_PEDIDO_NOMES = {
-    "novo": {"pt": "recebido", "de": "erhalten", "en": "received"},
-    "em análise": {"pt": "em análise", "de": "wird geprüft", "en": "under review"},
-    "orçamento enviado": {"pt": "orçamento enviado", "de": "Angebot gesendet", "en": "quote sent"},
-    "alteração solicitada": {"pt": "alteração solicitada", "de": "Änderung angefragt", "en": "change requested"},
-    "aceite": {"pt": "aceite", "de": "angenommen", "en": "accepted"},
-    "contacto solicitado": {"pt": "contacto solicitado", "de": "Kontakt angefragt", "en": "contact requested"},
-}
-
 
 def t(chave, idioma, **kwargs):
     """Devolve o texto central traduzido para `idioma` (com fallback para
@@ -504,8 +492,7 @@ MENU_PRINCIPAL = [
 # Compat: caminho do SQLite (a verdade está em config.SQLITE_PATH).
 DB_PATH = config.SQLITE_PATH
 
-# Estados possíveis de um pedido de orçamento (Wrap & Proteção). Só usados
-# internamente/no dashboard — não fazem parte do texto traduzido ao cliente.
+
 def obter_bd():
     """Ligação à base de dados — agora um wrapper fino sobre `db.ligacao()`.
 
