@@ -121,12 +121,13 @@ IDIOMAS_VALIDOS = ("pt", "de", "en")
 COMANDOS_TEXTO = {
     "menu", "voltar", "cancelar", "ajuda", "humano", "gerir",
     "idioma", "sprache", "language",
-    "carrinho", "cart", "warenkorb",
-    "rapido", "quick", "schnell",
 }
 COMANDOS_IDIOMA = {"idioma", "sprache", "language"}
-COMANDOS_CARRINHO = {"carrinho", "cart", "warenkorb"}
-COMANDOS_RAPIDO = {"rapido", "quick", "schnell"}
+# LEGADO (Spotless): CARRINHO e RAPIDO davam entrada no fluxo Wrap/orçamento,
+# que já não existe para a Daniela Beauty. Mantidos como conjuntos vazios só
+# para o código legado que os referencia não rebentar.
+COMANDOS_CARRINHO = set()
+COMANDOS_RAPIDO = set()
 
 # Modos possíveis do fluxo "Wrap & Proteção" (escolhidos logo à entrada).
 # Guardados na sessão em "wrap_modo" e na base de dados na coluna
@@ -2166,10 +2167,9 @@ def enviar_lista(destinatario, corpo, titulo_seccao, opcoes, idioma, botao="👉
     todas = [linha_de(opc, i) for i, opc in enumerate(opcoes)]
 
     # Linhas fixas que ocupam espaço no fim da lista.
+    # (A linha "🛒 Carrinho · CHF X" era do fluxo Spotless com carrinho —
+    # removida: a Daniela Beauty marca um serviço de cada vez, sem carrinho.)
     fixas = []
-    if sessao is not None:
-        fixas.append({"id": "ver_carrinho",
-                      "title": titulo_linha_carrinho(destinatario, idioma, sessao)[:MAX_TITULO_LINHA]})
     if com_voltar:
         fixas.append({"id": ID_VOLTAR, "title": t("voltar_titulo", idioma), "description": t("voltar_desc", idioma)})
     if com_cancelar:
@@ -2879,6 +2879,26 @@ def estado_inicial_marcacao():
     """"confirmed" (por agora) ou "pending" quando BOOKING_REQUIRES_APPROVAL
     estiver ligado. Muda o comportamento sem refactor — só a config."""
     return "pending" if config.BOOKING_REQUIRES_APPROVAL else "confirmed"
+
+
+# IDs de botões/listas dos fluxos LEGADOS (Spotless: Wrap, orçamento rápido,
+# carrinho, negociação de orçamento, categorias de detailing). Não existem no
+# fluxo Daniela Beauty — se um cliente carregar num destes (mensagem antiga
+# ainda na conversa), é levado ao menu. NUNCA apanha os IDs atuais
+# (svc_*, mp_*, gerir_ag_*, reagendar_*, cancelar_ag_*, opt_*, lang_*).
+_PREFIXOS_LEGADOS = (
+    "modo_", "wrap_", "wv_", "cf_", "cor_", "rapido_", "carrinho_", "ver_carrinho",
+    "orcamento_", "pedido_cancelar_cliente_", "cat_wrap", "cat_limpeza", "cat_estetica",
+    "lp_", "ex_", "es_", "exe_", "tam_", "est_", "modo_rapido", "modo_detalhe",
+    "modo_especialista", "mp_orcamento",
+)
+
+
+def _id_legado_spotless(id_botao):
+    s = str(id_botao or "")
+    return s in ("ver_carrinho", "modo_rapido", "modo_detalhe", "modo_especialista",
+                 "cat_wrap", "cat_limpeza", "cat_estetica", "mp_orcamento") \
+        or s.startswith(_PREFIXOS_LEGADOS)
 
 
 def _servico_da_sessao(sessao):
@@ -4834,9 +4854,8 @@ def falar_com_equipa(de, idioma, sessao):
 
 def mensagem_ajuda(idioma):
     linhas = [t("ajuda_header", idioma), "", t("ajuda_menu", idioma), t("ajuda_voltar", idioma),
-              t("ajuda_cancelar", idioma), t("ajuda_gerir", idioma), t("ajuda_carrinho", idioma),
-              t("ajuda_rapido", idioma), t("ajuda_ajuda", idioma), t("ajuda_humano", idioma),
-              t("ajuda_idioma", idioma)]
+              t("ajuda_cancelar", idioma), t("ajuda_gerir", idioma),
+              t("ajuda_ajuda", idioma), t("ajuda_humano", idioma), t("ajuda_idioma", idioma)]
     return "\n".join(linhas)
 
 
@@ -7301,12 +7320,6 @@ def processar_comando_texto(de, idioma, sessao, comando):
     if comando == "gerir":
         mostrar_gestao_marcacao(de, idioma)
         return True
-    if comando in COMANDOS_CARRINHO:
-        mostrar_carrinho(de, idioma, sessao)
-        return True
-    if comando in COMANDOS_RAPIDO:
-        mudar_para_modo_rapido(de, idioma, sessao)
-        return True
     if comando == "cancelar":
         cancelar_processo(de, idioma, sessao)
         return True
@@ -7642,10 +7655,18 @@ def receber_mensagem():
             id_botao = {
                 ACAO_MENU: "menu_principal",
                 ACAO_NOVA_MARCACAO: "mp_marcar",
-                ACAO_CARRINHO: "ver_carrinho",
                 ACAO_CANCELAR: ID_CANCELAR,
-                ACAO_RAPIDO: "modo_rapido",
             }.get(id_botao, id_botao)
+
+            # LEGADO (Spotless): botões dos fluxos Wrap / orçamento rápido /
+            # negociação de orçamento. Já não existem para a Daniela Beauty.
+            # Um cliente com uma mensagem antiga na conversa que carregue num
+            # destes é levado em segurança ao menu — os handlers legados
+            # abaixo ficam inalcançáveis de propósito.
+            if _id_legado_spotless(id_botao):
+                nova = reiniciar_sessao(de)
+                enviar_menu_principal(de, idioma, saudacao=False, sessao=nova)
+                return jsonify(status="ok"), 200
 
             if id_botao == ACAO_VOLTAR:
                 voltar_um_passo(de, idioma, sessao)
@@ -8033,11 +8054,15 @@ def receber_mensagem():
             id_escolhido = {
                 ACAO_MENU: "menu_principal",
                 ACAO_NOVA_MARCACAO: "mp_marcar",
-                ACAO_CARRINHO: "ver_carrinho",
                 ACAO_CANCELAR: ID_CANCELAR,
                 ACAO_VOLTAR: ID_VOLTAR,
-                ACAO_RAPIDO: "modo_rapido",
             }.get(id_escolhido, id_escolhido)
+
+            # LEGADO (Spotless): linhas de lista dos fluxos Wrap/orçamento.
+            if _id_legado_spotless(id_escolhido):
+                nova = reiniciar_sessao(de)
+                enviar_menu_principal(de, idioma, saudacao=False, sessao=nova)
+                return jsonify(status="ok"), 200
 
             if id_escolhido == ID_CANCELAR:
                 cancelar_processo(de, idioma, sessao)
@@ -8355,12 +8380,16 @@ def reenviar_passo_atual(de, idioma, sessao):
     categoria = sessao.get("categoria")
     fluxo = sessao.get("fluxo")
 
-    # Ecrã de escolha da categoria: é aqui que o cliente estava se abriu o
-    # carrinho logo no início (ver ID_VOLTAR_CARRINHO).
-    if fluxo == "escolher_categoria" and not categoria:
-        enviar_lista(de, t("categoria_pergunta", idioma), t("categoria_seccao", idioma),
-                     opcoes_categorias_com_precos(idioma), idioma, botao=t("menu_botao", idioma),
-                     com_voltar=True, com_cancelar=True, rodape=t("rodape_padrao", idioma))
+    # --- FLUXO DANIELA BEAUTY -------------------------------------------
+    if fluxo in ("beauty", "reagendar"):
+        if not sessao.get("servico_id"):
+            iniciar_escolha_servico(de, idioma, sessao)
+        elif "hora" in sessao:
+            passo_resumo(de, idioma, sessao)
+        elif "data" in sessao:
+            passo_hora(de, idioma, sessao=sessao)
+        else:
+            passo_data(de, idioma, sessao=sessao)
         return
 
     if fluxo == "wrap" and sessao.get("wrap_modo") == MODO_RAPIDO:

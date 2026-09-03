@@ -116,3 +116,35 @@ def test_idempotencia_wamid_nao_duplica(cliente_http, base_dados, enviados):
     r = _post(cliente_http, _botao("confirmar", "m7"))
     assert json.loads(r.data)["status"] == "repetida"
     assert len([a for a in bot.listar_agendamentos() if a["telefone"] == CLIENTE]) == 1
+
+
+def test_servico_preco_a_confirmar_no_resumo_e_notificacao(cliente_http, base_dados, monkeypatch):
+    saida = []
+    monkeypatch.setattr(bot, "enviar", lambda p: saida.append(p) or None)
+    internas = []
+    monkeypatch.setattr(bot, "enviar_notificacao_interna_marcacao",
+                        lambda idag, txt: internas.append(txt))
+    _post(cliente_http, _botao("lang_pt", "p1"))
+    _post(cliente_http, _texto("Rita", "p2"))
+    _post(cliente_http, _lista("mp_marcar", "Marcar", "p3"))
+    _post(cliente_http, _lista("svc_pestanas", "Pestanas", "p4"))
+    _post(cliente_http, _lista("opt_0", data_pt("2026-09-21"), "p5"))
+    _post(cliente_http, _lista("opt_0", "🕘 09:00", "p6"))
+    textos = "\n".join(json.dumps(p, ensure_ascii=False) for p in saida)
+    assert "Preço a confirmar" in textos
+    assert "CHF 0" not in textos
+    _post(cliente_http, _botao("confirmar", "p7"))
+    ag = [a for a in bot.listar_agendamentos() if a["telefone"] == CLIENTE][0]
+    assert ag["preco_cents"] is None and ag["preco"] is None
+    assert internas and "NÃO DEFINIDO" in internas[0]
+
+
+def test_id_legado_spotless_leva_ao_menu(cliente_http, base_dados, enviados):
+    _post(cliente_http, _botao("lang_pt", "l1"))
+    _post(cliente_http, _texto("Zé", "l2"))
+    r = _post(cliente_http, _botao("modo_rapido", "l3"))          # botão do fluxo Wrap
+    assert json.loads(r.data)["status"] == "ok"
+    r = _post(cliente_http, _lista("cat_wrap", "Wrap", "l4"))
+    assert json.loads(r.data)["status"] == "ok"
+    # nunca entrou em fluxo wrap
+    assert bot.carregar_sessao(CLIENTE).get("fluxo") in (None, "beauty")
