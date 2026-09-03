@@ -29,7 +29,7 @@ import re
 import json
 import hmac
 import hashlib
-import requests
+import logging
 from functools import wraps
 from datetime import date, timedelta, datetime
 from flask import Flask, request, jsonify, Response
@@ -40,6 +40,9 @@ import catalogo
 import estados
 import tempo
 from parsing import data_iso_de_texto, hora_hhmm_de_texto, duracao_para_minutos
+from messaging import whatsapp as _wa
+from core import events as eventos
+from notifications import business as notif_negocio
 
 app = Flask(__name__)
 
@@ -70,6 +73,28 @@ def graph_url():
 
 # Compat: código antigo referencia GRAPH_URL como string.
 GRAPH_URL = config.graph_url() or ""
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+log = logging.getLogger("bot")
+
+# --- AUTOMATION ENGINE: liga o barramento de eventos aos consumidores ------
+# V1: a notificação privada ao negócio. (Handlers de reminders/review/
+# rebooking entram na Fase K/P via o mesmo `eventos.registar`.)
+eventos.registar("*", notif_negocio.handler_evento)
+
+
+def disparar_automacoes():
+    """Processa a outbox de eventos (síncrono, V1). Chamado no fim de cada
+    request que possa ter gravado eventos. Nunca deixa uma exceção escapar —
+    um evento por processar é re-tentado no próximo disparo."""
+    try:
+        eventos.drain()
+    except Exception:                        # noqa: BLE001
+        log.exception("disparar_automacoes falhou")
+
 
 # IDs usados em botões/listas em todo o fluxo (nunca traduzidos — são
 # identificadores internos, não texto visível)
@@ -591,7 +616,10 @@ def apagar_sessao(telefone):
 CAMPOS_AGENDAMENTO = ["id", "telefone", "nome", "categoria", "servico", "extra", "data", "hora",
                       "preco", "duracao", "estado", "criado_em", "carrinho_json", "bloqueia_horario",
                       # colunas ESTRUTURADAS (migração 4) — a lógica usa estas
-                      "servico_id", "data_iso", "hora_hhmm", "duracao_min", "preco_cents"]
+                      "servico_id", "data_iso", "hora_hhmm", "duracao_min", "preco_cents",
+                      # tenant + CRM (migrações 8-9) + estado operacional (migração 11)
+                      "tenant_id", "customer_id",
+                      "op_status", "arrived_at", "started_at", "completed_at"]
 SQL_COLUNAS_AGENDAMENTO = ", ".join(CAMPOS_AGENDAMENTO)
 
 
@@ -613,6 +641,7 @@ def guardar_agendamento(telefone, sessao):
         duracao_min = duracao_min if duracao_min is not None else s.get("duracao_min")
         preco_cents = preco_cents if "preco_cents" in sessao else s.get("preco_cents")
     estado = estado_inicial_marcacao()
+    tenant_id = sessao.get("tenant_id", 1)
 
     with obter_bd() as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -623,11 +652,20 @@ def guardar_agendamento(telefone, sessao):
             if conflitos_no_intervalo(ocupacoes(telefone, conn), data_iso, hora,
                                       sessao.get("servico"), duracao):
                 raise HorarioOcupado(f"{data_iso} {hora}")
+
+        # CRM: cliente (cria se novo) e ligação à marcação — na mesma transação.
+        ja_existia = conn.execute(
+            "SELECT 1 FROM customers WHERE tenant_id = ? AND phone = ?", (tenant_id, telefone)
+        ).fetchone()
+        cust = bd.obter_ou_criar_customer(telefone, sessao.get("nome"), sessao.get("idioma"),
+                                          tenant_id=tenant_id, conn=conn)
+
         cur = conn.execute(
             "INSERT INTO agendamentos "
             "(telefone, nome, categoria, servico, extra, data, hora, preco, duracao, estado, criado_em, "
-            "carrinho_json, bloqueia_horario, servico_id, data_iso, hora_hhmm, duracao_min, preco_cents) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)",
+            "carrinho_json, bloqueia_horario, servico_id, data_iso, hora_hhmm, duracao_min, preco_cents, "
+            "tenant_id, customer_id, op_status) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, 'scheduled')",
             (
                 telefone, sessao.get("nome"), sessao.get("categoria"),
                 sessao.get("servico"), sessao.get("extra"),
@@ -637,9 +675,27 @@ def guardar_agendamento(telefone, sessao):
                 tempo.iso_utc(),
                 json.dumps(sessao.get("carrinho", [])),
                 servico_id, data_iso, hora, duracao_min, preco_cents,
+                tenant_id, cust["id"],
             ),
         )
-        return cur.lastrowid
+        id_ag = cur.lastrowid
+
+        # OUTBOX: eventos de domínio na MESMA transação do INSERT.
+        if not ja_existia:
+            bd.registar_evento(conn, "customer.created", "customer", cust["id"],
+                               {"nome": sessao.get("nome"), "telefone": telefone},
+                               dedupe_key=f"customer.created:{cust['id']}", tenant_id=tenant_id)
+        bd.registar_evento(
+            conn, "booking.pending" if estado == "pending" else "booking.created",
+            "appointment", id_ag,
+            {"servico_id": servico_id, "servico": sessao.get("servico"),
+             "data": sessao.get("data"), "hora": sessao.get("hora"),
+             "preco_cents": preco_cents, "cliente": sessao.get("nome"),
+             "telefone": telefone, "customer_id": cust["id"]},
+            dedupe_key=f"booking.created:{id_ag}", tenant_id=tenant_id)
+
+        bd.recalcular_customer(cust["id"], conn=conn)
+        return id_ag
 
 
 def _agendamentos_da_conexao(conn):
@@ -749,11 +805,28 @@ def atualizar_estado_agendamento(id_agendamento, estado, bloqueia_horario=None):
     if bloqueia_horario is None and canonico == estados.NO_SHOW:
         bloqueia_horario = 0
     with obter_bd() as conn:
+        prev = conn.execute(
+            "SELECT estado, tenant_id, customer_id, servico, servico_id, data, hora "
+            "FROM agendamentos WHERE id = ?", (id_agendamento,)).fetchone()
         if bloqueia_horario is None:
             conn.execute("UPDATE agendamentos SET estado = ? WHERE id = ?", (canonico, id_agendamento))
         else:
             conn.execute("UPDATE agendamentos SET estado = ?, bloqueia_horario = ? WHERE id = ?",
                          (canonico, int(bool(bloqueia_horario)), id_agendamento))
+        if canonico == estados.COMPLETED:
+            conn.execute("UPDATE agendamentos SET op_status = 'done', "
+                         "completed_at = COALESCE(completed_at, ?) WHERE id = ?",
+                         (tempo.iso_utc(), id_agendamento))
+        # OUTBOX — evento de mudança de estado (para automações: review, etc.)
+        if prev and canonico in (estados.COMPLETED, estados.NO_SHOW) \
+                and chave_estado(prev[0]) != canonico:
+            tipo = "booking.completed" if canonico == estados.COMPLETED else "booking.no_show"
+            bd.registar_evento(conn, tipo, "appointment", id_agendamento,
+                               {"servico": prev[3], "servico_id": prev[4], "data": prev[5],
+                                "hora": prev[6], "customer_id": prev[2]},
+                               dedupe_key=f"{tipo}:{id_agendamento}", tenant_id=prev[1] or 1)
+            if prev[2]:
+                bd.recalcular_customer(prev[2], conn=conn)
 
 
 # ---------------------------------------------------------------------------
@@ -979,27 +1052,15 @@ def dentro_da_janela_24h(telefone):
 # ---------------------------------------------------------------------------
 # Envio de mensagens
 # ---------------------------------------------------------------------------
+# Envio WhatsApp: vive em messaging/whatsapp.py. Mantêm-se estes nomes em
+# bot.py porque há centenas de call sites e os testes fazem monkeypatch de
+# `bot.enviar`.
 def enviar(payload):
-    url = graph_url()
-    if not url or not TOKEN:
-        # Sem credenciais WhatsApp configuradas: não rebenta (útil em testes e
-        # no arranque antes de configurar o ambiente). NUNCA imprime o token.
-        print("[enviar] WHATSAPP não configurado (WHATSAPP_TOKEN / PHONE_NUMBER_ID) — envio ignorado")
-        return None
-    headers = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
-    r = requests.post(url, headers=headers, json=payload, timeout=10)
-    # Status + corpo ajudam a depurar; o token vai só no header, nunca no log.
-    print("Resposta da Meta:", r.status_code, r.text)
-    return r
+    return _wa.enviar(payload)
 
 
 def enviar_texto(destinatario, texto):
-    enviar({
-        "messaging_product": "whatsapp",
-        "to": destinatario,
-        "type": "text",
-        "text": {"body": texto},
-    })
+    return _wa.enviar_texto(destinatario, texto)
 
 
 ID_PAG_SEGUINTE = "pag_seguinte_"
@@ -1591,7 +1652,9 @@ def marcar_agendamento_cancelado(id_agendamento, libertar=None, exigir_confirmad
     bloqueia = 0 if libertar else 1
     with obter_bd() as conn:
         conn.execute("BEGIN IMMEDIATE")
-        linha = conn.execute("SELECT estado FROM agendamentos WHERE id = ?", (id_agendamento,)).fetchone()
+        linha = conn.execute(
+            "SELECT estado, tenant_id, customer_id, servico, servico_id, data, hora, preco_cents "
+            "FROM agendamentos WHERE id = ?", (id_agendamento,)).fetchone()
         if not linha:
             raise LookupError("Marcação não encontrada.")
         if exigir_confirmado and chave_estado(linha[0]) not in estados.GERIVEIS_PELO_CLIENTE:
@@ -1600,6 +1663,14 @@ def marcar_agendamento_cancelado(id_agendamento, libertar=None, exigir_confirmad
         # ocupação do horário é que muda.
         conn.execute("UPDATE agendamentos SET estado = ?, bloqueia_horario = ? WHERE id = ?",
                      (estados.CANCELLED, bloqueia, id_agendamento))
+        tenant_id = linha[1] or 1
+        bd.registar_evento(conn, "booking.cancelled", "appointment", id_agendamento,
+                           {"servico": linha[3], "servico_id": linha[4], "data": linha[5],
+                            "hora": linha[6], "preco_cents": linha[7],
+                            "horario_libertado": bool(libertar), "customer_id": linha[2]},
+                           dedupe_key=f"booking.cancelled:{id_agendamento}", tenant_id=tenant_id)
+        if linha[2]:
+            bd.recalcular_customer(linha[2], conn=conn)
     return bool(libertar)
 
 
@@ -1870,6 +1941,17 @@ def reagendar_agendamento(id_agendamento, data_iso, hora, origem="dashboard", av
             "INSERT INTO agendamento_historico (agendamento_id, data_anterior, hora_anterior, "
             "data_nova, hora_nova, origem, alterado_em) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (id_agendamento, data_antiga, hora_antiga, data_texto, hora_texto, origem, _agora_iso()))
+        # OUTBOX — o histórico do reagendamento é sempre único por movimento.
+        bd.registar_evento(
+            conn, "booking.rescheduled", "appointment", id_agendamento,
+            {"servico": alvo.get("servico"), "servico_id": alvo.get("servico_id"),
+             "cliente": alvo.get("nome"), "customer_id": alvo.get("customer_id"),
+             "data_antiga": data_antiga, "hora_antiga": hora_antiga,
+             "data_nova": data_texto, "hora_nova": hora_texto, "origem": origem},
+            dedupe_key=f"booking.rescheduled:{id_agendamento}:{data_iso}:{hora}",
+            tenant_id=alvo.get("tenant_id") or 1)
+        if alvo.get("customer_id"):
+            bd.recalcular_customer(alvo["customer_id"], conn=conn)
 
     agendamento = obter_agendamento(id_agendamento)
     notificado = False
@@ -4483,6 +4565,20 @@ def voltar_um_passo(de, idioma, sessao):
     enviar_menu_principal(de, idioma, saudacao=False, sessao=nova)
 
 
+@app.after_request
+def _drenar_eventos_apos_escrita(resposta):
+    """Processa a outbox de eventos após qualquer request que possa ter
+    gravado eventos (webhook, ações de escrita do painel). Síncrono em V1;
+    passa a cron worker em V1.5. Nunca deixa uma exceção afetar a resposta."""
+    try:
+        p = request.path or ""
+        if p == "/webhook" or (p.startswith("/api/agendamentos/") and request.method == "POST"):
+            disparar_automacoes()
+    except Exception:                        # noqa: BLE001
+        log.exception("_drenar_eventos_apos_escrita")
+    return resposta
+
+
 @app.route("/webhook", methods=["POST"])
 def receber_mensagem():
     corpo_bruto = request.get_data()
@@ -4737,10 +4833,9 @@ def receber_mensagem():
                         {"id": ACAO_GERIR, "titulo": t("botao_gerir_marcacao", idioma)},
                         {"id": ACAO_MENU, "titulo": t("botao_menu_principal", idioma)},
                     ], idioma)
-                    if PROVIDER_WHATSAPP:
-                        enviar_texto(PROVIDER_WHATSAPP,
-                                     f"✏️ Marcação #{id_ag} reagendada pelo cliente "
-                                     f"{formatar_telefone(de)} para {sessao['data']} {sessao['hora']}.")
+                    # A notificação ao negócio é o evento booking.rescheduled
+                    # (ver notifications.business.handler_evento) — drenado no
+                    # after_request. Não se envia aqui, para não duplicar.
                     reiniciar_sessao(de)
                     return jsonify(status="ok"), 200
 
@@ -4818,19 +4913,13 @@ def receber_mensagem():
             if id_botao.startswith("cancelar_ag_"):
                 id_ag = int(id_botao.split("_")[-1])
                 # A decisão "libertar ou manter o horário" é do NEGÓCIO: aqui
-                # aplica-se em silêncio a configuração guardada no painel e
-                # nunca se pergunta nada ao cliente.
+                # aplica-se em silêncio a configuração guardada no painel.
+                # A notificação ao negócio é o evento booking.cancelled.
                 try:
-                    libertado = marcar_agendamento_cancelado(id_ag, exigir_confirmado=False)
+                    marcar_agendamento_cancelado(id_ag, exigir_confirmado=False)
                 except LookupError:
-                    libertado = None
+                    pass
                 enviar_texto(de, t("cancelado_cliente", idioma))
-                if PROVIDER_WHATSAPP:
-                    estado_horario = ("🔓 Horário libertado." if libertado
-                                      else "🔒 Horário mantido ocupado." if libertado is False else "")
-                    enviar_texto(PROVIDER_WHATSAPP,
-                                 f"❌ Marcação #{id_ag} cancelada pelo cliente {formatar_telefone(de)}."
-                                 + (f"\n{estado_horario}" if estado_horario else ""))
                 return jsonify(status="ok"), 200
 
             # Um BOTÃO que chegue aqui é mesmo desconhecido. Uma LISTA segue
