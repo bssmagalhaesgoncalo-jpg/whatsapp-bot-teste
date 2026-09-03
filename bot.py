@@ -27,14 +27,10 @@ negócio (PROVIDER_WHATSAPP) são sempre em português. No alemão usa-se sempre
 
 import os
 import re
-import io
-import csv
 import json
 import hmac
 import hashlib
-import sqlite3  # noqa: F401 — mantido para compatibilidade de tipos/excepções legadas
 import requests
-import unicodedata
 from functools import wraps
 from datetime import date, timedelta, datetime
 from flask import Flask, request, jsonify, send_from_directory, Response
@@ -2358,16 +2354,16 @@ def recuperar_duracao(servico, duracao_guardada):
 def _procurar_servico_por_nome_pt(nome_pt):
     """Vai buscar a entrada do catálogo (Limpeza ou Estética) cujo nome em
     português corresponde ao valor canónico guardado em sessao/DB."""
-    for catalogo in (LIMPEZA_TIPOS, ESTETICA_SERVICOS):
-        opcao = next((o for o in catalogo if o["titulo"]["pt"] == nome_pt), None)
+    for _cat in (LIMPEZA_TIPOS, ESTETICA_SERVICOS):
+        opcao = next((o for o in _cat if o["titulo"]["pt"] == nome_pt), None)
         if opcao:
             return opcao
     return None
 
 
 def _procurar_extra_por_nome_pt(nome_pt):
-    for catalogo in (EXTRAS_LIMPEZA, EXTRAS_ESTETICA):
-        opcao = next((o for o in catalogo if o["titulo"]["pt"] == nome_pt), None)
+    for _cat in (EXTRAS_LIMPEZA, EXTRAS_ESTETICA):
+        opcao = next((o for o in _cat if o["titulo"]["pt"] == nome_pt), None)
         if opcao:
             return opcao
     return None
@@ -2659,8 +2655,8 @@ def opcoes_categorias_com_precos(idioma):
 
 
 def _procurar_modificador_veiculo_por_nome_pt(nome_pt):
-    for catalogo in (TAMANHOS_VEICULO, ESTADO_VEICULO):
-        opcao = next((o for o in catalogo if o["titulo"]["pt"] == nome_pt), None)
+    for _cat in (TAMANHOS_VEICULO, ESTADO_VEICULO):
+        opcao = next((o for o in _cat if o["titulo"]["pt"] == nome_pt), None)
         if opcao:
             return opcao
     return None

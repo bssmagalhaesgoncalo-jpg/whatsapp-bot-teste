@@ -21,12 +21,10 @@ os.environ.setdefault("DASHBOARD_USER", "painel")
 os.environ.setdefault("DASHBOARD_PASSWORD", "painel-pw")
 os.environ.pop("DATABASE_URL", None)
 
-import config          # noqa: E402
+import config          # noqa: E402,F401
 import db              # noqa: E402
 import catalogo        # noqa: E402
-import estados         # noqa: E402
-import tempo           # noqa: E402
-import bot             # noqa: E402
+import bot             # noqa: E402,F401
 
 
 @pytest.fixture()
