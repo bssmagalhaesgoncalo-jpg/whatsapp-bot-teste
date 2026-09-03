@@ -12,6 +12,13 @@
 - A camada Postgres está **preparada mas não ativada**: se `DATABASE_URL`
   apontar para Postgres, `db.py` aborta com uma mensagem explícita em vez de
   correr meio configurado.
+- **`psycopg` NÃO está nas dependências.** PostgreSQL não é suportado nesta
+  versão e nenhum módulo importa `psycopg` (`config.usa_postgres()` só inspeciona
+  a string de `DATABASE_URL`). O `psycopg[binary]==3.2.3` foi **removido** do
+  `requirements.txt` — não tinha wheel para o Python que o Render escolhia e
+  rebentava o build sem dar nada em troca. Volta ao `requirements.txt` **só**
+  quando o backend Postgres (ponto 2 abaixo) estiver realmente implementado, e
+  nessa altura com uma versão escolhida/testada para o Python então em uso.
 
 ## Migrações aplicadas
 
@@ -77,8 +84,9 @@ uma só vez.
 
 1. Criar a base Postgres no Render e obter `DATABASE_URL`.
 2. Implementar o backend Postgres em `db.py`:
-   - `_conectar()` passa a usar `psycopg` (já em `requirements.txt`) quando
-     `config.usa_postgres()`.
+   - Voltar a adicionar `psycopg[binary]` ao `requirements.txt` (versão testada
+     para o Python em uso — na altura em que foi removido, o `.python-version`
+     era 3.12.7) e fazer `_conectar()` usá-lo quando `config.usa_postgres()`.
    - Traduzir, para **todas as 15 migrações** (mesma lista, SQL compatível):
      - placeholders `?` → `%s`;
      - `INTEGER PRIMARY KEY AUTOINCREMENT` → `BIGSERIAL PRIMARY KEY`;

@@ -21,6 +21,11 @@ services:
       mountPath: /var/data
       sizeGB: 1
     envVars:
+      # Versão do Python: fonte primária é o ficheiro .python-version na raiz
+      # (3.12.7). Este PYTHON_VERSION é redundante de propósito — mesmo valor —
+      # para o build ficar preso a 3.12.7 mesmo que o buildpack ignore um dos
+      # dois. NÃO usar 3.13/3.14 (psycopg-binary e outras wheels ainda não
+      # cobrem essas versões — foi o que rebentou o build anterior).
       - key: PYTHON_VERSION
         value: "3.12.7"
       - key: SESSOES_DB

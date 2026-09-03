@@ -1,14 +1,16 @@
 # Dependências de execução — Daniela Beauty (bot WhatsApp + painel Flask).
 # Versões fixadas para builds reprodutíveis no Render.
+# Python fixado por .python-version = 3.12.7 (ver também PYTHON_VERSION no render.yaml).
 #
 # NOTA: a versão anterior deste ficheiro NÃO era um requirements.txt — era uma
 # cópia do código-fonte do bot. Ver git (backup/nails-conversion-wip) e o
 # relatório da Fase 0.
+#
+# PostgreSQL: NÃO é suportado nesta versão. `db.py` aborta explicitamente se
+# DATABASE_URL apontar para Postgres. Nenhum módulo importa `psycopg`. Quando o
+# backend Postgres for realmente implementado, `psycopg[binary]` volta aqui com
+# uma versão compatível/testada para o Python então em uso (ver MIGRATION.md).
 
 Flask==3.0.3
 gunicorn==22.0.0
 requests==2.32.3
-
-# PostgreSQL (produção). Importado de forma preguiçosa por db.py: o
-# desenvolvimento local com SQLite não precisa que isto instale/compile.
-psycopg[binary]==3.2.3

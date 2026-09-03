@@ -122,8 +122,12 @@ negócio (ver `MIGRATION.md`).
 
 ## Correr localmente
 
+**Python:** fixado pelo ficheiro `.python-version` = **3.12.7** (o mesmo valor
+está em `PYTHON_VERSION` no `render.yaml`). Não usar 3.13/3.14 — algumas wheels
+ainda não cobrem essas versões.
+
 ```bash
-uv venv .venv --python 3.12 && uv pip install -r requirements.txt   # ou venv/pip
+uv venv .venv --python 3.12.7 && uv pip install -r requirements.txt   # ou venv/pip
 cp .env.example .env          # preencher WhatsApp/painel; sem DATABASE_URL usa SQLite
 .venv/bin/python -c "import db; db.migrar(verbose=True)"     # cria/atualiza sessoes.db
 .venv/bin/flask --app bot run           # ou: gunicorn bot:app
@@ -157,5 +161,12 @@ Ver `.env.example`. Obrigatórias para o bot: `WHATSAPP_TOKEN`,
 
 Ver `render.yaml` e `MIGRATION.md`. **Enquanto usar SQLite é obrigatório um
 disco persistente** (o filesystem do Render é efémero). As migrações correm no
-`preDeployCommand`. PostgreSQL é o destino de produção — a camada está
-preparada; a migração de dados é um passo à parte (`MIGRATION.md`).
+`preDeployCommand`.
+
+- **Python:** `.python-version` (raiz) fixa **3.12.7**; `PYTHON_VERSION=3.12.7`
+  no `render.yaml` repete o valor. Não há `runtime.txt` (evita ter três sítios
+  a dizer a versão).
+- **Dependências:** `Flask`, `gunicorn`, `requests` — nada mais. Não há
+  `psycopg` (PostgreSQL não é suportado nesta versão; `db.py` aborta se
+  `DATABASE_URL` for Postgres). Volta quando o backend Postgres existir de
+  facto — ver `MIGRATION.md`.
