@@ -76,9 +76,6 @@ def graph_url():
 # Compat: código antigo referencia GRAPH_URL como string.
 GRAPH_URL = config.graph_url() or ""
 
-NOME_OFICINA = "Spotless Car Detail (TESTE)"
-MORADA_OFICINA = "Spotless Car Detail, Zermatt"
-
 # IDs usados em botões/listas em todo o fluxo (nunca traduzidos — são
 # identificadores internos, não texto visível)
 ID_VOLTAR = "voltar"
@@ -1254,7 +1251,7 @@ def guardar_configuracao(chave, valor):
             "INSERT INTO configuracoes (chave, valor, atualizado_em) VALUES (?, ?, ?) "
             "ON CONFLICT(chave) DO UPDATE SET valor = excluded.valor, "
             "atualizado_em = excluded.atualizado_em",
-            (chave, str(valor), datetime.utcnow().isoformat()),
+            (chave, str(valor), tempo.iso_utc()),
         )
     return str(valor)
 
@@ -1269,6 +1266,28 @@ def libertar_horario_ao_cancelar():
 def configuracoes_atuais():
     """Configurações tal como o painel as consome (já em booleano)."""
     return {CONFIG_LIBERTAR_AO_CANCELAR: libertar_horario_ao_cancelar()}
+
+
+# Quanto tempo se guarda o wamid de uma mensagem já tratada — bem acima da
+# janela de reenvios da Meta, curto o suficiente para a tabela não crescer.
+IDEMPOTENCIA_HORAS = 24
+
+
+def mensagem_ja_processada(id_mensagem):
+    """True se esta mensagem (wamid) JÁ foi tratada. Regista-a atomicamente:
+    o INSERT OR IGNORE só afeta uma linha na primeira vez, por isso dois
+    webhooks simultâneos com o mesmo id nunca passam ambos. Sem id (mensagens
+    de teste / formatos antigos) segue o fluxo normal."""
+    if not id_mensagem:
+        return False
+    agora = tempo.agora_utc()
+    with obter_bd() as conn:
+        conn.execute("DELETE FROM mensagens_processadas WHERE recebida_em < ?",
+                     (tempo.iso_utc(agora - timedelta(hours=IDEMPOTENCIA_HORAS)),))
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO mensagens_processadas (id, recebida_em) VALUES (?, ?)",
+            (str(id_mensagem), tempo.iso_utc(agora)))
+        return cur.rowcount == 0
 
 
 def carregar_sessao(telefone):
@@ -1479,35 +1498,41 @@ CALENDARIO_INTERVALO_MIN = 30   # intervalos de 30 minutos
 DURACAO_DIA_INTEIRO_MIN = (CALENDARIO_HORA_FIM - CALENDARIO_HORA_INICIO) * 60
 
 # ---------------------------------------------------------------------------
-# Cor de cada SERVIÇO no calendário — mapa central, fácil de editar.
-# A chave é sempre o nome CANÓNICO em português (o que fica gravado na coluna
-# `servico`), nunca o texto traduzido nem uma cor gerada ao acaso: assim a cor
-# de um serviço é estável entre sessões, idiomas e atualizações da página.
-# A COR identifica o serviço; o ESTADO (confirmado/concluído/reagendado/
-# cancelado) é sempre comunicado à parte, por texto (ver ESTADO_CALENDARIO).
+# Cor de cada SERVIÇO no calendário. A verdade é a coluna `cor` da tabela
+# `servicos` (fonte única). Os nomes LEGADOS (Spotless) ficam aqui só para o
+# calendário não perder a cor das marcações antigas já gravadas.
+# A COR identifica o serviço; o ESTADO é sempre comunicado à parte, por texto.
 # ---------------------------------------------------------------------------
-CORES_SERVICOS = {
-    "Interior": "#3878e8",              # azul
-    "Exterior": "#20a4b8",              # turquesa
-    "Interior + Exterior": "#6f5ae0",   # violeta-azulado
-    "Polimento": "#e8963c",             # laranja
-    "Proteção cerâmica": "#2ea05a",     # verde
-    "Polimento de faróis": "#d4c23a",   # amarelo-mostarda
-    "Wrap total": "#d1478f",            # magenta
-    "Wrap parcial": "#a45cc4",          # roxo
+CORES_SERVICOS_LEGADAS = {
+    "Interior": "#3878e8", "Exterior": "#20a4b8", "Interior + Exterior": "#6f5ae0",
+    "Polimento": "#e8963c", "Proteção cerâmica": "#2ea05a", "Polimento de faróis": "#d4c23a",
+    "Wrap total": "#d1478f", "Wrap parcial": "#a45cc4",
 }
-COR_SERVICO_OMISSAO = "#8b95a6"         # cinzento-azulado, para serviços desconhecidos
+COR_SERVICO_OMISSAO = catalogo.COR_OMISSAO
+
+
+def _cores_servicos_atuais():
+    """{nome_pt: cor} a partir da tabela de serviços (fonte única)."""
+    return {s["nome_pt"]: (s.get("cor") or COR_SERVICO_OMISSAO)
+            for s in bd.listar_servicos(incluir_inativos=True)}
 
 
 def cor_do_servico(servico_pt):
-    """Cor estável de um serviço, a partir do nome canónico em português."""
-    return CORES_SERVICOS.get((servico_pt or "").strip(), COR_SERVICO_OMISSAO)
+    """Cor estável de um serviço pelo nome canónico (português)."""
+    nome = (servico_pt or "").strip()
+    return _cores_servicos_atuais().get(nome) or CORES_SERVICOS_LEGADAS.get(nome, COR_SERVICO_OMISSAO)
 
 
 def cores_servicos_legenda():
-    """Mapa nome -> cor para a legenda "Cores dos serviços" do painel,
-    incluindo a entrada de reserva para serviços fora do catálogo."""
-    return {**CORES_SERVICOS, "Outro serviço": COR_SERVICO_OMISSAO}
+    """Mapa nome -> cor para a legenda "Cores dos serviços" do painel: só os
+    serviços ATIVOS + a entrada de reserva para tudo o resto."""
+    return {**{s["nome_pt"]: (s.get("cor") or COR_SERVICO_OMISSAO)
+               for s in bd.listar_servicos()},
+            "Outro serviço": COR_SERVICO_OMISSAO}
+
+
+# Compat: código/legado que ainda importa CORES_SERVICOS como dict.
+CORES_SERVICOS = CORES_SERVICOS_LEGADAS
 
 
 # Estados de uma marcação tal como aparecem no calendário (chave CANÓNICA ->
@@ -1606,6 +1631,7 @@ def evento_calendario(agendamento, pedido=None):
         "preco": agendamento.get("preco"),
         "cor": cor_do_servico(agendamento.get("servico")),
         "total_centimos": total_centimos_agendamento(agendamento),
+        "preco_por_confirmar": preco_por_confirmar_agendamento(agendamento),
         "carrinho": linhas_carrinho_agendamento(agendamento),
         "criado_em": agendamento.get("criado_em"),
         "pedido": None,
@@ -1712,7 +1738,7 @@ def criar_pedido_orcamento(telefone, sessao, estado="rascunho"):
                 _wrap_tipo_nome(sessao),
                 _wrap_cor_acabamento_combinado(sessao),
                 estado,
-                datetime.utcnow().isoformat(),
+                tempo.iso_utc(),
                 json.dumps(sessao.get("carrinho", [])),
                 sessao.get("wrap_modo") or MODO_DETALHE,
             ),
@@ -1749,7 +1775,7 @@ def adicionar_fotografia(pedido_id, nome_ficheiro, mime_tipo):
     with obter_bd() as conn:
         conn.execute(
             "INSERT INTO fotografias (pedido_id, nome_ficheiro, mime_tipo, criado_em) VALUES (?, ?, ?, ?)",
-            (pedido_id, nome_ficheiro, mime_tipo, datetime.utcnow().isoformat()),
+            (pedido_id, nome_ficheiro, mime_tipo, tempo.iso_utc()),
         )
 
 
@@ -1836,7 +1862,7 @@ CAMPOS_LINHA_ORCAMENTO = ["id", "orcamento_id", "descricao", "quantidade", "prec
 
 
 def _agora_iso():
-    return datetime.utcnow().isoformat()
+    return tempo.iso_utc()
 
 
 def listar_linhas_orcamento(orcamento_id):
@@ -2020,11 +2046,10 @@ def dentro_da_janela_24h(telefone):
         ).fetchone()
     if not linha or not linha[0]:
         return False
-    try:
-        ultima = datetime.fromisoformat(linha[0])
-    except ValueError:
+    ultima_dt = tempo.parse_iso(linha[0])
+    if ultima_dt is None:
         return False
-    return (datetime.utcnow() - ultima) < timedelta(hours=24)
+    return (tempo.agora_utc() - ultima_dt) < timedelta(hours=24)
 
 
 # ---------------------------------------------------------------------------
@@ -3371,7 +3396,7 @@ RESERVA_TEMPORARIA_MINUTOS = 15
 
 def _limpar_reservas_expiradas(conn):
     conn.execute("DELETE FROM reservas_temporarias WHERE expira_em <= ?",
-                 (datetime.utcnow().isoformat(),))
+                 (tempo.iso_utc(),))
 
 
 def reter_horario(telefone, sessao):
@@ -3382,7 +3407,7 @@ def reter_horario(telefone, sessao):
     if not data or not hora:
         return False
     _, duracao_pt, servico_pt, _ = calcular_preco_duracao(sessao)
-    agora = datetime.utcnow()
+    agora = tempo.agora_utc()
     with obter_bd() as conn:
         _limpar_reservas_expiradas(conn)
         conn.execute(
@@ -3413,7 +3438,7 @@ def horarios_retidos(excluir_telefone=None, conn=None):
         _limpar_reservas_expiradas(c)
         return c.execute(
             "SELECT telefone, data, hora, servico, duracao FROM reservas_temporarias "
-            "WHERE expira_em > ?", (datetime.utcnow().isoformat(),)).fetchall()
+            "WHERE expira_em > ?", (tempo.iso_utc(),)).fetchall()
 
     if conn is not None:
         linhas = _ler(conn)
@@ -4849,12 +4874,13 @@ def requer_autenticacao(func):
     @wraps(func)
     def wrapper(*args, **kwargs):
         if not DASHBOARD_USER or not DASHBOARD_PASSWORD:
-            return Response("Painel não configurado.", 401)
+            return Response("Painel não configurado.", 503)
         auth = request.authorization
-        if not auth or auth.username != DASHBOARD_USER or auth.password != DASHBOARD_PASSWORD:
+        if (not auth or not hmac.compare_digest(auth.username or "", DASHBOARD_USER)
+                or not hmac.compare_digest(auth.password or "", DASHBOARD_PASSWORD)):
             return Response(
                 "Autenticação necessária.", 401,
-                {"WWW-Authenticate": 'Basic realm="Painel Spotless"'},
+                {"WWW-Authenticate": f'Basic realm="{BUSINESS_NAME} — Painel"'},
             )
         return func(*args, **kwargs)
     return wrapper
@@ -5129,6 +5155,26 @@ def api_agendamento_cancelar(id_agendamento):
     })
 
 
+@app.route("/api/agendamentos/<int:id_agendamento>/estado", methods=["POST"])
+@requer_autenticacao
+def api_agendamento_estado(id_agendamento):
+    """Marca uma marcação como CONCLUÍDA (completed) ou NÃO COMPARECEU
+    (no_show) a partir do painel. Só a partir de uma marcação ativa
+    (confirmed/pending). Cancelar e reagendar têm rotas próprias."""
+    dados = request.get_json(force=True, silent=True) or {}
+    novo = estados.normalizar(dados.get("estado"))
+    if novo not in (estados.COMPLETED, estados.NO_SHOW):
+        return jsonify(erro="Estado inválido (esperado 'completed' ou 'no_show')."), 400
+    ag = obter_agendamento(id_agendamento)
+    if not ag:
+        return jsonify(erro="Marcação não encontrada."), 404
+    if chave_estado(ag.get("estado")) not in (estados.CONFIRMED, estados.PENDING):
+        return jsonify(erro=f"Esta marcação já não está ativa (estado atual: {ag.get('estado')}).",
+                       estado=ag.get("estado")), 409
+    atualizar_estado_agendamento(id_agendamento, novo)
+    return _resposta_evento(id_agendamento, False)
+
+
 @app.route("/api/agendamentos/<int:id_agendamento>/reagendar", methods=["POST"])
 @requer_autenticacao
 def api_agendamento_reagendar(id_agendamento):
@@ -5168,10 +5214,17 @@ def media(nome_ficheiro):
     return send_from_directory(MEDIA_DIR, nome_ficheiro)
 
 
+def _escapar_html(texto):
+    return (str(texto).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            .replace('"', "&quot;").replace("'", "&#39;"))
+
+
 @app.route("/dashboard", methods=["GET"])
 @requer_autenticacao
 def dashboard():
-    return DASHBOARD_HTML
+    """HTML do painel com a identidade do negócio já substituída — o nome vem
+    sempre de BUSINESS_NAME (ambiente), nunca escrito à mão."""
+    return DASHBOARD_HTML.replace("{{BUSINESS_NAME}}", _escapar_html(BUSINESS_NAME))
 
 
 # String RAW (r"""), para o Python não tentar interpretar sequências de escape
@@ -5184,7 +5237,7 @@ DASHBOARD_HTML = r"""
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Painel de Agendamentos</title>
+<title>{{BUSINESS_NAME}} — Painel</title>
 <style>
   :root{
     --bg:#0d0f12; --panel:#15181d; --panel2:#1b1f26; --border:#262b33;
@@ -5528,7 +5581,7 @@ DASHBOARD_HTML = r"""
 <div class="wrap">
   <div class="topo">
     <div class="lista">
-      <h2>📅 Calendário</h2>
+      <h2>📅 {{BUSINESS_NAME}} — Calendário</h2>
       <div class="cal-barra">
         <div class="cal-grupo">
           <button class="cal-btn" onclick="calHoje()">Hoje</button>
@@ -5588,12 +5641,14 @@ DASHBOARD_HTML = r"""
   </div>
 
   <div class="lista" style="margin-top:14px;">
-    <h2>Agendamentos</h2>
+    <h2>Marcações</h2>
     <div id="conteudo"><div class="vazio">A carregar…</div></div>
   </div>
 
-  <div class="lista" style="margin-top:14px;">
-    <h2>Pedidos de orçamento (Wrap &amp; Proteção)</h2>
+  <!-- Bloco legado (pedidos de orcamento). Oculto: a rota /api/pedidos e as
+       tabelas continuam a existir apenas para dados antigos. -->
+  <div class="lista" style="margin-top:14px;" hidden>
+    <h2>Pedidos de orçamento (legado)</h2>
     <div id="conteudo-pedidos"><div class="vazio">A carregar…</div></div>
   </div>
 
@@ -5648,7 +5703,9 @@ function esc(valor){
 }
 
 function formatarCentimos(centimos){
-  return 'CHF ' + ((centimos||0)/100).toFixed(2);
+  // null/undefined = serviço sem preço definido -> "A confirmar" (nunca CHF 0).
+  if(centimos == null) return 'A confirmar';
+  return 'CHF ' + (centimos/100).toFixed(2);
 }
 
 async function carregar(){
@@ -5664,7 +5721,12 @@ async function carregar(){
   const clientes = new Set(dados.map(d => d.telefone));
   document.getElementById('st-clientes').textContent = clientes.size;
 
-  const receita = dados.filter(d => d.estado === 'confirmado').reduce((s,d) => s + (d.preco||0), 0);
+  // Receita estimada: só marcações ativas/realizadas COM preço definido
+  // (as de "preço a confirmar" não entram — nunca se soma 0 artificial).
+  const RECEITA_ESTADOS = ['confirmed', 'pending', 'completed'];
+  const receita = dados
+    .filter(d => RECEITA_ESTADOS.includes(chaveEstado(d.estado)) && d.preco != null)
+    .reduce((s,d) => s + Number(d.preco || 0), 0);
   document.getElementById('st-receita').textContent = 'CHF ' + receita.toFixed(0);
 
   const cont = document.getElementById('conteudo');
@@ -5676,7 +5738,9 @@ async function carregar(){
   let html = '<table><thead><tr><th>Cliente</th><th>Serviço</th><th>Data</th><th>Hora</th><th>Preço</th><th>Estado</th><th>Horário</th><th>Recebido em</th></tr></thead><tbody>';
   dados.forEach(d => {
     const criado = d.criado_em ? new Date(d.criado_em).toLocaleString('pt-PT') : '-';
-    const classeEstado = d.estado !== 'confirmado' ? 'estado-cancelado' : '';
+    const ce = chaveEstado(d.estado);
+    const classeEstado = (ce === 'confirmed' || ce === 'pending') ? '' : 'estado-cancelado';
+    const estadoRotulo = (infoEstado(d.estado) || {}).nome || d.estado;
     // A tabela diz, por texto e ícone, se o registo ainda ocupa o horário.
     const bloqueia = evBloqueiaHorario(d);
     const horario = bloqueia
@@ -5687,8 +5751,8 @@ async function carregar(){
       <td><span class="tag">${esc(d.servico)}</span>${d.extra ? '<br><span style="color:var(--muted);font-size:12px;">+ '+esc(d.extra)+'</span>' : ''}</td>
       <td>${esc(d.data) || '-'}</td>
       <td>${esc(d.hora) || '-'}</td>
-      <td>${d.preco ? 'CHF '+esc(d.preco) : '-'}</td>
-      <td class="${classeEstado}">${esc(d.estado)}</td>
+      <td>${d.preco != null ? 'CHF '+esc(d.preco) : '<span style="color:var(--muted);">A confirmar</span>'}</td>
+      <td class="${classeEstado}">${esc(estadoRotulo)}</td>
       <td>${horario}</td>
       <td style="color:var(--muted);">${esc(criado)}</td>
     </tr>`;
@@ -6029,12 +6093,17 @@ function calAjustarAlturaFaixa(){
 // O ESTADO nunca é comunicado só pela cor (a cor identifica o SERVIÇO):
 // cada evento leva sempre o nome do estado em texto, em todas as vistas.
 const CAL_ESTADOS = [
-  {id: 'confirmado', nome: 'Confirmado', cor: '#3878e8', classe: 'est-confirmado'},
-  {id: 'concluido',  nome: 'Concluído',  cor: '#2ea05a', classe: 'est-concluido'},
-  {id: 'reagendado', nome: 'Reagendado', cor: '#9678c8', classe: 'est-reagendado'},
-  {id: 'cancelado',  nome: 'Cancelado',  cor: '#e05252', classe: 'est-cancelado',
-   rotuloFiltro: 'Cancelados (horário livre)'},
+  {id: 'confirmed', nome: 'Confirmada',     cor: '#3878e8', classe: 'est-confirmado'},
+  {id: 'pending',   nome: 'A aprovar',      cor: '#d4a017', classe: 'est-confirmado'},
+  {id: 'completed', nome: 'Concluída',      cor: '#2ea05a', classe: 'est-concluido'},
+  {id: 'no_show',   nome: 'Não compareceu', cor: '#9678c8', classe: 'est-reagendado'},
+  {id: 'cancelled', nome: 'Cancelada',      cor: '#e05252', classe: 'est-cancelado',
+   rotuloFiltro: 'Canceladas (horário livre)'},
 ];
+// Mapa de estados LEGADOS (português) -> canónico, para dados antigos em cache.
+const ESTADO_LEGADO = {confirmado:'confirmed', confirmada:'confirmed', pendente:'pending',
+  concluido:'completed', concluida:'completed', cancelado:'cancelled', cancelada:'cancelled',
+  reagendado:'cancelled', reagendada:'cancelled'};
 // Cor do indicador "Agora" — laranja quente, deliberadamente DIFERENTE do
 // vermelho dos cancelamentos, para nunca se confundirem.
 const COR_AGORA = '#ff7a59';
@@ -6044,13 +6113,13 @@ const COR_AGORA = '#ff7a59';
 // o SERVIÇO, o texto diz o ESTADO, e um terceiro texto (com ícone e borda
 // próprios) diz se o horário está BLOQUEADO ou LIVRE.
 function evCancelado(ev){
-  return chaveEstado(ev.estado) === 'cancelado';
+  return chaveEstado(ev.estado) === 'cancelled';
 }
 function evBloqueiaHorario(ev){
   if(typeof ev.bloqueia_horario === 'boolean') return ev.bloqueia_horario;
   const chave = chaveEstado(ev.estado);
-  if(chave === 'confirmado' || chave === 'concluido') return true;
-  if(chave === 'cancelado') return Number(ev.bloqueia_horario || 0) === 1;
+  if(chave === 'confirmed' || chave === 'completed' || chave === 'pending') return true;
+  if(chave === 'cancelled') return Number(ev.bloqueia_horario || 0) === 1;
   return false;
 }
 // '' (marcação ativa normal) | 'bloqueado' | 'livre'
@@ -6099,14 +6168,16 @@ const MESES = ['janeiro','fevereiro','março','abril','maio','junho',
 
 let calVista = 'semana';                          // semana (por defeito) | dia | mes
 let calAncora = new Date();
-let calFiltros = {confirmado: true, concluido: true, reagendado: false, cancelado: false};
+let calFiltros = {confirmed: true, pending: true, completed: true, no_show: false, cancelled: false};
 let calEventos = [];                              // eventos do intervalo atual
 const calPorId = new Map();                       // cache id -> evento (dossiê)
 
-// "concluído" chega da BD com acento; a chave dos filtros/classes não tem.
+// Aceita canónico (EN), legado (PT) e acentos; devolve sempre o canónico.
 function chaveEstado(estado){
-  const limpo = String(estado || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
-  return CAL_ESTADOS.some(e => e.id === limpo) ? limpo : 'confirmado';
+  let limpo = String(estado || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .trim().toLowerCase().replace(/-/g, '_');
+  if(ESTADO_LEGADO[limpo]) limpo = ESTADO_LEGADO[limpo];
+  return CAL_ESTADOS.some(e => e.id === limpo) ? limpo : 'confirmed';
 }
 function infoEstado(estado){
   const chave = chaveEstado(estado);
@@ -6208,7 +6279,7 @@ function calDesenharControlos(){
   const filtros = document.getElementById('cal-filtros');
   if(!filtros.dataset.pronto){
     filtros.innerHTML = CAL_ESTADOS.map(e =>
-      '<label class="cal-filtro" title="' + esc(e.id === 'cancelado'
+      '<label class="cal-filtro" title="' + esc(e.id === 'cancelled'
           ? 'As marcações canceladas que CONTINUAM a bloquear o horário aparecem sempre — se não '
             + 'aparecessem, o calendário mostrava como livre um horário que está ocupado.'
           : 'Mostrar/ocultar marcações neste estado.')
@@ -6449,7 +6520,8 @@ function calHtmlEvento(ev, estilo, classeExtra, altura, estreito){
   const disp = classeDisponibilidade(ev);
   // nos cartões em cascata a altura é livre -> cabe a frase toda
   const cascata = (classeExtra || '').indexOf('cal-agenda-ev') !== -1;
-  const total = ev.total_centimos ? formatarCentimos(ev.total_centimos) : '';
+  const total = ev.total_centimos != null ? formatarCentimos(ev.total_centimos)
+              : (ev.preco_por_confirmar ? 'A confirmar' : '');
   const hora = esc(ev.dia_inteiro ? 'Dia inteiro' : hhmmDeIso(ev.inicio));
   const quem = esc(ev.primeiro_nome || ev.telefone || '');
   const servico = esc(ev.servico || '');
@@ -6744,7 +6816,7 @@ function mostrarPreview(id, elemento){
     ? '<img src="/media/' + encodeURIComponent(p.fotografias[0].nome_ficheiro) + '" alt="">' : '';
   const veiculo = p.veiculo
     ? '<div>🚗 ' + esc(p.veiculo) + (p.ano_veiculo ? ' (' + esc(p.ano_veiculo) + ')' : '') + '</div>' : '';
-  const podeAgir = chaveEstado(ev.estado) === 'confirmado';
+  const podeAgir = (chaveEstado(ev.estado) === 'confirmed' || chaveEstado(ev.estado) === 'pending');
   caixa.innerHTML =
       '<div class="pv-t"><i class="cal-ponto" style="background:' + esc(cor) + '"></i> '
     + esc(ev.nome || ev.telefone || '') + '</div>'
@@ -6855,7 +6927,7 @@ async function abrirPainelAgendamento(id){
         + '💬 Contactar no WhatsApp</a></div>';
   // As MESMAS ações da pré-visualização, aqui sempre disponíveis — é assim
   // que telemóvel e tablet lhes chegam, sem depender de hover.
-  if(chaveEstado(ev.estado) === 'confirmado'){
+  if((chaveEstado(ev.estado) === 'confirmed' || chaveEstado(ev.estado) === 'pending')){
     html += '<div class="pv-acoes" id="painel-acoes-marcacao">'
           + '<button data-acao="reagendar">✏️ Alterar/Reagendar</button>'
           + '<button class="perigo" data-acao="cancelar">❌ Cancelar marcação</button>'
@@ -7146,15 +7218,40 @@ abrirPedidoPeloHash();
 
 @app.route("/versao", methods=["GET"])
 def versao():
-    return jsonify(versao="v5.9-preencher-janela", fluxos=["limpeza", "estetica", "wrap"],
-                   idiomas=list(IDIOMAS_VALIDOS)), 200
+    return jsonify(versao="daniela-beauty-v1.0", negocio=BUSINESS_NAME,
+                   fluxo="servico->dia->hora->confirmar",
+                   idiomas=list(IDIOMAS_VALIDOS),
+                   servicos=[s["id"] for s in bd.listar_servicos()]), 200
 
 
 @app.route("/webhook", methods=["GET"])
 def verificar_webhook():
-    if request.args.get("hub.verify_token") == VERIFY_TOKEN:
+    """Handshake de verificação da Meta. Sem VERIFY_TOKEN configurado, recusa
+    (falha fechado — nunca ecoa o challenge às cegas)."""
+    if not VERIFY_TOKEN:
+        return "VERIFY_TOKEN não configurado", 503
+    if (request.args.get("hub.mode") == "subscribe"
+            and request.args.get("hub.verify_token") == VERIFY_TOKEN):
         return request.args.get("hub.challenge", ""), 200
     return "Token inválido", 403
+
+
+def verificar_assinatura(corpo_bruto: bytes) -> bool:
+    """Valida o header X-Hub-Signature-256 (HMAC-SHA256 do corpo com APP_SECRET).
+
+    • APP_SECRET definido -> assinatura é OBRIGATÓRIA e verificada
+      (comparação em tempo constante). É a postura de produção.
+    • APP_SECRET ausente -> aceita, mas AVISA no log. Só aceitável em
+      desenvolvimento local.
+    """
+    if not APP_SECRET:
+        print("[webhook] APP_SECRET não configurado — assinatura NÃO verificada (ok só em dev)")
+        return True
+    recebida = request.headers.get("X-Hub-Signature-256", "")
+    if not recebida.startswith("sha256="):
+        return False
+    esperada = "sha256=" + hmac.new(APP_SECRET.encode(), corpo_bruto, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(esperada, recebida)
 
 
 def sessao_preservando_perfil(sessao):
@@ -7357,7 +7454,14 @@ def voltar_um_passo(de, idioma, sessao):
 
 @app.route("/webhook", methods=["POST"])
 def receber_mensagem():
-    data = request.get_json(force=True)
+    corpo_bruto = request.get_data()
+    if not verificar_assinatura(corpo_bruto):
+        # Não revela porquê; a Meta nunca deve chegar aqui com APP_SECRET certo.
+        return jsonify(status="assinatura invalida"), 403
+    try:
+        data = json.loads(corpo_bruto.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return jsonify(status="ignorado"), 200
     try:
         entry = data["entry"][0]["changes"][0]["value"]
         if "messages" not in entry:
@@ -7365,6 +7469,12 @@ def receber_mensagem():
 
         msg = entry["messages"][0]
         de = msg["from"]
+
+        # IDEMPOTÊNCIA: a Meta reenvia o mesmo webhook se não receber o 200 a
+        # tempo. Uma mensagem já tratada é reconhecida em silêncio — sem
+        # repetir o passo, sem responder de novo, sem duplicar marcações.
+        if mensagem_ja_processada(msg.get("id")):
+            return jsonify(status="repetida"), 200
 
         # --- Ações INTERNAS da equipa ---------------------------------------
         # Processadas antes de qualquer carregamento/tratamento de sessão,
