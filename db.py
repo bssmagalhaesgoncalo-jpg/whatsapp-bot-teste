@@ -272,6 +272,18 @@ def _m6_backfill_estruturado(conn):
         )
 
 
+def _m7_estados_canonicos(conn):
+    """Vocabulário de estados PT -> canónico EN
+    (confirmado->confirmed, cancelado->cancelled, concluído->completed,
+    reagendado->cancelled). Não destrói nada — só renomeia o valor da coluna."""
+    import estados as _est
+    linhas = conn.execute("SELECT DISTINCT estado FROM agendamentos").fetchall()
+    for (valor,) in linhas:
+        canonico = _est.normalizar(valor)
+        if canonico != (valor or ""):
+            conn.execute("UPDATE agendamentos SET estado = ? WHERE estado IS ?", (canonico, valor))
+
+
 MIGRACOES = [
     (1, "baseline", _m1_baseline),
     (2, "colunas_legadas", _m2_colunas_legadas),
@@ -279,6 +291,7 @@ MIGRACOES = [
     (4, "agendamentos_estruturados", _m4_agendamentos_estruturados),
     (5, "servicos_catalogo", _m5_servicos),
     (6, "backfill_estruturado", _m6_backfill_estruturado),
+    (7, "estados_canonicos", _m7_estados_canonicos),
 ]
 
 
