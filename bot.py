@@ -1,64 +1,79 @@
 """
-Bot "rececionista digital" via WhatsApp Cloud API para a Spotless Car Detail
-(oficina fictícia de testes). Menu principal com 4 opções (Marcar / Orçamento /
-Gerir marcação / Falar com a equipa), fluxos diferentes por tipo de serviço
-(Limpeza / Estética / Wrap), comandos permanentes (MENU, VOLTAR, CANCELAR,
-AJUDA, HUMANO, GERIR), recuperação de sessão abandonada, indicador de
-progresso, resumo com preço e duração estimada, confirmação final mais
-completa, e seleção de idioma (PT/DE/EN) como primeira interação.
+Bot "rececionista digital" via WhatsApp Cloud API para a DANIELA BEAUTY.
 
-Configuração necessária (variáveis de ambiente):
-  WHATSAPP_TOKEN       - access token (temporário ou permanente) da Meta
-  PHONE_NUMBER_ID      - ID do número de teste/produção (em API Setup)
-  VERIFY_TOKEN         - qualquer string à tua escolha, usada na verificação do webhook
-  PROVIDER_WHATSAPP    - número do prestador de serviço em formato internacional, ex: 41795886305
+Fluxo do cliente:
+  idioma -> serviço -> dia -> hora disponível -> resumo -> confirmar
+  -> marcação criada (o horário fica indisponível) -> confirmação.
+O cliente pode ainda consultar, reagendar e cancelar a sua marcação.
 
-Como correr:
-  pip install flask requests
-  export WHATSAPP_TOKEN=... PHONE_NUMBER_ID=... VERIFY_TOKEN=... PROVIDER_WHATSAPP=...
-  python bot.py
+Comandos permanentes em texto livre: MENU, VOLTAR, CANCELAR, AJUDA, HUMANO,
+GERIR, IDIOMA. Seleção de idioma (PT/DE/EN) como primeira interação.
 
-Nota sobre idiomas: as mensagens para o CLIENTE existem em português (pt),
-alemão (de) e inglês (en) através do sistema central `TEXTOS` + funções
-`t()`/`tx()` abaixo. As notificações INTERNAS para o negócio
-(PROVIDER_WHATSAPP) mantêm-se sempre em português, por decisão do dono do
-negócio. No alemão usa-se sempre "ss", nunca "ß".
+Configuração: TUDO vem do ambiente — ver `.env.example` e o módulo `config`.
+Não há segredos nem números de teste embutidos no código.
+
+Arquitetura (Fase 0 + Fase 1):
+  config.py    -> variáveis de ambiente, sem defaults sensíveis
+  db.py        -> ligação + migrações versionadas (SQLite agora, Postgres-ready)
+  catalogo.py  -> FONTE ÚNICA dos serviços (nome/duração/preço/cor)
+  parsing.py   -> interpretação de datas/horas/durações LEGADAS (texto)
+  tempo.py     -> "agora" e fuso Europe/Zurich (timezone-aware, trata DST)
+
+Nota sobre idiomas: as mensagens para o CLIENTE existem em pt/de/en via o
+sistema central `TEXTOS` + `t()`/`tx()`. As notificações INTERNAS para o
+negócio (PROVIDER_WHATSAPP) são sempre em português. No alemão usa-se sempre
+"ss", nunca "ß".
 """
 
 import os
 import re
+import io
+import csv
 import json
-import sqlite3
+import hmac
+import hashlib
+import sqlite3  # noqa: F401 — mantido para compatibilidade de tipos/excepções legadas
 import requests
 import unicodedata
 from functools import wraps
 from datetime import date, timedelta, datetime
 from flask import Flask, request, jsonify, send_from_directory, Response
 
+import config
+import db as bd
+import catalogo
+import tempo
+from parsing import data_iso_de_texto, hora_hhmm_de_texto, duracao_para_minutos
+
 app = Flask(__name__)
 
-TOKEN = os.environ.get("WHATSAPP_TOKEN", "")
-PHONE_NUMBER_ID = os.environ.get("PHONE_NUMBER_ID", "1052227394639217")
-VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN", "teste123")
-PROVIDER_WHATSAPP = os.environ.get("PROVIDER_WHATSAPP", "41795886305")
+# --- Aliases retro-compatíveis: o resto do ficheiro (e os testes) continuam a
+# usar estes nomes; a verdade única vive em `config`. ----------------------
+TOKEN = config.WHATSAPP_TOKEN
+PHONE_NUMBER_ID = config.PHONE_NUMBER_ID
+VERIFY_TOKEN = config.VERIFY_TOKEN
+PROVIDER_WHATSAPP = config.PROVIDER_WHATSAPP
+APP_SECRET = config.APP_SECRET
+MEDIA_DIR = config.MEDIA_DIR
+DASHBOARD_USER = config.DASHBOARD_USER
+DASHBOARD_PASSWORD = config.DASHBOARD_PASSWORD
+PUBLIC_BASE_URL = config.PUBLIC_BASE_URL
 
-# Pasta (local, configurável) onde as fotografias dos pedidos de orçamento
-# são guardadas em disco — nunca dentro do SQLite. Ver guardar_media_local().
-MEDIA_DIR = os.environ.get("MEDIA_DIR", "media_pedidos")
+BUSINESS_NAME = config.BUSINESS_NAME
+BUSINESS_ADDRESS = config.BUSINESS_ADDRESS
+# Nomes históricos, ainda usados em muitas mensagens/painel — apontam para a
+# identidade única configurada por ambiente.
+NOME_OFICINA = BUSINESS_NAME
+MORADA_OFICINA = BUSINESS_ADDRESS
 
-# Credenciais de autenticação HTTP Basic do painel/API (falha fechado: sem
-# ambas definidas, o acesso é sempre recusado). Ver requer_autenticacao().
-DASHBOARD_USER = os.environ.get("DASHBOARD_USER", "")
-DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "")
 
-# URL pública onde este serviço está publicado (ex.: https://o-teu-servico.onrender.com).
-# Usada só para construir a ligação direta ao dossiê de um pedido no painel,
-# enviada na notificação interna (ver link_dossie_pedido()). Opcional: se não
-# estiver definida, tenta-se deduzir do próprio pedido HTTP em curso; se isso
-# também não for possível (ex.: fora de um pedido Flask), a ligação é omitida.
-PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
+def graph_url():
+    """URL do endpoint de envio da Meta, ou None se PHONE_NUMBER_ID faltar."""
+    return config.graph_url()
 
-GRAPH_URL = f"https://graph.facebook.com/v21.0/{PHONE_NUMBER_ID}/messages"
+
+# Compat: código antigo referencia GRAPH_URL como string.
+GRAPH_URL = config.graph_url() or ""
 
 NOME_OFICINA = "Spotless Car Detail (TESTE)"
 MORADA_OFICINA = "Spotless Car Detail, Zermatt"
@@ -1131,7 +1146,8 @@ NOME_CATEGORIA = {c["id"]: c["titulo"] for c in CATEGORIAS_MARCAR}
 # (esquema inalterado — o idioma escolhido vive dentro do JSON da sessão,
 # tal como "nome", não precisa de coluna própria)
 # ---------------------------------------------------------------------------
-DB_PATH = os.environ.get("SESSOES_DB", "sessoes.db")
+# Compat: caminho do SQLite (a verdade está em config.SQLITE_PATH).
+DB_PATH = config.SQLITE_PATH
 
 # Estados possíveis de um pedido de orçamento (Wrap & Proteção). Só usados
 # internamente/no dashboard — não fazem parte do texto traduzido ao cliente.
@@ -1150,180 +1166,17 @@ ESTADOS_PEDIDO_ATIVOS = ("novo", "em análise", "orçamento enviado", "alteraç�
 
 
 def obter_bd():
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS sessoes (telefone TEXT PRIMARY KEY, dados TEXT NOT NULL)"
-    )
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS agendamentos ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-        "telefone TEXT NOT NULL, "
-        "nome TEXT, "
-        "categoria TEXT, "
-        "servico TEXT NOT NULL, "
-        "extra TEXT, "
-        "data TEXT, "
-        "hora TEXT, "
-        "preco REAL, "
-        "duracao TEXT, "
-        "estado TEXT DEFAULT 'confirmado', "
-        "criado_em TEXT NOT NULL)"
-    )
-    # Pedidos de orçamento com fotografias (fluxo Wrap & Proteção). Estrutura
-    # separada dos agendamentos, pois um pedido de orçamento ainda não é uma
-    # marcação. `agendamento_id` é reservado (nulo por agora) para uma futura
-    # funcionalidade de calendário poder associar um pedido a uma marcação,
-    # sem duplicar dados — não implementado nesta fase.
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS pedidos_orcamento ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-        "telefone TEXT NOT NULL, "
-        "nome TEXT, "
-        "veiculo TEXT, "
-        "ano_veiculo TEXT, "
-        "tipo_wrap TEXT, "
-        "cor_acabamento TEXT, "
-        "estado TEXT DEFAULT 'novo', "
-        "agendamento_id INTEGER, "
-        "criado_em TEXT NOT NULL)"
-    )
-    # Fotografias associadas a um pedido de orçamento. Só o NOME do ficheiro
-    # é guardado aqui — o conteúdo binário da imagem vive em disco (pasta
-    # MEDIA_DIR), nunca dentro do SQLite.
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS fotografias ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-        "pedido_id INTEGER NOT NULL, "
-        "nome_ficheiro TEXT NOT NULL, "
-        "mime_tipo TEXT, "
-        "criado_em TEXT NOT NULL)"
-    )
-    # Migração leve: guarda o carrinho (JSON) junto da marcação/pedido, para
-    # futuramente alimentar o dashboard, orçamento, pagamento e calendário,
-    # sem duplicar dados. Em bases de dados já existentes (criadas antes
-    # desta funcionalidade), a coluna ainda não existe — adiciona-a agora.
-    for tabela in ("agendamentos", "pedidos_orcamento"):
-        try:
-            conn.execute(f"ALTER TABLE {tabela} ADD COLUMN carrinho_json TEXT")
-        except sqlite3.OperationalError:
-            pass  # coluna já existe
-    # Migração leve: distingue no painel um pedido rápido de uma configuração
-    # detalhada ou de um pedido de contacto com especialista. Pedidos antigos
-    # ficam com a coluna a NULL e são apresentados como "detalhe" (era o único
-    # modo existente antes desta funcionalidade).
-    try:
-        conn.execute("ALTER TABLE pedidos_orcamento ADD COLUMN modo_pedido TEXT")
-    except sqlite3.OperationalError:
-        pass  # coluna já existe
+    """Ligação à base de dados — agora um wrapper fino sobre `db.ligacao()`.
 
-    # Orçamentos criados no painel para um pedido, e respetivas linhas
-    # (descrição + quantidade + preço). Estrutura própria, associada ao ID do
-    # pedido — nunca reaproveita as colunas de pedidos_orcamento. Cada edição
-    # de um orçamento já ENVIADO cria uma nova "versao" (nunca reescreve a
-    # anterior), para preservar sempre o que foi efetivamente enviado ao
-    # cliente (ver obter_ou_criar_rascunho_orcamento). Tabelas novas -> não
-    # precisam de ALTER TABLE, só de CREATE TABLE IF NOT EXISTS (compatível
-    # com bases de dados antigas, que simplesmente ainda não as têm).
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS orcamentos ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-        "pedido_id INTEGER NOT NULL, "
-        "versao INTEGER NOT NULL, "
-        "estado TEXT NOT NULL DEFAULT 'rascunho', "
-        "desconto_centimos INTEGER NOT NULL DEFAULT 0, "
-        "observacoes TEXT, "
-        "validade_dias INTEGER, "
-        "criado_em TEXT NOT NULL, "
-        "atualizado_em TEXT NOT NULL, "
-        "enviado_em TEXT, "
-        "respondido_em TEXT)"
-    )
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS orcamento_linhas ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-        "orcamento_id INTEGER NOT NULL, "
-        "descricao TEXT NOT NULL, "
-        "quantidade INTEGER NOT NULL DEFAULT 1, "
-        "preco_centimos INTEGER NOT NULL DEFAULT 0, "
-        "criado_em TEXT NOT NULL)"
-    )
-    # Última mensagem recebida de cada cliente — usada só para saber se ainda
-    # estamos dentro da janela de 24h de atendimento ao cliente da Meta (fora
-    # dela, mensagens iniciadas pelo negócio como o envio de um orçamento têm
-    # de usar um template pré-aprovado; ver dentro_da_janela_24h()). É uma
-    # tabela à parte da sessão (nunca dentro do JSON de "sessoes"), para nunca
-    # interferir com o formato/conteúdo já testado da sessão.
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS interacoes_cliente ("
-        "telefone TEXT PRIMARY KEY, "
-        "ultima_mensagem_em TEXT NOT NULL)"
-    )
-    # Histórico de reagendamentos feitos pelo painel. Tabela NOVA e à parte:
-    # a migração é automática e não destrutiva (CREATE TABLE IF NOT EXISTS),
-    # por isso bases de dados antigas continuam a funcionar tal e qual.
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS agendamento_historico ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-        "agendamento_id INTEGER NOT NULL, "
-        "data_anterior TEXT, "
-        "hora_anterior TEXT, "
-        "data_nova TEXT, "
-        "hora_nova TEXT, "
-        "origem TEXT NOT NULL DEFAULT 'dashboard', "
-        "alterado_em TEXT NOT NULL)"
-    )
-    # -----------------------------------------------------------------------
-    # bloqueia_horario — separa DEFINITIVAMENTE o estado da marcação da
-    # disponibilidade do horário: 0 = horário livre, 1 = horário bloqueado.
-    # Uma marcação pode estar cancelada e o negócio decidir na mesma se
-    # aquele horário volta ao mercado ou não (ver libertar_horario_ao_cancelar).
-    #
-    # Migração automática e NÃO destrutiva: a coluna nasce com DEFAULT 1
-    # (uma marcação nova ocupa mesmo o horário), mas no instante em que é
-    # criada as marcações antigas já canceladas ou reagendadas são postas a
-    # 0 — senão horários que hoje estão livres começavam de repente a
-    # aparecer bloqueados, sem ninguém ter pedido nada. O UPDATE corre uma
-    # única vez: nos arranques seguintes o ALTER falha (coluna já existe) e
-    # as escolhas entretanto feitas no painel ficam intactas.
-    # -----------------------------------------------------------------------
-    try:
-        conn.execute("ALTER TABLE agendamentos ADD COLUMN bloqueia_horario INTEGER NOT NULL DEFAULT 1")
-        conn.execute("UPDATE agendamentos SET bloqueia_horario = 0 "
-                     "WHERE LOWER(COALESCE(estado, '')) IN ('cancelado', 'reagendado')")
-        # Fecha já a transação implícita aberta por este UPDATE: quem recebe
-        # esta ligação pode precisar de abrir a sua própria transação com
-        # BEGIN IMMEDIATE (cancelar/reagendar/gravar marcação) e o SQLite não
-        # deixa abrir uma transação dentro de outra.
-        conn.commit()
-    except sqlite3.OperationalError:
-        pass  # coluna já existe — nada a migrar
-    # Configurações do negócio editáveis no painel (chave -> valor em texto).
-    # Tabela NOVA: CREATE TABLE IF NOT EXISTS chega, bases de dados antigas
-    # continuam a funcionar exatamente na mesma e ganham os valores por
-    # omissão definidos em CONFIGURACOES_OMISSAO.
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS configuracoes ("
-        "chave TEXT PRIMARY KEY, "
-        "valor TEXT NOT NULL, "
-        "atualizado_em TEXT NOT NULL)"
-    )
-    # Reservas TEMPORÁRIAS: o horário que um cliente acabou de escolher fica
-    # retido em nome dele enquanto está a rever e a confirmar a marcação, e
-    # deixa de ser oferecido a mais ninguém. Não é uma marcação — expira
-    # sozinha (ver RESERVA_TEMPORARIA_MINUTOS) e nunca aparece no calendário
-    # nem no painel. Uma linha por número: um cliente só configura uma
-    # marcação de cada vez. Tabela nova -> migração automática e inofensiva.
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS reservas_temporarias ("
-        "telefone TEXT PRIMARY KEY, "
-        "data TEXT NOT NULL, "
-        "hora TEXT NOT NULL, "
-        "servico TEXT, "
-        "duracao TEXT, "
-        "criado_em TEXT NOT NULL, "
-        "expira_em TEXT NOT NULL)"
-    )
-    return conn
+    Diferenças face à versão antiga:
+      • já NÃO cria tabelas nem corre ALTER TABLE a cada chamada — o schema
+        é construído por migrações versionadas (ver db.MIGRACOES), aplicadas
+        uma única vez no arranque;
+      • a ligação é sempre FECHADA no fim do `with` (antes ficava aberta).
+
+    Continua a usar-se exatamente como antes: `with obter_bd() as conn:`.
+    """
+    return bd.ligacao()
 
 
 # ---------------------------------------------------------------------------
@@ -1628,56 +1481,10 @@ def horario_livre_de_uma_marcacao(agendamento):
         and not agendamento_bloqueia_horario(agendamento)
 
 
-def data_iso_de_texto(texto):
-    """"02.09.2026 (qua)" -> "2026-09-02". Ignora o dia da semana e qualquer
-    texto extra. Devolve None se não houver uma data válida."""
-    achado = re.search(r"(\d{1,2})[./-](\d{1,2})[./-](\d{4})", str(texto or ""))
-    if not achado:
-        return None
-    dia, mes, ano = (int(x) for x in achado.groups())
-    try:
-        return date(ano, mes, dia).isoformat()
-    except ValueError:
-        return None
-
-
-def hora_hhmm_de_texto(texto):
-    """"🕝 14:30" -> "14:30". Ignora emojis e texto à volta. None se
-    não houver uma hora válida."""
-    achado = re.search(r"(\d{1,2})[:hH](\d{2})", str(texto or ""))
-    if not achado:
-        return None
-    horas, minutos = int(achado.group(1)), int(achado.group(2))
-    if not (0 <= horas <= 23 and 0 <= minutos <= 59):
-        return None
-    return f"{horas:02d}:{minutos:02d}"
-
-
-def duracao_para_minutos(texto):
-    """Converte a duração guardada em (minutos, dia_inteiro).
-
-    Aceita "45min", "1h", "1h30", "2h", "3h", "aproximadamente 1h", "1 dia"
-    e "1 Tag"/"1 day". "1 dia" devolve (duração da grelha, True) — é
-    apresentado como serviço de dia inteiro. Devolve (None, False) quando não
-    consegue interpretar nada."""
-    bruto = str(texto or "").strip().lower()
-    if not bruto:
-        return None, False
-    if re.search(r"\d+\s*(dia|dias|tag|tage|day|days)\b", bruto):
-        return DURACAO_DIA_INTEIRO_MIN, True
-
-    # "1h30" / "1h 30" / "2h" (as horas podem trazer minutos colados)
-    achado = re.search(r"(\d+)\s*[hH](?:\s*(\d{1,2}))?", bruto)
-    if achado:
-        minutos = int(achado.group(1)) * 60 + int(achado.group(2) or 0)
-        return (minutos, False) if minutos > 0 else (None, False)
-
-    # "45min" / "45 minutos"
-    achado = re.search(r"(\d+)\s*(min|minuto|minutos|minuten)\b", bruto)
-    if achado:
-        minutos = int(achado.group(1))
-        return (minutos, False) if minutos > 0 else (None, False)
-    return None, False
+# data_iso_de_texto / hora_hhmm_de_texto / duracao_para_minutos vivem agora em
+# `parsing.py` (importadas no topo). São a interpretação de datas/horas/durações
+# LEGADAS gravadas como texto de apresentação; as marcações novas já gravam
+# colunas estruturadas.
 
 
 def evento_calendario(agendamento, pedido=None):
@@ -2156,8 +1963,15 @@ def dentro_da_janela_24h(telefone):
 # Envio de mensagens
 # ---------------------------------------------------------------------------
 def enviar(payload):
+    url = graph_url()
+    if not url or not TOKEN:
+        # Sem credenciais WhatsApp configuradas: não rebenta (útil em testes e
+        # no arranque antes de configurar o ambiente). NUNCA imprime o token.
+        print("[enviar] WHATSAPP não configurado (WHATSAPP_TOKEN / PHONE_NUMBER_ID) — envio ignorado")
+        return None
     headers = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
-    r = requests.post(GRAPH_URL, headers=headers, json=payload, timeout=10)
+    r = requests.post(url, headers=headers, json=payload, timeout=10)
+    # Status + corpo ajudam a depurar; o token vai só no header, nunca no log.
     print("Resposta da Meta:", r.status_code, r.text)
     return r
 

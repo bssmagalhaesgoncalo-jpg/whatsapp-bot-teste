@@ -2,5 +2,14 @@
 __pycache__/
 *.py[cod]
 .env
+.env.*
+!.env.example
 *.db
+*.db-wal
+*.db-shm
 media_pedidos/
+.venv/
+venv/
+.pytest_cache/
+.claude/
+skills-lock.json
