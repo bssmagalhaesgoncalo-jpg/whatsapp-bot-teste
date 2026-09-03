@@ -604,7 +604,8 @@ def criar_servico(dados: dict) -> str:
 
 def atualizar_servico(servico_id: str, dados: dict):
     campos, valores = [], []
-    for col in ("nome_pt", "nome_de", "nome_en", "duracao_min", "preco_cents", "ativo", "cor", "ordem"):
+    for col in ("nome_pt", "nome_de", "nome_en", "duracao_min", "preco_cents", "ativo", "cor",
+                "ordem", "rebook_days", "buffer_before_min", "buffer_after_min"):
         if col in dados:
             v = dados[col]
             if col == "ativo":

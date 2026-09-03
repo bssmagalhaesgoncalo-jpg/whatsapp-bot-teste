@@ -2423,6 +2423,512 @@ def _escapar_html(texto):
             .replace('"', "&quot;").replace("'", "&#39;"))
 
 
+# ===========================================================================
+# API do PAINEL OPERACIONAL (novo) — cockpit, serviços, horários, clientes.
+# O painel /dashboard antigo continua a funcionar durante a migração.
+# ===========================================================================
+_TENANT = 1  # V1: single-tenant. resolve_tenant(request) chega na V2.
+
+
+@app.route("/api/painel/hoje", methods=["GET"])
+@requer_autenticacao
+def api_painel_hoje():
+    from operations import engine as op
+    return jsonify(
+        cartao=op.cartao_operacional(_TENANT),
+        atencao=op.attention_items(_TENANT),
+        resumo=op.resumo_hoje(_TENANT),
+        agenda=[op._resumo(m, _TENANT) | {"hora": m["hhmm"]}
+                for m in op._marcacoes_de_hoje(_TENANT) if m["hhmm"]],
+    ), 200
+
+
+@app.route("/api/agendamentos/<int:id_agendamento>/op", methods=["POST"])
+@requer_autenticacao
+def api_agendamento_op(id_agendamento):
+    """Transição operacional: arrived / in_progress / done (Fase E3-E5)."""
+    from operations import engine as op
+    novo = (request.get_json(silent=True) or {}).get("op") or ""
+    try:
+        cartao = op.transicao_operacional(id_agendamento, novo, _TENANT)
+    except ValueError:
+        return jsonify(erro="Transição inválida (arrived / in_progress / done)."), 400
+    except LookupError:
+        return jsonify(erro="Marcação não encontrada."), 404
+    disparar_automacoes()
+    return jsonify(ok=True, cartao=cartao), 200
+
+
+@app.route("/api/painel/atraso", methods=["POST"])
+@requer_autenticacao
+def api_painel_atraso():
+    """Pré-visualização de um atraso: quem fica afetado. NÃO envia nada
+    (Fase E6 — nunca avisar automaticamente sem confirmação)."""
+    from operations import engine as op
+    minutos = int((request.get_json(silent=True) or {}).get("minutos") or 0)
+    if minutos <= 0 or minutos > 240:
+        return jsonify(erro="Minutos fora do intervalo (1-240)."), 400
+    return jsonify(op.marcacoes_afetadas_por_atraso(minutos, _TENANT)), 200
+
+
+# --- Serviços (CRUD) -------------------------------------------------------
+_ID_RE = re.compile(r"^[a-z][a-z0-9_]{1,40}$")
+
+
+@app.route("/api/servicos", methods=["GET", "POST"])
+@requer_autenticacao
+def api_servicos():
+    if request.method == "GET":
+        return jsonify(bd.listar_servicos(incluir_inativos=True)), 200
+    d = request.get_json(silent=True) or {}
+    sid = str(d.get("id") or "").strip().lower()
+    if not _ID_RE.match(sid):
+        return jsonify(erro="ID inválido (minúsculas, dígitos e _; começa por letra)."), 400
+    if bd.obter_servico(sid):
+        return jsonify(erro="Já existe um serviço com esse ID."), 409
+    if not str(d.get("nome_pt") or "").strip():
+        return jsonify(erro="Nome (PT) obrigatório."), 400
+    try:
+        dur = int(d.get("duracao_min"))
+        assert 5 <= dur <= 600
+    except (TypeError, ValueError, AssertionError):
+        return jsonify(erro="Duração inválida (5-600 min)."), 400
+    pc = d.get("preco_cents")
+    pc = None if pc in (None, "", "null") else int(pc)
+    bd.criar_servico({"id": sid, "nome_pt": d["nome_pt"], "nome_de": d.get("nome_de"),
+                      "nome_en": d.get("nome_en"), "duracao_min": dur, "preco_cents": pc,
+                      "ativo": bool(d.get("ativo", True)), "cor": d.get("cor"),
+                      "ordem": d.get("ordem", 99)})
+    return jsonify(ok=True, servico=bd.obter_servico(sid)), 201
+
+
+@app.route("/api/servicos/<servico_id>", methods=["PATCH"])
+@requer_autenticacao
+def api_servico_editar(servico_id):
+    if not bd.obter_servico(servico_id):
+        return jsonify(erro="Serviço não encontrado."), 404
+    d = request.get_json(silent=True) or {}
+    patch = {}
+    for k in ("nome_pt", "nome_de", "nome_en", "cor"):
+        if k in d:
+            patch[k] = d[k]
+    if "duracao_min" in d:
+        try:
+            patch["duracao_min"] = int(d["duracao_min"])
+            assert 5 <= patch["duracao_min"] <= 600
+        except (TypeError, ValueError, AssertionError):
+            return jsonify(erro="Duração inválida (5-600 min)."), 400
+    if "preco_cents" in d:
+        v = d["preco_cents"]
+        patch["preco_cents"] = None if v in (None, "", "null") else int(v)
+    if "ativo" in d:
+        patch["ativo"] = bool(d["ativo"])
+    if "rebook_days" in d:
+        patch["rebook_days"] = None if not d["rebook_days"] else int(d["rebook_days"])
+    if "buffer_before_min" in d:
+        patch["buffer_before_min"] = max(0, int(d["buffer_before_min"] or 0))
+    if "buffer_after_min" in d:
+        patch["buffer_after_min"] = max(0, int(d["buffer_after_min"] or 0))
+    bd.atualizar_servico(servico_id, patch)
+    return jsonify(ok=True, servico=bd.obter_servico(servico_id)), 200
+
+
+# --- Horários / política -------------------------------------------------
+@app.route("/api/horarios", methods=["GET", "PUT"])
+@requer_autenticacao
+def api_horarios():
+    if request.method == "GET":
+        return jsonify(grelha=bh_mod.grelha_semanal(_TENANT),
+                       excecoes=bh_mod.listar_excecoes(_TENANT),
+                       politica=bh_mod.politica(_TENANT)), 200
+    d = request.get_json(silent=True) or {}
+    dias = d.get("grelha")
+    if not isinstance(dias, list) or len(dias) != 7:
+        return jsonify(erro="grelha tem de ter 7 dias."), 400
+    hhmm = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+    for x in dias:
+        for campo in ("opens", "closes", "break_start", "break_end"):
+            if x.get(campo) and not hhmm.match(x[campo]):
+                return jsonify(erro=f"Hora inválida em {campo}: {x[campo]}"), 400
+    bh_mod.definir_grelha(_TENANT, dias)
+    return jsonify(ok=True, grelha=bh_mod.grelha_semanal(_TENANT)), 200
+
+
+@app.route("/api/horarios/excecoes", methods=["POST"])
+@requer_autenticacao
+def api_excecao_criar():
+    d = request.get_json(silent=True) or {}
+    di = str(d.get("data_inicio") or "").strip()
+    df = str(d.get("data_fim") or "").strip() or None
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", di):
+        return jsonify(erro="data_inicio inválida (YYYY-MM-DD)."), 400
+    # Fase W: marcações afetadas — informar, nunca cancelar automaticamente.
+    afetadas = []
+    with obter_bd() as conn:
+        d1 = date.fromisoformat(df) if df else date.fromisoformat(di)
+        dd = date.fromisoformat(di)
+        while dd <= d1:
+            dmy = f"{dd.strftime('%d.%m.%Y')}"
+            for (aid, nome, servico, hora) in conn.execute(
+                    "SELECT id, nome, servico, hora FROM agendamentos WHERE tenant_id = ? "
+                    "AND LOWER(estado) IN ('confirmed','pending') AND (data_iso = ? OR data LIKE ?)",
+                    (_TENANT, dd.isoformat(), f"%{dmy}%")).fetchall():
+                afetadas.append({"id": aid, "cliente": nome, "servico": servico,
+                                 "data": dd.isoformat(), "hora": hora})
+            dd += timedelta(days=1)
+    if afetadas and not d.get("confirmar"):
+        return jsonify(precisa_confirmacao=True, afetadas=afetadas), 200
+    criadas = bh_mod.adicionar_excecao(
+        _TENANT, di, df, closed=bool(d.get("closed", True)),
+        opens=d.get("opens"), closes=d.get("closes"), reason=d.get("reason"))
+    return jsonify(ok=True, datas=criadas, afetadas=afetadas), 201
+
+
+@app.route("/api/horarios/excecoes/<int:excecao_id>", methods=["DELETE"])
+@requer_autenticacao
+def api_excecao_remover(excecao_id):
+    bh_mod.remover_excecao(_TENANT, excecao_id)
+    return jsonify(ok=True), 200
+
+
+# --- Clientes -----------------------------------------------------------
+@app.route("/api/clientes", methods=["GET"])
+@requer_autenticacao
+def api_clientes():
+    return jsonify(bd.listar_customers(_TENANT)), 200
+
+
+@app.route("/api/clientes/<int:customer_id>", methods=["GET", "PATCH"])
+@requer_autenticacao
+def api_cliente(customer_id):
+    cust = bd.obter_customer(customer_id)
+    if not cust or cust["tenant_id"] != _TENANT:
+        return jsonify(erro="Cliente não encontrado."), 404
+    if request.method == "PATCH":
+        d = request.get_json(silent=True) or {}
+        campos, vals = [], []
+        if "notes_internal" in d:
+            campos.append("notes_internal = ?"); vals.append(d["notes_internal"])
+        if "vip" in d:
+            campos.append("vip = ?"); vals.append(1 if d["vip"] else 0)
+        if "tags" in d and isinstance(d["tags"], list):
+            campos.append("tags = ?"); vals.append(json.dumps(d["tags"], ensure_ascii=False))
+        if campos:
+            campos.append("updated_at = ?"); vals.append(tempo.iso_utc()); vals.append(customer_id)
+            with obter_bd() as c:
+                c.execute(f"UPDATE customers SET {', '.join(campos)} WHERE id = ?", vals)
+        cust = bd.obter_customer(customer_id)
+    # histórico de marcações
+    with obter_bd() as c:
+        marc = c.execute(
+            "SELECT id, servico, data, hora, data_iso, hora_hhmm, estado, preco_cents, op_status "
+            "FROM agendamentos WHERE customer_id = ? ORDER BY COALESCE(data_iso,'') DESC, id DESC",
+            (customer_id,)).fetchall()
+    historico = [dict(zip(("id", "servico", "data", "hora", "data_iso", "hora_hhmm",
+                           "estado", "preco_cents", "op_status"), m)) for m in marc]
+    return jsonify(cliente=cust, historico=historico), 200
+
+
+@app.route("/painel", methods=["GET"])
+@app.route("/painel/hoje", methods=["GET"])
+@requer_autenticacao
+def painel_hoje():
+    return PAINEL_HOJE_HTML.replace("{{BUSINESS_NAME}}", _escapar_html(BUSINESS_NAME))
+
+
+PAINEL_HOJE_HTML = r"""<!doctype html>
+<html lang="pt">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{BUSINESS_NAME}} — Hoje</title>
+<style>
+  :root{
+    --bg:#f7f4f3; --surface:#fff; --surface-2:#faf6f7; --line:#ebe2e4;
+    --ink:#241f24; --ink-2:#6b616a; --ink-3:#978c95;
+    --accent:#a83d76; --accent-soft:#f5e6ef;
+    --live:#1f9d55; --live-soft:#e6f3ec; --next:#b06a1c; --next-soft:#f6ecdd;
+    --crit:#c1443b; --crit-soft:#f7e6e4; --info:#3f6493;
+  }
+  @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+    --bg:#151117; --surface:#1e1920; --surface-2:#251f27; --line:#322a35;
+    --ink:#ece3ea; --ink-2:#ab9fa9; --ink-3:#7d7280;
+    --accent:#d97cae; --accent-soft:#33202f;
+    --live:#5fc088; --live-soft:#1e2c24; --next:#d6a04a; --next-soft:#2c2620;
+    --crit:#e0645f; --crit-soft:#2e211f; --info:#8fb0d6;
+  }}
+  :root[data-theme="dark"]{
+    --bg:#151117; --surface:#1e1920; --surface-2:#251f27; --line:#322a35;
+    --ink:#ece3ea; --ink-2:#ab9fa9; --ink-3:#7d7280;
+    --accent:#d97cae; --accent-soft:#33202f;
+    --live:#5fc088; --live-soft:#1e2c24; --next:#d6a04a; --next-soft:#2c2620;
+    --crit:#e0645f; --crit-soft:#2e211f; --info:#8fb0d6;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:"Segoe UI",system-ui,-apple-system,sans-serif;font-size:15px;line-height:1.5;}
+  .wrap{max-width:820px;margin:0 auto;padding:18px 16px 80px;}
+  header.top{display:flex;justify-content:space-between;align-items:baseline;margin:4px 0 18px;}
+  header.top h1{font-size:1.05rem;margin:0;font-weight:600;letter-spacing:.2px;}
+  header.top .marca{color:var(--accent);}
+  header.top a{color:var(--ink-3);text-decoration:none;font-size:.82rem;}
+  header.top a:hover{color:var(--accent);}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:18px;}
+
+  /* cockpit */
+  #cockpit{margin-bottom:16px;position:relative;overflow:hidden;}
+  #cockpit .badge{display:inline-flex;align-items:center;gap:7px;font-size:.72rem;font-weight:700;
+    text-transform:uppercase;letter-spacing:.09em;padding:.28em .7em;border-radius:999px;}
+  #cockpit.k-in_progress{border-color:color-mix(in srgb,var(--live) 45%,var(--line));}
+  #cockpit.k-in_progress .badge{background:var(--live-soft);color:var(--live);}
+  #cockpit.k-next .badge{background:var(--next-soft);color:var(--next);}
+  #cockpit.k-done .badge{background:var(--accent-soft);color:var(--accent);}
+  #cockpit .dot{width:9px;height:9px;border-radius:50%;background:currentColor;
+    animation:pulse 1.8s ease-in-out infinite;}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+  @media (prefers-reduced-motion:reduce){#cockpit .dot{animation:none}}
+  #cockpit h2{font-size:1.5rem;margin:.5rem 0 .1rem;font-weight:600;letter-spacing:-.01em;}
+  #cockpit .sub{color:var(--ink-2);font-size:.95rem;}
+  #cockpit .timeline{margin:14px 0 4px;height:8px;background:var(--surface-2);border-radius:999px;overflow:hidden;}
+  #cockpit .timeline > i{display:block;height:100%;background:var(--live);border-radius:999px;transition:width .6s;}
+  #cockpit .meta{display:flex;flex-wrap:wrap;gap:6px 18px;color:var(--ink-2);font-size:.9rem;margin-top:10px;}
+  #cockpit .meta b{color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums;}
+  #cockpit .acoes{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px;}
+  button{font:inherit;cursor:pointer;border-radius:9px;border:1px solid var(--line);
+    background:var(--surface-2);color:var(--ink);padding:.55em .9em;font-size:.9rem;font-weight:500;}
+  button:hover{border-color:var(--accent);color:var(--accent);}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff;}
+  button.primary:hover{filter:brightness(1.06);color:#fff;}
+  button:disabled{opacity:.45;cursor:default;}
+  button:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
+
+  h3.sec{font-size:.74rem;text-transform:uppercase;letter-spacing:.1em;color:var(--ink-3);
+    margin:26px 4px 10px;font-weight:600;}
+  .atencao{display:flex;flex-direction:column;gap:8px;}
+  .att{display:flex;gap:12px;align-items:flex-start;background:var(--surface);border:1px solid var(--line);
+    border-left:3px solid var(--ink-3);border-radius:10px;padding:12px 14px;}
+  .att.n-agora{border-left-color:var(--crit);}
+  .att.n-hoje{border-left-color:var(--next);}
+  .att .txt{flex:1;min-width:0;}
+  .att .titulo{font-weight:600;font-size:.92rem;}
+  .att .detalhe{color:var(--ink-2);font-size:.85rem;}
+  .att button{padding:.35em .7em;font-size:.82rem;white-space:nowrap;}
+  .vazio{color:var(--ink-3);font-size:.9rem;padding:6px 4px;}
+
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));gap:10px;margin-bottom:6px;}
+  .stat{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:11px 12px;}
+  .stat .n{font-size:1.15rem;font-weight:700;font-variant-numeric:tabular-nums;}
+  .stat .l{color:var(--ink-3);font-size:.72rem;text-transform:uppercase;letter-spacing:.05em;}
+
+  .agenda{display:flex;flex-direction:column;}
+  .ag{display:flex;gap:14px;align-items:center;padding:11px 6px;border-bottom:1px solid var(--line);}
+  .ag:last-child{border-bottom:none;}
+  .ag .h{font-variant-numeric:tabular-nums;font-weight:600;color:var(--ink-2);width:44px;flex:none;}
+  .ag .barra{width:3px;align-self:stretch;border-radius:2px;background:var(--accent);flex:none;}
+  .ag .info{flex:1;min-width:0;}
+  .ag .cli{font-weight:600;font-size:.92rem;}
+  .ag .srv{color:var(--ink-2);font-size:.84rem;}
+  .ag .pill{font-size:.7rem;padding:.2em .55em;border-radius:999px;background:var(--surface-2);color:var(--ink-3);white-space:nowrap;}
+  .ag .pill.done{background:var(--live-soft);color:var(--live);}
+  .ag .pill.here{background:var(--next-soft);color:var(--next);}
+  #erro{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);background:var(--crit);color:#fff;
+    padding:.7em 1.1em;border-radius:10px;font-size:.88rem;display:none;box-shadow:0 6px 24px rgba(0,0,0,.25);}
+  dialog{border:1px solid var(--line);border-radius:14px;background:var(--surface);color:var(--ink);
+    padding:20px;max-width:420px;width:92vw;}
+  dialog::backdrop{background:rgba(0,0,0,.45);}
+  dialog h3{margin:0 0 12px;font-size:1.05rem;}
+  dialog .afet{background:var(--surface-2);border-radius:8px;padding:10px 12px;margin:10px 0;font-size:.88rem;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <h1>Hoje <span class="marca">{{BUSINESS_NAME}}</span></h1>
+    <a href="/dashboard">Calendário completo →</a>
+  </header>
+
+  <div id="cockpit" class="card k-done">
+    <span class="badge"><span class="dot"></span><span id="ck-badge">A carregar…</span></span>
+    <h2 id="ck-titulo">…</h2>
+    <div class="sub" id="ck-sub"></div>
+    <div class="timeline" id="ck-tl" hidden><i id="ck-tl-fill" style="width:0"></i></div>
+    <div class="meta" id="ck-meta"></div>
+    <div class="acoes" id="ck-acoes"></div>
+  </div>
+
+  <h3 class="sec">Precisa da tua atenção</h3>
+  <div class="atencao" id="atencao"><div class="vazio">A carregar…</div></div>
+
+  <h3 class="sec">Hoje</h3>
+  <div class="stats" id="stats"></div>
+
+  <h3 class="sec">Agenda de hoje</h3>
+  <div class="card"><div class="agenda" id="agenda"><div class="vazio">A carregar…</div></div></div>
+</div>
+
+<div id="erro"></div>
+
+<dialog id="dlg-atraso">
+  <h3>Atraso — quem fica afetado?</h3>
+  <div id="atraso-corpo">A calcular…</div>
+  <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;">
+    <button onclick="document.getElementById('dlg-atraso').close()">Fechar</button>
+  </div>
+</dialog>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s==null?'':s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function erro(m){ const e=$('#erro'); e.textContent=m; e.style.display='block'; setTimeout(()=>e.style.display='none',4000); }
+
+async function api(url, opts){
+  const r = await fetch(url, opts);
+  if(!r.ok){ const j = await r.json().catch(()=>({})); throw new Error(j.erro || ('Erro '+r.status)); }
+  return r.json();
+}
+
+function fmtMin(m){
+  m = Math.round(m);
+  if(m < 60) return m + ' min';
+  const h = Math.floor(m/60), r = m%60;
+  return r ? `${h}h${String(r).padStart(2,'0')}` : `${h}h`;
+}
+
+function renderCockpit(ck){
+  const c = $('#cockpit');
+  c.className = 'card k-' + ck.kind;
+  const acoes = $('#ck-acoes'); acoes.innerHTML = '';
+  $('#ck-tl').hidden = true; $('#ck-meta').innerHTML = '';
+
+  if(ck.kind === 'done'){
+    $('#ck-badge').textContent = 'Agenda concluída';
+    $('#ck-titulo').textContent = ck.marcacoes_hoje ? 'Está tudo feito por hoje ✨' : 'Hoje sem marcações';
+    $('#ck-sub').textContent = ck.marcacoes_hoje ? `${ck.marcacoes_hoje} marcação(ões) concluída(s).` : '';
+    return;
+  }
+
+  const m = ck.marcacao;
+  const btnCliente = m.customer_id ? `<button onclick="location.href='/dashboard#ag-${m.id}'">👤 Cliente</button>` : '';
+  const btnAtraso = `<button onclick="abrirAtraso()">⏰ Atraso</button>`;
+
+  if(ck.kind === 'in_progress'){
+    $('#ck-badge').textContent = ck.atrasado ? 'Em curso · a passar da hora' : 'Serviço em curso';
+    $('#ck-titulo').textContent = m.cliente;
+    $('#ck-sub').innerHTML = esc(m.servico) + (m.preco_por_confirmar ? ' · <em>preço a confirmar</em>' : '');
+    const total = ck.decorrido_min + ck.restante_min || 1;
+    $('#ck-tl').hidden = false;
+    $('#ck-tl-fill').style.width = Math.min(100, 100*ck.decorrido_min/total) + '%';
+    $('#ck-meta').innerHTML =
+      `<span>${esc(ck.inicio)} → ${esc(ck.fim_previsto)}</span>` +
+      `<span>Começou há <b>${fmtMin(ck.decorrido_min)}</b></span>` +
+      `<span>Faltam <b>~${fmtMin(ck.restante_min)}</b></span>`;
+    acoes.innerHTML =
+      `<button class="primary" onclick="op(${m.id},'done')">✅ Concluir</button>` +
+      btnAtraso + btnCliente;
+    return;
+  }
+
+  // next
+  $('#ck-badge').textContent = 'Próxima cliente';
+  $('#ck-titulo').textContent = m.cliente;
+  $('#ck-sub').innerHTML = esc(m.servico) + ' · ' + fmtMin(m.duracao_min || 0) +
+    (m.preco_por_confirmar ? ' · <em>preço a confirmar</em>' : ' · ' + esc(m.preco_label));
+  const bits = [`<span>Às <b>${esc(ck.hora)}</b></span>`,
+    `<span>${ck.faltam_min >= 0 ? 'Daqui a <b>'+fmtMin(ck.faltam_min)+'</b>' : 'Já devia ter começado'}</span>`];
+  if(m.cliente_visitas != null) bits.push(`<span><b>${m.cliente_visitas}</b> visita(s)</span>`);
+  if(m.cliente_no_shows) bits.push(`<span style="color:var(--crit)"><b>${m.cliente_no_shows}</b> no-show</span>`);
+  if(m.ultima_do_servico) bits.push(`<span>Último ${esc(m.servico)}: ${esc(m.ultima_do_servico)}</span>`);
+  $('#ck-meta').innerHTML = bits.join('');
+  if(m.notas) $('#ck-meta').innerHTML += `<span style="flex-basis:100%">🗒️ ${esc(m.notas)}</span>`;
+  acoes.innerHTML =
+    (ck.chegou
+      ? `<button class="primary" onclick="op(${m.id},'in_progress')">▶️ Iniciar</button>`
+      : `<button class="primary" onclick="op(${m.id},'arrived')">✅ Chegou</button>`) +
+    btnAtraso + btnCliente;
+}
+
+function renderAtencao(itens){
+  const box = $('#atencao');
+  if(!itens.length){ box.innerHTML = '<div class="vazio">Está tudo tratado. ✨</div>'; return; }
+  box.innerHTML = itens.map(i => `
+    <div class="att n-${esc(i.nivel)}">
+      <div class="txt">
+        <div class="titulo">${esc(i.titulo)}</div>
+        <div class="detalhe">${esc(i.detalhe||'')}</div>
+      </div>
+      ${i.appointment_id ? `<button onclick="location.href='/dashboard#ag-${i.appointment_id}'">Abrir</button>` : ''}
+    </div>`).join('');
+}
+
+function renderStats(r){
+  const receita = r.receita_por_confirmar
+    ? `CHF ${(r.receita_cents/100).toFixed(0)}+`
+    : `CHF ${(r.receita_cents/100).toFixed(0)}`;
+  $('#stats').innerHTML = [
+    ['Marcações', r.marcacoes], ['Concluídas', r.concluidas], ['Receita', receita],
+    ['Novos clientes', r.novos_clientes], ['Cancelamentos', r.cancelamentos],
+  ].map(([l,n]) => `<div class="stat"><div class="n">${esc(n)}</div><div class="l">${esc(l)}</div></div>`).join('');
+}
+
+function renderAgenda(ag){
+  const box = $('#agenda');
+  if(!ag.length){ box.innerHTML = '<div class="vazio">Sem marcações hoje.</div>'; return; }
+  box.innerHTML = ag.map(m => {
+    const pill = m.op_status === 'done' ? '<span class="pill done">concluída</span>'
+      : m.op_status === 'arrived' ? '<span class="pill here">chegou</span>'
+      : m.op_status === 'in_progress' ? '<span class="pill here">a decorrer</span>'
+      : m.estado === 'no_show' ? '<span class="pill">não veio</span>' : '';
+    return `<div class="ag">
+      <span class="h">${esc(m.hora)}</span>
+      <span class="barra"></span>
+      <div class="info"><div class="cli">${esc(m.cliente)}</div>
+        <div class="srv">${esc(m.servico)} · ${m.preco_por_confirmar ? 'a confirmar' : esc(m.preco_label)}</div></div>
+      ${pill}
+    </div>`;
+  }).join('');
+}
+
+async function op(id, novo){
+  document.querySelectorAll('#ck-acoes button').forEach(b => b.disabled = true);
+  try{ const j = await api(`/api/agendamentos/${id}/op`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({op:novo})});
+    renderCockpit(j.cartao); carregar();
+  }catch(e){ erro(e.message); carregar(); }
+}
+
+async function abrirAtraso(){
+  const dlg = $('#dlg-atraso'); $('#atraso-corpo').innerHTML = `
+    <p style="color:var(--ink-2);font-size:.9rem;margin-top:0">Quanto tempo de atraso?</p>
+    <div style="display:flex;gap:6px;flex-wrap:wrap">
+      ${[5,10,15,30].map(n => `<button onclick="calcAtraso(${n})">+${n} min</button>`).join('')}
+    </div>
+    <div id="atraso-res"></div>`;
+  dlg.showModal();
+}
+async function calcAtraso(min){
+  const res = $('#atraso-res'); res.innerHTML = '<p style="color:var(--ink-3)">A calcular…</p>';
+  try{
+    const j = await api('/api/painel/atraso', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({minutos:min})});
+    if(!j.afetadas.length){ res.innerHTML = `<div class="afet">✅ Um atraso de ${min} min não afeta nenhuma marcação de hoje.</div>`; return; }
+    res.innerHTML = `<div class="afet"><b>${j.afetadas.length}</b> marcação(ões) afetada(s):</div>` +
+      j.afetadas.map(a => `<div class="afet">${esc(a.hora_original)} → ~${esc(a.hora_estimada)} · ${esc(a.cliente)} (${esc(a.servico)})</div>`).join('') +
+      `<p style="color:var(--ink-3);font-size:.82rem">As mensagens só são enviadas quando confirmares — nunca automaticamente.</p>`;
+  }catch(e){ res.innerHTML = `<div class="afet" style="color:var(--crit)">${esc(e.message)}</div>`; }
+}
+
+async function carregar(){
+  try{
+    const j = await api('/api/painel/hoje');
+    renderCockpit(j.cartao); renderAtencao(j.atencao); renderStats(j.resumo); renderAgenda(j.agenda);
+  }catch(e){ erro(e.message); }
+}
+carregar();
+setInterval(carregar, 60000);
+</script>
+</body>
+</html>
+"""
+
+
 @app.route("/dashboard", methods=["GET"])
 @requer_autenticacao
 def dashboard():
