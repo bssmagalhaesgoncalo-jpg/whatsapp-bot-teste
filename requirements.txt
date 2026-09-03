@@ -1,3 +1,14 @@
-flask
-requests
-gunicorn
+# Dependências de execução — Daniela Beauty (bot WhatsApp + painel Flask).
+# Versões fixadas para builds reprodutíveis no Render.
+#
+# NOTA: a versão anterior deste ficheiro NÃO era um requirements.txt — era uma
+# cópia do código-fonte do bot. Ver git (backup/nails-conversion-wip) e o
+# relatório da Fase 0.
+
+Flask==3.0.3
+gunicorn==22.0.0
+requests==2.32.3
+
+# PostgreSQL (produção). Importado de forma preguiçosa por db.py: o
+# desenvolvimento local com SQLite não precisa que isto instale/compile.
+psycopg[binary]==3.2.3

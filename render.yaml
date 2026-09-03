@@ -1,0 +1,52 @@
+# Infraestrutura Render — Daniela Beauty.
+# NÃO contém segredos: todas as chaves marcadas `sync: false` são
+# preenchidas no painel do Render (Environment).
+#
+# Persistência: enquanto a base de dados for SQLite, é OBRIGATÓRIO um disco
+# persistente (o filesystem do Render é efémero — sem disco, todas as
+# marcações desaparecem a cada deploy). Ao migrar para Postgres, trocar o
+# disco por `DATABASE_URL` (ver MIGRATION.md) e subir os workers no Procfile.
+
+services:
+  - type: web
+    name: daniela-beauty
+    runtime: python
+    plan: starter                     # o disco persistente exige plano pago
+    buildCommand: pip install -r requirements.txt
+    preDeployCommand: python -c "import db; db.migrar(verbose=True)"
+    startCommand: gunicorn bot:app --workers 1 --threads 8 --timeout 120
+    healthCheckPath: /versao
+    disk:
+      name: dados
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.7"
+      - key: SESSOES_DB
+        value: /var/data/sessoes.db
+      - key: MEDIA_DIR
+        value: /var/data/media_pedidos
+      - key: TZ
+        value: Europe/Zurich
+      - key: BUSINESS_NAME
+        value: Daniela Beauty
+      - key: BUSINESS_ADDRESS
+        sync: false
+      - key: WHATSAPP_TOKEN
+        sync: false
+      - key: PHONE_NUMBER_ID
+        sync: false
+      - key: VERIFY_TOKEN
+        sync: false
+      - key: PROVIDER_WHATSAPP
+        sync: false
+      - key: APP_SECRET
+        sync: false
+      - key: DASHBOARD_USER
+        sync: false
+      - key: DASHBOARD_PASSWORD
+        sync: false
+      - key: PUBLIC_BASE_URL
+        sync: false
+      # DATABASE_URL: deixar por definir enquanto usar SQLite.

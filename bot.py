@@ -1,77 +1,76 @@
 """
-Bot "rececionista digital" via WhatsApp Cloud API para a Spotless Car Detail
-(oficina fictícia de testes). Menu principal com 4 opções (Marcar / Orçamento /
-Gerir marcação / Falar com a equipa), fluxos diferentes por tipo de serviço
-(Limpeza / Estética / Wrap), comandos permanentes (MENU, VOLTAR, CANCELAR,
-AJUDA, HUMANO, GERIR), recuperação de sessão abandonada, indicador de
-progresso, resumo com preço e duração estimada, confirmação final mais
-completa, e seleção de idioma (PT/DE/EN) como primeira interação.
+Bot "rececionista digital" via WhatsApp Cloud API para a DANIELA BEAUTY.
 
-Configuração necessária (variáveis de ambiente):
-  WHATSAPP_TOKEN       - access token (temporário ou permanente) da Meta
-  PHONE_NUMBER_ID      - ID do número de teste/produção (em API Setup)
-  VERIFY_TOKEN         - qualquer string à tua escolha, usada na verificação do webhook
-  PROVIDER_WHATSAPP    - número do prestador de serviço em formato internacional, ex: 41795886305
+Fluxo do cliente:
+  idioma -> serviço -> dia -> hora disponível -> resumo -> confirmar
+  -> marcação criada (o horário fica indisponível) -> confirmação.
+O cliente pode ainda consultar, reagendar e cancelar a sua marcação.
 
-Como correr:
-  pip install flask requests
-  export WHATSAPP_TOKEN=... PHONE_NUMBER_ID=... VERIFY_TOKEN=... PROVIDER_WHATSAPP=...
-  python bot.py
+Comandos permanentes em texto livre: MENU, VOLTAR, CANCELAR, AJUDA, HUMANO,
+GERIR, IDIOMA. Seleção de idioma (PT/DE/EN) como primeira interação.
 
-Nota sobre idiomas: as mensagens para o CLIENTE existem em português (pt),
-alemão (de) e inglês (en) através do sistema central `TEXTOS` + funções
-`t()`/`tx()` abaixo. As notificações INTERNAS para o negócio
-(PROVIDER_WHATSAPP) mantêm-se sempre em português, por decisão do dono do
-negócio. No alemão usa-se sempre "ss", nunca "ß".
+Configuração: TUDO vem do ambiente — ver `.env.example` e o módulo `config`.
+Não há segredos nem números de teste embutidos no código.
+
+Arquitetura (Fase 0 + Fase 1):
+  config.py    -> variáveis de ambiente, sem defaults sensíveis
+  db.py        -> ligação + migrações versionadas (SQLite agora, Postgres-ready)
+  catalogo.py  -> FONTE ÚNICA dos serviços (nome/duração/preço/cor)
+  parsing.py   -> interpretação de datas/horas/durações LEGADAS (texto)
+  tempo.py     -> "agora" e fuso Europe/Zurich (timezone-aware, trata DST)
+
+Nota sobre idiomas: as mensagens para o CLIENTE existem em pt/de/en via o
+sistema central `TEXTOS` + `t()`/`tx()`. As notificações INTERNAS para o
+negócio (PROVIDER_WHATSAPP) são sempre em português. No alemão usa-se sempre
+"ss", nunca "ß".
 """
 
 import os
 import re
 import json
-import sqlite3
+import hmac
+import hashlib
 import requests
-import unicodedata
 from functools import wraps
 from datetime import date, timedelta, datetime
 from flask import Flask, request, jsonify, send_from_directory, Response
 
+import config
+import db as bd
+import catalogo
+import estados
+import tempo
+from parsing import data_iso_de_texto, hora_hhmm_de_texto, duracao_para_minutos
+
 app = Flask(__name__)
 
-TOKEN = os.environ.get("WHATSAPP_TOKEN", "")
-PHONE_NUMBER_ID = os.environ.get("PHONE_NUMBER_ID", "1052227394639217")
-VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN", "teste123")
-PROVIDER_WHATSAPP = os.environ.get("PROVIDER_WHATSAPP", "41795886305")
+# --- Aliases retro-compatíveis: o resto do ficheiro (e os testes) continuam a
+# usar estes nomes; a verdade única vive em `config`. ----------------------
+TOKEN = config.WHATSAPP_TOKEN
+PHONE_NUMBER_ID = config.PHONE_NUMBER_ID
+VERIFY_TOKEN = config.VERIFY_TOKEN
+PROVIDER_WHATSAPP = config.PROVIDER_WHATSAPP
+APP_SECRET = config.APP_SECRET
+MEDIA_DIR = config.MEDIA_DIR
+DASHBOARD_USER = config.DASHBOARD_USER
+DASHBOARD_PASSWORD = config.DASHBOARD_PASSWORD
+PUBLIC_BASE_URL = config.PUBLIC_BASE_URL
 
-# Pasta (local, configurável) onde as fotografias dos pedidos de orçamento
-# são guardadas em disco — nunca dentro do SQLite. Ver guardar_media_local().
-MEDIA_DIR = os.environ.get("MEDIA_DIR", "media_pedidos")
-
-# Credenciais de autenticação HTTP Basic do painel/API (falha fechado: sem
-# ambas definidas, o acesso é sempre recusado). Ver requer_autenticacao().
-DASHBOARD_USER = os.environ.get("DASHBOARD_USER", "")
-DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "")
-
-# URL pública onde este serviço está publicado (ex.: https://o-teu-servico.onrender.com).
-# Usada só para construir a ligação direta ao dossiê de um pedido no painel,
-# enviada na notificação interna (ver link_dossie_pedido()). Opcional: se não
-# estiver definida, tenta-se deduzir do próprio pedido HTTP em curso; se isso
-# também não for possível (ex.: fora de um pedido Flask), a ligação é omitida.
-PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
-
-GRAPH_URL = f"https://graph.facebook.com/v21.0/{PHONE_NUMBER_ID}/messages"
-
-# ---------------------------------------------------------------------------
-# IDENTIDADE DO NEGÓCIO — configurável por ambiente, nunca escrita à mão nas
-# mensagens. Trocar estas duas variáveis muda o nome e a morada em todo o
-# lado: saudação, resumo, confirmação, notificações e painel.
-# ---------------------------------------------------------------------------
-BUSINESS_NAME = os.environ.get("BUSINESS_NAME", "Daniela Nails (TESTE)")
-BUSINESS_ADDRESS = os.environ.get("BUSINESS_ADDRESS", "Visp, Switzerland")
-
-# Nomes antigos mantidos como aliases: há código e testes que os usam, e
-# renomeá-los não traria nada — apontam para a mesma identidade.
+BUSINESS_NAME = config.BUSINESS_NAME
+BUSINESS_ADDRESS = config.BUSINESS_ADDRESS
+# Nomes históricos, ainda usados em muitas mensagens/painel — apontam para a
+# identidade única configurada por ambiente.
 NOME_OFICINA = BUSINESS_NAME
 MORADA_OFICINA = BUSINESS_ADDRESS
+
+
+def graph_url():
+    """URL do endpoint de envio da Meta, ou None se PHONE_NUMBER_ID faltar."""
+    return config.graph_url()
+
+
+# Compat: código antigo referencia GRAPH_URL como string.
+GRAPH_URL = config.graph_url() or ""
 
 # IDs usados em botões/listas em todo o fluxo (nunca traduzidos — são
 # identificadores internos, não texto visível)
@@ -122,12 +121,13 @@ IDIOMAS_VALIDOS = ("pt", "de", "en")
 COMANDOS_TEXTO = {
     "menu", "voltar", "cancelar", "ajuda", "humano", "gerir",
     "idioma", "sprache", "language",
-    "carrinho", "cart", "warenkorb",
-    "rapido", "quick", "schnell",
 }
 COMANDOS_IDIOMA = {"idioma", "sprache", "language"}
-COMANDOS_CARRINHO = {"carrinho", "cart", "warenkorb"}
-COMANDOS_RAPIDO = {"rapido", "quick", "schnell"}
+# LEGADO (Spotless): CARRINHO e RAPIDO davam entrada no fluxo Wrap/orçamento,
+# que já não existe para a Daniela Beauty. Mantidos como conjuntos vazios só
+# para o código legado que os referencia não rebentar.
+COMANDOS_CARRINHO = set()
+COMANDOS_RAPIDO = set()
 
 # Modos possíveis do fluxo "Wrap & Proteção" (escolhidos logo à entrada).
 # Guardados na sessão em "wrap_modo" e na base de dados na coluna
@@ -152,9 +152,9 @@ LANG_IDS = {"lang_pt": "pt", "lang_de": "de", "lang_en": "en"}
 # idiomas ao mesmo tempo (é a única mensagem que não depende de um idioma já
 # escolhido, porque é exatamente isso que ainda não sabemos).
 TEXTO_SELETOR_IDIOMA = (
-    "👋 Bem-vindo à Spotless Car Detail!\n"
-    "Willkommen bei Spotless Car Detail!\n"
-    "Welcome to Spotless Car Detail!\n"
+    f"👋 Bem-vindo à {BUSINESS_NAME}!\n"
+    f"Willkommen bei {BUSINESS_NAME}!\n"
+    f"Welcome to {BUSINESS_NAME}!\n"
     "Para continuar, escolha o seu idioma.\n"
     "Wählen Sie Ihre Sprache, um fortzufahren.\n"
     "Choose your language to continue."
@@ -185,10 +185,36 @@ TEXTOS = {
                             "de": "Welche Art von Service suchen Sie?",
                             "en": "What type of service are you looking for?"},
 
+    # --- Marcação Daniela Beauty: escolha do serviço (passo 1 de 3) --------
+    "servico_corpo": {"pt": "Passo 1 de 3 — Que serviço deseja marcar?",
+                       "de": "Schritt 1 von 3 — Welche Behandlung möchten Sie buchen?",
+                       "en": "Step 1 of 3 — Which treatment would you like to book?"},
+    "servico_seccao": {"pt": "Serviços", "de": "Behandlungen", "en": "Treatments"},
+    "servico_botao": {"pt": "✨ Escolher serviço", "de": "✨ Behandlung wählen",
+                       "en": "✨ Choose treatment"},
+    "servico_sem_ativos": {
+        "pt": "De momento não há serviços disponíveis para marcação online. "
+              "Toque em \"Falar com a equipa\".",
+        "de": "Zurzeit sind keine Behandlungen online buchbar. "
+              "Tippen Sie auf \"Mit dem Team sprechen\".",
+        "en": "There are currently no treatments available to book online. "
+              "Tap \"Talk to the team\"."},
+    # Preço por definir: NUNCA "CHF 0". Mostrado no serviço, no resumo e no total.
+    "preco_a_confirmar": {"pt": "Preço a confirmar", "de": "Preis auf Anfrage",
+                           "en": "Price on request"},
+    "resumo_total_a_confirmar": {
+        "pt": "💰 Total: a confirmar pela equipa",
+        "de": "💰 Gesamtbetrag: wird vom Team bestätigt",
+        "en": "💰 Total: to be confirmed by the team"},
+    "confirmado_preco_a_confirmar": {
+        "pt": "ℹ️ O preço deste serviço é confirmado pela equipa antes da marcação.",
+        "de": "ℹ️ Der Preis dieser Behandlung wird vom Team vor dem Termin bestätigt.",
+        "en": "ℹ️ The price for this treatment is confirmed by the team before your appointment."},
+
     # --- Rodapé / linhas auxiliares de lista -------------------------------
-    "rodape_padrao": {"pt": "Escreva VOLTAR, CANCELAR, MENU ou CARRINHO",
-                       "de": "Schreiben Sie VOLTAR, CANCELAR, MENU oder CARRINHO",
-                       "en": "Type VOLTAR, CANCELAR, MENU or CARRINHO"},
+    "rodape_padrao": {"pt": "Escreva VOLTAR, CANCELAR ou MENU",
+                       "de": "Schreiben Sie VOLTAR, CANCELAR oder MENU",
+                       "en": "Type VOLTAR, CANCELAR or MENU"},
     # Rodapé do fluxo Wrap: acrescenta RAPIDO, o comando que muda para o
     # orçamento rápido a qualquer momento. Mantido dentro dos 60 caracteres
     # que a API do WhatsApp aceita num footer (ver enviar_lista/enviar_botoes).
@@ -201,47 +227,47 @@ TEXTOS = {
     "cancelar_desc": {"pt": "Terminar sem marcar", "de": "Ohne Buchung beenden", "en": "End without booking"},
 
     # --- Passos: Limpeza -----------------------------------------------
-    "limpeza_tipo_corpo": {"pt": "Passo 1 de 5 — Que serviço deseja para as mãos?",
-                            "de": "Schritt 1 von 5 — Welchen Service möchten Sie für die Hände?",
-                            "en": "Step 1 of 5 — Which service would you like for your hands?"},
-    "limpeza_tipo_seccao": {"pt": "Serviços de mãos", "de": "Handservices", "en": "Hand services"},
-    "limpeza_tipo_botao": {"pt": "💅 Escolher", "de": "💅 Wählen", "en": "💅 Choose"},
+    "limpeza_tipo_corpo": {"pt": "Passo 1 de 5 — Escolha o tipo de limpeza:",
+                            "de": "Schritt 1 von 5 — Wählen Sie die Art der Reinigung:",
+                            "en": "Step 1 of 5 — Choose the type of cleaning:"},
+    "limpeza_tipo_seccao": {"pt": "Tipo de limpeza", "de": "Art der Reinigung", "en": "Cleaning type"},
+    "limpeza_tipo_botao": {"pt": "🧼 Escolher", "de": "🧼 Wählen", "en": "🧼 Choose"},
 
-    "limpeza_tamanho_corpo": {"pt": "Passo 2 de 5 — Que comprimento deseja para as unhas?",
-                               "de": "Schritt 2 von 5 — Welche Nagellänge möchten Sie?",
-                               "en": "Step 2 of 5 — What nail length would you like?"},
-    "tamanho_seccao": {"pt": "Comprimento das unhas", "de": "Nagellänge", "en": "Nail length"},
-    "tamanho_botao": {"pt": "📏 Escolher", "de": "📏 Wählen", "en": "📏 Choose"},
+    "limpeza_tamanho_corpo": {"pt": "Passo 2 de 5 — Qual o tamanho do veículo?",
+                               "de": "Schritt 2 von 5 — Wie gross ist das Fahrzeug?",
+                               "en": "Step 2 of 5 — What is the vehicle size?"},
+    "tamanho_seccao": {"pt": "Tamanho do veículo", "de": "Fahrzeuggrösse", "en": "Vehicle size"},
+    "tamanho_botao": {"pt": "🚗 Escolher", "de": "🚗 Wählen", "en": "🚗 Choose"},
 
-    "extra_corpo": {"pt": "Passo 3 de 5 — Deseja acrescentar algum extra?",
-                    "de": "Schritt 3 von 5 — Möchten Sie ein Extra dazunehmen?",
-                    "en": "Step 3 of 5 — Would you like to add any extra?"},
+    "extra_corpo": {"pt": "Passo 3 de 5 — Deseja algum extra?",
+                    "de": "Schritt 3 von 5 — Möchten Sie ein Extra?",
+                    "en": "Step 3 of 5 — Would you like any extra?"},
     "extra_seccao": {"pt": "Extras disponíveis", "de": "Verfügbare Extras", "en": "Available extras"},
     "extra_botao": {"pt": "➕ Escolher", "de": "➕ Wählen", "en": "➕ Choose"},
 
     # --- Passos: Estética -----------------------------------------------
-    "estetica_servico_corpo": {"pt": "Passo 1 de 5 — Que serviço deseja para os pés?",
-                                "de": "Schritt 1 von 5 — Welchen Service möchten Sie für die Füsse?",
-                                "en": "Step 1 of 5 — Which service would you like for your feet?"},
-    "estetica_servico_seccao": {"pt": "Serviços de pés", "de": "Fussservices", "en": "Foot services"},
-    "estetica_servico_botao": {"pt": "🦶 Escolher", "de": "🦶 Wählen", "en": "🦶 Choose"},
+    "estetica_servico_corpo": {"pt": "Passo 1 de 5 — Escolha o serviço de estética:",
+                                "de": "Schritt 1 von 5 — Wählen Sie den Aufbereitungsservice:",
+                                "en": "Step 1 of 5 — Choose the detailing service:"},
+    "estetica_servico_seccao": {"pt": "Estética automóvel", "de": "Fahrzeugaufbereitung", "en": "Car detailing"},
+    "estetica_servico_botao": {"pt": "✨ Escolher", "de": "✨ Wählen", "en": "✨ Choose"},
 
-    "estetica_estado_corpo": {"pt": "Passo 2 de 5 — É necessário remover produto das unhas?",
-                               "de": "Schritt 2 von 5 — Muss Produkt von den Nägeln entfernt werden?",
-                               "en": "Step 2 of 5 — Does any product need removing from the nails?"},
-    "estado_seccao": {"pt": "Remoção de produto", "de": "Produktentfernung", "en": "Product removal"},
-    "estado_botao": {"pt": "🧴 Escolher", "de": "🧴 Wählen", "en": "🧴 Choose"},
+    "estetica_estado_corpo": {"pt": "Passo 2 de 5 — Como está o estado atual do veículo?",
+                               "de": "Schritt 2 von 5 — Wie ist der aktuelle Zustand des Fahrzeugs?",
+                               "en": "Step 2 of 5 — What is the vehicle's current condition?"},
+    "estado_seccao": {"pt": "Estado do veículo", "de": "Fahrzeugzustand", "en": "Vehicle condition"},
+    "estado_botao": {"pt": "🚗 Escolher", "de": "🚗 Wählen", "en": "🚗 Choose"},
 
     # --- Data / hora --------------------------------------------------------
-    "data_corpo": {"pt": "Passo {n} de 5 — Para que dia gostaria de marcar?",
-                   "de": "Schritt {n} von 5 — Für welchen Tag möchten Sie buchen?",
-                   "en": "Step {n} of 5 — Which day would you like to book?"},
+    "data_corpo": {"pt": "Passo {n} de 3 — Para que dia gostaria de marcar?",
+                   "de": "Schritt {n} von 3 — Für welchen Tag möchten Sie buchen?",
+                   "en": "Step {n} of 3 — Which day would you like to book?"},
     "data_seccao": {"pt": "Datas disponíveis", "de": "Verfügbare Termine", "en": "Available dates"},
     "data_botao": {"pt": "📅 Escolher dia", "de": "📅 Tag wählen", "en": "📅 Choose day"},
 
-    "hora_corpo": {"pt": "Passo {n} de 5 — A que horas lhe convém?",
-                   "de": "Schritt {n} von 5 — Um wie viel Uhr passt es Ihnen?",
-                   "en": "Step {n} of 5 — What time suits you?"},
+    "hora_corpo": {"pt": "Passo {n} de 3 — A que horas lhe convém?",
+                   "de": "Schritt {n} von 3 — Um wie viel Uhr passt es Ihnen?",
+                   "en": "Step {n} of 3 — What time suits you?"},
     "hora_seccao": {"pt": "Horários disponíveis", "de": "Verfügbare Uhrzeiten", "en": "Available times"},
     "hora_botao": {"pt": "⏰ Escolher hora", "de": "⏰ Uhrzeit wählen", "en": "⏰ Choose time"},
     # A lista de horas mostra só o que está MESMO livre. Quando nada sobra
@@ -270,10 +296,6 @@ TEXTOS = {
     "resumo_pergunta": {"pt": "Está tudo correto?", "de": "Ist alles korrekt?", "en": "Is everything correct?"},
     "botao_confirmar": {"pt": "✅ Confirmar", "de": "✅ Bestätigen", "en": "✅ Confirm"},
     "botao_alterar": {"pt": "✏️ Alterar", "de": "✏️ Ändern", "en": "✏️ Change"},
-    # Rótulos do RESUMO: respostas diretas à pergunta "confirmamos?", em três
-    # botões visíveis de imediato (ver passo_resumo).
-    "botao_resumo_sim": {"pt": "✅ Sim, confirmar", "de": "✅ Ja, bestätigen", "en": "✅ Yes, confirm"},
-    "botao_resumo_nao": {"pt": "✏️ Não, alterar", "de": "✏️ Nein, ändern", "en": "✏️ No, change"},
     "botao_cancelar": {"pt": "❌ Cancelar", "de": "❌ Abbrechen", "en": "❌ Cancel"},
 
     "obrigado_nome": {"pt": "Obrigado, {nome}!", "de": "Danke, {nome}!", "en": "Thank you, {nome}!"},
@@ -285,9 +307,9 @@ TEXTOS = {
     "confirmado_duracao": {"pt": "⏱️ Duração: aproximadamente {duracao}",
                             "de": "⏱️ Dauer: ungefähr {duracao}",
                             "en": "⏱️ Duration: approximately {duracao}"},
-    "confirmado_instrucao": {"pt": "Por favor, chegue aproximadamente 5 minutos antes da sua marcação.",
-                              "de": "Bitte kommen Sie ungefähr 5 Minuten vor Ihrem Termin an.",
-                              "en": "Please arrive approximately 5 minutes before your appointment."},
+    "confirmado_instrucao": {"pt": "Por favor, chegue cerca de 5 minutos antes da sua marcação.",
+                              "de": "Bitte kommen Sie etwa 5 Minuten vor Ihrem Termin an.",
+                              "en": "Please arrive about 5 minutes before your appointment."},
     # (o antigo "confirmado_rodape", que mandava escrever MENU/GERIR, foi
     # removido — essas ações são agora os botões enviados logo a seguir à
     # confirmação: "🗓️ Gerir marcação" e "🏠 Menu principal".)
@@ -488,9 +510,28 @@ TEXTOS = {
     "botao_reagendar": {"pt": "✏️ Reagendar", "de": "✏️ Verschieben", "en": "✏️ Reschedule"},
     "botao_cancelar_marcacao": {"pt": "❌ Cancelar", "de": "❌ Stornieren", "en": "❌ Cancel"},
     "botao_nova_marcacao": {"pt": "📅 Nova marcação", "de": "📅 Neue Buchung", "en": "📅 New booking"},
-    "reagendar_aviso": {"pt": "Sem problema, vamos criar uma nova marcação. A anterior foi arquivada.",
-                         "de": "Kein Problem, wir erstellen eine neue Buchung. Die vorherige wurde archiviert.",
-                         "en": "No problem, let's create a new booking. The previous one has been archived."},
+    "reagendar_aviso": {
+        "pt": "Sem problema. Vamos escolher a nova data e hora — a sua marcação atual "
+              "mantém-se até confirmar a nova.",
+        "de": "Kein Problem. Wählen wir das neue Datum und die neue Uhrzeit — Ihr aktueller "
+              "Termin bleibt bestehen, bis Sie den neuen bestätigen.",
+        "en": "No problem. Let's pick the new date and time — your current appointment stays "
+              "until you confirm the new one."},
+    "reagendar_ocupado": {
+        "pt": "😕 Esse horário foi entretanto ocupado. Escolha outro, por favor — a sua "
+              "marcação atual continua igual.",
+        "de": "😕 Diese Uhrzeit ist inzwischen belegt. Bitte wählen Sie eine andere — Ihr "
+              "aktueller Termin bleibt unverändert.",
+        "en": "😕 That time was just taken. Please pick another — your current appointment is "
+              "unchanged."},
+    "reagendar_confirmado": {
+        "pt": "✅ Marcação #{id} reagendada para {data} às {hora}.",
+        "de": "✅ Buchung #{id} verschoben auf {data} um {hora}.",
+        "en": "✅ Booking #{id} rescheduled to {data} at {hora}."},
+    "reagendar_ja_nao_valida": {
+        "pt": "Esta marcação já não pode ser reagendada. Escreva MENU para começar de novo.",
+        "de": "Diese Buchung kann nicht mehr verschoben werden. Schreiben Sie MENU, um neu zu beginnen.",
+        "en": "This booking can no longer be rescheduled. Type MENU to start again."},
     "cancelado_cliente": {"pt": "✅ A sua marcação foi cancelada.",
                            "de": "✅ Ihre Buchung wurde storniert.",
                            "en": "✅ Your booking has been cancelled."},
@@ -792,133 +833,92 @@ def tx(valor, idioma):
 # guardado na base de dados e usado nas notificações internas.
 # ---------------------------------------------------------------------------
 LIMPEZA_TIPOS = [
-    {"id": "lp_gellack", "preco": 55,
-     "titulo": {"pt": "Gellack mãos", "de": "Gellack Hände", "en": "Gel polish hands"},
-     "descricao": {"pt": "Verniz em gel de longa duração",
-                   "de": "Langanhaltender Gellack",
-                   "en": "Long-lasting gel polish"},
-     "duracao": {"pt": "1h", "de": "1h", "en": "1h"}},
-    {"id": "lp_gel", "preco": 90,
-     "titulo": {"pt": "Aplicação de gel", "de": "Gelmodellage", "en": "Gel application"},
-     "descricao": {"pt": "Construção completa em gel",
-                   "de": "Vollständiger Aufbau in Gel",
-                   "en": "Full gel build-up"},
-     "duracao": {"pt": "1h45", "de": "1h45", "en": "1h 45"}},
-    {"id": "lp_reenchimento", "preco": 70,
-     "titulo": {"pt": "Reenchimento", "de": "Auffüllen", "en": "Refill"},
-     "descricao": {"pt": "Manutenção do gel já aplicado",
-                   "de": "Auffrischung des vorhandenen Gels",
-                   "en": "Maintenance of existing gel"},
+    {"id": "lp_int", "preco": 80,
+     "titulo": {"pt": "Interior", "de": "Innenreinigung", "en": "Interior"},
+     "descricao": {"pt": "Aspiração e higienização completa do habitáculo",
+                   "de": "Absaugen und vollständige Hygiene des Innenraums",
+                   "en": "Vacuuming and full interior sanitising"},
      "duracao": {"pt": "1h30", "de": "1h30", "en": "1h 30"}},
-    {"id": "lp_classica", "preco": 40,
-     "titulo": {"pt": "Manicure clássica", "de": "Klassische Maniküre", "en": "Classic manicure"},
-     "descricao": {"pt": "Corte, lima e cutículas",
-                   "de": "Schneiden, Feilen und Nagelhaut",
-                   "en": "Cut, file and cuticles"},
-     "duracao": {"pt": "45min", "de": "45min", "en": "45min"}},
+    {"id": "lp_ext", "preco": 60,
+     "titulo": {"pt": "Exterior", "de": "Aussenreinigung", "en": "Exterior"},
+     "descricao": {"pt": "Lavagem exterior à mão + secagem",
+                   "de": "Handwäsche aussen + Trocknen",
+                   "en": "Hand exterior wash + drying"},
+     "duracao": {"pt": "1h", "de": "1h", "en": "1h"}},
+    {"id": "lp_full", "preco": 130,
+     "titulo": {"pt": "Interior + Exterior", "de": "Innen + Aussen", "en": "Interior + Exterior"},
+     "descricao": {"pt": "Pacote completo por dentro e por fora",
+                   "de": "Komplettpaket innen und aussen",
+                   "en": "Complete package inside and out"},
+     "duracao": {"pt": "2h", "de": "2h", "en": "2h"}},
 ]
 
-# Comprimento das unhas — reutiliza a estrutura central de modificadores
-# (mesmo mecanismo de "fator" partilhado com o carrinho e com os preços).
-# Os IDs internos mantêm-se para não partir sessões nem marcações antigas.
 TAMANHOS_VEICULO = [
     {"id": "tam_p", "fator": 1.0,
-     "titulo": {"pt": "Natural/curto", "de": "Natürlich/kurz", "en": "Natural/short"},
-     "descricao": {"pt": "Comprimento natural", "de": "Natürliche Länge", "en": "Natural length"}},
-    {"id": "tam_m", "fator": 1.10,
+     "titulo": {"pt": "Pequeno", "de": "Klein", "en": "Small"},
+     "descricao": {"pt": "Ex: Smart, Polo, Corsa", "de": "Z.B. Smart, Polo, Corsa", "en": "E.g. Smart, Polo, Corsa"}},
+    {"id": "tam_m", "fator": 1.15,
      "titulo": {"pt": "Médio", "de": "Mittel", "en": "Medium"},
-     "descricao": {"pt": "Ligeiramente além da ponta do dedo",
-                   "de": "Leicht über die Fingerkuppe hinaus",
-                   "en": "Slightly beyond the fingertip"}},
-    {"id": "tam_g", "fator": 1.20,
-     "titulo": {"pt": "Longo", "de": "Lang", "en": "Long"},
-     "descricao": {"pt": "Comprimento marcado", "de": "Deutliche Länge", "en": "Noticeable length"}},
-    {"id": "tam_xl", "fator": 1.35,
-     "titulo": {"pt": "Extra longo", "de": "Extra lang", "en": "Extra long"},
-     "descricao": {"pt": "Requer mais tempo de trabalho",
-                   "de": "Benötigt mehr Arbeitszeit",
-                   "en": "Requires more working time"}},
+     "descricao": {"pt": "Ex: Golf, Sedan, Berlina", "de": "Z.B. Golf, Limousine", "en": "E.g. Golf, Sedan"}},
+    {"id": "tam_g", "fator": 1.35,
+     "titulo": {"pt": "Grande", "de": "Gross", "en": "Large"},
+     "descricao": {"pt": "Ex: SUV, Van, Pick-up", "de": "Z.B. SUV, Van, Pick-up", "en": "E.g. SUV, Van, Pick-up"}},
 ]
 
 EXTRAS_LIMPEZA = [
     {"id": "ex_nenhum", "preco": 0,
-     "titulo": {"pt": "Sem extra", "de": "Kein Extra", "en": "No extra"},
+     "titulo": {"pt": "Nenhum extra", "de": "Kein Extra", "en": "No extra"},
      "descricao": {"pt": "Seguir sem extras", "de": "Ohne Extras fortfahren", "en": "Continue without extras"}},
-    {"id": "ex_french", "preco": 10,
-     "titulo": {"pt": "French/Babyboomer", "de": "French/Babyboomer", "en": "French/Babyboomer"},
-     "descricao": {"pt": "Acabamento degradê ou ponta branca",
-                   "de": "Verlauf oder weisse Spitze",
-                   "en": "Gradient or white tip finish"}},
-    {"id": "ex_nailart", "preco": 15,
-     "titulo": {"pt": "Nail Art simples", "de": "Einfache Nailart", "en": "Simple nail art"},
-     "descricao": {"pt": "Desenho ou decoração em algumas unhas",
-                   "de": "Motiv oder Dekoration auf einigen Nägeln",
-                   "en": "Design or decoration on a few nails"}},
-    {"id": "ex_reparacao", "preco": 8,
-     "titulo": {"pt": "Reparação de uma unha", "de": "Reparatur eines Nagels", "en": "Repair of one nail"},
-     "descricao": {"pt": "Correção pontual", "de": "Punktuelle Korrektur", "en": "Single-nail fix"}},
+    {"id": "ex_pelos", "preco": 25,
+     "titulo": {"pt": "Remoção de pelos de animal", "de": "Tierhaarentfernung", "en": "Pet hair removal"},
+     "descricao": {"pt": "Tratamento específico", "de": "Spezielle Behandlung", "en": "Specific treatment"}},
+    {"id": "ex_odores", "preco": 20,
+     "titulo": {"pt": "Tratamento de odores", "de": "Geruchsbehandlung", "en": "Odour treatment"},
+     "descricao": {"pt": "Ozono / neutralização de cheiros", "de": "Ozon / Geruchsneutralisierung",
+                   "en": "Ozone / odour neutralisation"}},
+    {"id": "ex_bancos", "preco": 15,
+     "titulo": {"pt": "Proteção de bancos", "de": "Sitzschutz", "en": "Seat protection"},
+     "descricao": {"pt": "Impermeabilização têxtil/pele", "de": "Imprägnierung Textil/Leder",
+                   "en": "Fabric/leather waterproofing"}},
 ]
 
 ESTETICA_SERVICOS = [
-    {"id": "es_pedicure", "preco": 55,
-     "titulo": {"pt": "Pedicure clássica", "de": "Klassische Pediküre", "en": "Classic pedicure"},
-     "descricao": {"pt": "Corte, lima e cuidado das cutículas",
-                   "de": "Schneiden, Feilen und Nagelhautpflege",
-                   "en": "Cut, file and cuticle care"},
-     "duracao": {"pt": "1h", "de": "1h", "en": "1h"}},
-    {"id": "es_pedigel", "preco": 75,
-     "titulo": {"pt": "Pedicure + Gellack", "de": "Pediküre + Gellack", "en": "Pedicure + gel polish"},
-     "descricao": {"pt": "Pedicure com verniz em gel",
-                   "de": "Pediküre mit Gellack",
-                   "en": "Pedicure with gel polish"},
-     "duracao": {"pt": "1h15", "de": "1h15", "en": "1h 15"}},
-    {"id": "es_spa", "preco": 85,
-     "titulo": {"pt": "Spa pedicure", "de": "Spa-Pediküre", "en": "Spa pedicure"},
-     "descricao": {"pt": "Banho, esfoliação e massagem",
-                   "de": "Fussbad, Peeling und Massage",
-                   "en": "Soak, scrub and massage"},
-     "duracao": {"pt": "1h30", "de": "1h30", "en": "1h 30"}},
+    {"id": "es_polimento", "preco": 150,
+     "titulo": {"pt": "Polimento", "de": "Polieren", "en": "Polishing"},
+     "descricao": {"pt": "Remove riscos e devolve o brilho", "de": "Entfernt Kratzer und bringt den Glanz zurück",
+                   "en": "Removes scratches and restores shine"},
+     "duracao": {"pt": "3h", "de": "3h", "en": "3h"}},
+    {"id": "es_ceramica", "preco": 350,
+     "titulo": {"pt": "Proteção cerâmica", "de": "Keramikversiegelung", "en": "Ceramic coating"},
+     "descricao": {"pt": "Proteção de longa duração", "de": "Langfristiger Schutz", "en": "Long-lasting protection"},
+     "duracao": {"pt": "1 dia", "de": "1 Tag", "en": "1 day"}},
+    {"id": "es_farois", "preco": 60,
+     "titulo": {"pt": "Polimento de faróis", "de": "Scheinwerferpolitur", "en": "Headlight polishing"},
+     "descricao": {"pt": "Recupera a transparência dos faróis", "de": "Stellt die Transparenz der Scheinwerfer wieder her",
+                   "en": "Restores headlight clarity"},
+     "duracao": {"pt": "45min", "de": "45min", "en": "45min"}},
 ]
 
-# Remoção de produto — reutiliza a mesma estrutura central de modificadores
-# por "fator". Nenhuma mensagem aqui fala de veículos.
 ESTADO_VEICULO = [
     {"id": "est_bom", "fator": 1.0,
-     "titulo": {"pt": "Sem remoção", "de": "Ohne Entfernung", "en": "No removal"},
-     "descricao": {"pt": "As unhas estão sem produto",
-                   "de": "Die Nägel sind ohne Produkt",
-                   "en": "Nails have no product on"}},
-    {"id": "est_medio", "fator": 1.10,
-     "titulo": {"pt": "Remover Gellack", "de": "Gellack entfernen", "en": "Remove gel polish"},
-     "descricao": {"pt": "Retirar verniz em gel existente",
-                   "de": "Vorhandenen Gellack ablösen",
-                   "en": "Take off existing gel polish"}},
-    {"id": "est_mau", "fator": 1.20,
-     "titulo": {"pt": "Remover gel/acrílico", "de": "Gel/Acryl entfernen", "en": "Remove gel/acrylic"},
-     "descricao": {"pt": "Remoção de construção em gel ou acrílico",
-                   "de": "Entfernung von Gel- oder Acrylaufbau",
-                   "en": "Removal of gel or acrylic build-up"}},
+     "titulo": {"pt": "✅ Bom estado", "de": "✅ Guter Zustand", "en": "✅ Good condition"}},
+    {"id": "est_medio", "fator": 1.0,
+     "titulo": {"pt": "🟡 Estado médio", "de": "🟡 Mittlerer Zustand", "en": "🟡 Average condition"}},
+    {"id": "est_mau", "fator": 1.15,
+     "titulo": {"pt": "🔴 Precisa de atenção especial", "de": "🔴 Braucht besondere Pflege", "en": "🔴 Needs special attention"}},
 ]
 
 EXTRAS_ESTETICA = [
     {"id": "exe_nenhum", "preco": 0,
-     "titulo": {"pt": "Sem extra", "de": "Kein Extra", "en": "No extra"},
+     "titulo": {"pt": "Nenhum extra", "de": "Kein Extra", "en": "No extra"},
      "descricao": {"pt": "Seguir sem extras", "de": "Ohne Extras fortfahren", "en": "Continue without extras"}},
-    {"id": "exe_french", "preco": 10,
-     "titulo": {"pt": "French", "de": "French", "en": "French"},
-     "descricao": {"pt": "Acabamento francês", "de": "French-Finish", "en": "French finish"}},
-    {"id": "exe_nailart", "preco": 15,
-     "titulo": {"pt": "Nail Art", "de": "Nailart", "en": "Nail art"},
-     "descricao": {"pt": "Decoração nos dedos dos pés",
-                   "de": "Dekoration auf den Zehennägeln",
-                   "en": "Decoration on the toenails"}},
-    {"id": "exe_calos", "preco": 20,
-     # "Tratamento de calosidades" tem 25 caracteres e a API corta os títulos
-     # de linha aos 24 (MAX_TITULO_LINHA) — sem o "de" fica igual de claro.
-     "titulo": {"pt": "Tratamento calosidades", "de": "Hornhautbehandlung", "en": "Callus treatment"},
-     "descricao": {"pt": "Cuidado intensivo da pele dura",
-                   "de": "Intensive Pflege der harten Haut",
-                   "en": "Intensive care for hard skin"}},
+    {"id": "exe_farois", "preco": 60,
+     "titulo": {"pt": "Polimento de faróis", "de": "Scheinwerferpolitur", "en": "Headlight polishing"},
+     "descricao": {"pt": "Complementar ao serviço principal", "de": "Ergänzend zum Hauptservice",
+                   "en": "In addition to the main service"}},
+    {"id": "exe_pneus", "preco": 20,
+     "titulo": {"pt": "Tratamento de pneus/jantes", "de": "Reifen-/Felgenpflege", "en": "Tyre/rim treatment"},
+     "descricao": {"pt": "Acabamento final", "de": "Abschliessende Politur", "en": "Finishing touch"}},
 ]
 
 # ---------------------------------------------------------------------------
@@ -1155,7 +1155,7 @@ MENU_PRINCIPAL = [
      "descricao": {"pt": "Escolher serviço, data e hora", "de": "Service, Datum und Uhrzeit wählen",
                    "en": "Choose service, date and time"}},
     {"id": "mp_gerir",
-     "titulo": {"pt": "🗓️ Gerir marcação", "de": "🗓️ Termin verwalten", "en": "🗓️ Manage booking"},
+     "titulo": {"pt": "🗓️ Gerir a minha marcação", "de": "🗓️ Meinen Termin verwalten", "en": "🗓️ Manage my booking"},
      "descricao": {"pt": "Ver, reagendar ou cancelar", "de": "Ansehen, verschieben oder stornieren",
                    "en": "View, reschedule or cancel"}},
     {"id": "mp_humano",
@@ -1163,30 +1163,23 @@ MENU_PRINCIPAL = [
      "descricao": {"pt": "Um humano responde-lhe em breve", "de": "Ein Mitarbeiter meldet sich in Kürze",
                    "en": "A team member will reply shortly"}},
     {"id": "mp_idioma",
-     "titulo": {"pt": "🌍 Alterar idioma", "de": "🌍 Sprache ändern", "en": "🌍 Change language"},
+     "titulo": {"pt": "🌐 Alterar idioma", "de": "🌐 Sprache ändern", "en": "🌐 Change language"},
      "descricao": {"pt": "Português, Deutsch, English", "de": "Português, Deutsch, English",
                    "en": "Português, Deutsch, English"}},
 ]
 
-# Categorias VISÍVEIS ao cliente. Os IDs internos mantêm-se (cat_limpeza /
-# cat_estetica) de propósito: mudá-los só por causa do texto partiria sessões
-# guardadas, marcações antigas e o dispatch do webhook, sem ganho nenhum.
-CATEGORIAS_MARCAR = [
-    {"id": "cat_limpeza", "titulo": {"pt": "💅 Mãos / Manicure", "de": "💅 Hände / Maniküre",
-                                     "en": "💅 Hands / Manicure"}},
-    {"id": "cat_estetica", "titulo": {"pt": "🦶 Pés / Pedicure", "de": "🦶 Füsse / Pediküre",
-                                      "en": "🦶 Feet / Pedicure"}},
+# LEGADO (Spotless): categorias de detailing automóvel. Já NÃO são mostradas
+# ao cliente Daniela Beauty — o fluxo novo escolhe o serviço diretamente (ver
+# iniciar_escolha_servico). Mantidas só para NOME_CATEGORIA resolver marcações
+# antigas no painel/calendário.
+CATEGORIAS_MARCAR = []
+CATEGORIAS_LEGADAS = [
+    {"id": "cat_limpeza", "titulo": {"pt": "Limpeza", "de": "Reinigung", "en": "Cleaning"}},
+    {"id": "cat_estetica", "titulo": {"pt": "Estética", "de": "Aufbereitung", "en": "Detailing"}},
+    {"id": "cat_wrap", "titulo": {"pt": "Wrap & Proteção", "de": "Folierung & Schutz", "en": "Wrap & Protection"}},
 ]
 
-# O fluxo Wrap & Proteção NÃO foi apagado: as tabelas, migrations, rotas da
-# API e funções continuam todas lá, para não partir bases de dados nem
-# pedidos antigos. Só deixou de ter entrada nos menus públicos desta versão.
-CATEGORIA_WRAP_OCULTA = {"id": "cat_wrap",
-                         "titulo": {"pt": "🎨 Wrap & Proteção", "de": "🎨 Folierung & Schutz",
-                                    "en": "🎨 Wrap & Protection"}}
-
-NOME_CATEGORIA = {c["id"]: c["titulo"] for c in CATEGORIAS_MARCAR}
-NOME_CATEGORIA[CATEGORIA_WRAP_OCULTA["id"]] = CATEGORIA_WRAP_OCULTA["titulo"]
+NOME_CATEGORIA = {c["id"]: c["titulo"] for c in CATEGORIAS_LEGADAS}
 
 
 # ---------------------------------------------------------------------------
@@ -1194,7 +1187,8 @@ NOME_CATEGORIA[CATEGORIA_WRAP_OCULTA["id"]] = CATEGORIA_WRAP_OCULTA["titulo"]
 # (esquema inalterado — o idioma escolhido vive dentro do JSON da sessão,
 # tal como "nome", não precisa de coluna própria)
 # ---------------------------------------------------------------------------
-DB_PATH = os.environ.get("SESSOES_DB", "sessoes.db")
+# Compat: caminho do SQLite (a verdade está em config.SQLITE_PATH).
+DB_PATH = config.SQLITE_PATH
 
 # Estados possíveis de um pedido de orçamento (Wrap & Proteção). Só usados
 # internamente/no dashboard — não fazem parte do texto traduzido ao cliente.
@@ -1213,190 +1207,17 @@ ESTADOS_PEDIDO_ATIVOS = ("novo", "em análise", "orçamento enviado", "alteraç�
 
 
 def obter_bd():
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS sessoes (telefone TEXT PRIMARY KEY, dados TEXT NOT NULL)"
-    )
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS agendamentos ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-        "telefone TEXT NOT NULL, "
-        "nome TEXT, "
-        "categoria TEXT, "
-        "servico TEXT NOT NULL, "
-        "extra TEXT, "
-        "data TEXT, "
-        "hora TEXT, "
-        "preco REAL, "
-        "duracao TEXT, "
-        "estado TEXT DEFAULT 'confirmado', "
-        "criado_em TEXT NOT NULL)"
-    )
-    # Pedidos de orçamento com fotografias (fluxo Wrap & Proteção). Estrutura
-    # separada dos agendamentos, pois um pedido de orçamento ainda não é uma
-    # marcação. `agendamento_id` é reservado (nulo por agora) para uma futura
-    # funcionalidade de calendário poder associar um pedido a uma marcação,
-    # sem duplicar dados — não implementado nesta fase.
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS pedidos_orcamento ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-        "telefone TEXT NOT NULL, "
-        "nome TEXT, "
-        "veiculo TEXT, "
-        "ano_veiculo TEXT, "
-        "tipo_wrap TEXT, "
-        "cor_acabamento TEXT, "
-        "estado TEXT DEFAULT 'novo', "
-        "agendamento_id INTEGER, "
-        "criado_em TEXT NOT NULL)"
-    )
-    # Fotografias associadas a um pedido de orçamento. Só o NOME do ficheiro
-    # é guardado aqui — o conteúdo binário da imagem vive em disco (pasta
-    # MEDIA_DIR), nunca dentro do SQLite.
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS fotografias ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-        "pedido_id INTEGER NOT NULL, "
-        "nome_ficheiro TEXT NOT NULL, "
-        "mime_tipo TEXT, "
-        "criado_em TEXT NOT NULL)"
-    )
-    # Migração leve: guarda o carrinho (JSON) junto da marcação/pedido, para
-    # futuramente alimentar o dashboard, orçamento, pagamento e calendário,
-    # sem duplicar dados. Em bases de dados já existentes (criadas antes
-    # desta funcionalidade), a coluna ainda não existe — adiciona-a agora.
-    for tabela in ("agendamentos", "pedidos_orcamento"):
-        try:
-            conn.execute(f"ALTER TABLE {tabela} ADD COLUMN carrinho_json TEXT")
-        except sqlite3.OperationalError:
-            pass  # coluna já existe
-    # Migração leve: distingue no painel um pedido rápido de uma configuração
-    # detalhada ou de um pedido de contacto com especialista. Pedidos antigos
-    # ficam com a coluna a NULL e são apresentados como "detalhe" (era o único
-    # modo existente antes desta funcionalidade).
-    try:
-        conn.execute("ALTER TABLE pedidos_orcamento ADD COLUMN modo_pedido TEXT")
-    except sqlite3.OperationalError:
-        pass  # coluna já existe
+    """Ligação à base de dados — agora um wrapper fino sobre `db.ligacao()`.
 
-    # Orçamentos criados no painel para um pedido, e respetivas linhas
-    # (descrição + quantidade + preço). Estrutura própria, associada ao ID do
-    # pedido — nunca reaproveita as colunas de pedidos_orcamento. Cada edição
-    # de um orçamento já ENVIADO cria uma nova "versao" (nunca reescreve a
-    # anterior), para preservar sempre o que foi efetivamente enviado ao
-    # cliente (ver obter_ou_criar_rascunho_orcamento). Tabelas novas -> não
-    # precisam de ALTER TABLE, só de CREATE TABLE IF NOT EXISTS (compatível
-    # com bases de dados antigas, que simplesmente ainda não as têm).
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS orcamentos ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-        "pedido_id INTEGER NOT NULL, "
-        "versao INTEGER NOT NULL, "
-        "estado TEXT NOT NULL DEFAULT 'rascunho', "
-        "desconto_centimos INTEGER NOT NULL DEFAULT 0, "
-        "observacoes TEXT, "
-        "validade_dias INTEGER, "
-        "criado_em TEXT NOT NULL, "
-        "atualizado_em TEXT NOT NULL, "
-        "enviado_em TEXT, "
-        "respondido_em TEXT)"
-    )
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS orcamento_linhas ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-        "orcamento_id INTEGER NOT NULL, "
-        "descricao TEXT NOT NULL, "
-        "quantidade INTEGER NOT NULL DEFAULT 1, "
-        "preco_centimos INTEGER NOT NULL DEFAULT 0, "
-        "criado_em TEXT NOT NULL)"
-    )
-    # Última mensagem recebida de cada cliente — usada só para saber se ainda
-    # estamos dentro da janela de 24h de atendimento ao cliente da Meta (fora
-    # dela, mensagens iniciadas pelo negócio como o envio de um orçamento têm
-    # de usar um template pré-aprovado; ver dentro_da_janela_24h()). É uma
-    # tabela à parte da sessão (nunca dentro do JSON de "sessoes"), para nunca
-    # interferir com o formato/conteúdo já testado da sessão.
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS interacoes_cliente ("
-        "telefone TEXT PRIMARY KEY, "
-        "ultima_mensagem_em TEXT NOT NULL)"
-    )
-    # Histórico de reagendamentos feitos pelo painel. Tabela NOVA e à parte:
-    # a migração é automática e não destrutiva (CREATE TABLE IF NOT EXISTS),
-    # por isso bases de dados antigas continuam a funcionar tal e qual.
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS agendamento_historico ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-        "agendamento_id INTEGER NOT NULL, "
-        "data_anterior TEXT, "
-        "hora_anterior TEXT, "
-        "data_nova TEXT, "
-        "hora_nova TEXT, "
-        "origem TEXT NOT NULL DEFAULT 'dashboard', "
-        "alterado_em TEXT NOT NULL)"
-    )
-    # -----------------------------------------------------------------------
-    # bloqueia_horario — separa DEFINITIVAMENTE o estado da marcação da
-    # disponibilidade do horário: 0 = horário livre, 1 = horário bloqueado.
-    # Uma marcação pode estar cancelada e o negócio decidir na mesma se
-    # aquele horário volta ao mercado ou não (ver libertar_horario_ao_cancelar).
-    #
-    # Migração automática e NÃO destrutiva: a coluna nasce com DEFAULT 1
-    # (uma marcação nova ocupa mesmo o horário), mas no instante em que é
-    # criada as marcações antigas já canceladas ou reagendadas são postas a
-    # 0 — senão horários que hoje estão livres começavam de repente a
-    # aparecer bloqueados, sem ninguém ter pedido nada. O UPDATE corre uma
-    # única vez: nos arranques seguintes o ALTER falha (coluna já existe) e
-    # as escolhas entretanto feitas no painel ficam intactas.
-    # -----------------------------------------------------------------------
-    try:
-        conn.execute("ALTER TABLE agendamentos ADD COLUMN bloqueia_horario INTEGER NOT NULL DEFAULT 1")
-        conn.execute("UPDATE agendamentos SET bloqueia_horario = 0 "
-                     "WHERE LOWER(COALESCE(estado, '')) IN ('cancelado', 'reagendado')")
-        # Fecha já a transação implícita aberta por este UPDATE: quem recebe
-        # esta ligação pode precisar de abrir a sua própria transação com
-        # BEGIN IMMEDIATE (cancelar/reagendar/gravar marcação) e o SQLite não
-        # deixa abrir uma transação dentro de outra.
-        conn.commit()
-    except sqlite3.OperationalError:
-        pass  # coluna já existe — nada a migrar
-    # Configurações do negócio editáveis no painel (chave -> valor em texto).
-    # Tabela NOVA: CREATE TABLE IF NOT EXISTS chega, bases de dados antigas
-    # continuam a funcionar exatamente na mesma e ganham os valores por
-    # omissão definidos em CONFIGURACOES_OMISSAO.
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS configuracoes ("
-        "chave TEXT PRIMARY KEY, "
-        "valor TEXT NOT NULL, "
-        "atualizado_em TEXT NOT NULL)"
-    )
-    # Reservas TEMPORÁRIAS: o horário que um cliente acabou de escolher fica
-    # retido em nome dele enquanto está a rever e a confirmar a marcação, e
-    # deixa de ser oferecido a mais ninguém. Não é uma marcação — expira
-    # sozinha (ver RESERVA_TEMPORARIA_MINUTOS) e nunca aparece no calendário
-    # nem no painel. Uma linha por número: um cliente só configura uma
-    # marcação de cada vez. Tabela nova -> migração automática e inofensiva.
-    # Mensagens JÁ PROCESSADAS, pelo id que a Meta atribui a cada uma
-    # (wamid...). A Meta reenvia o mesmo webhook quando não recebe o 200 a
-    # tempo; sem isto, um reenvio depois de uma confirmação voltava a correr
-    # o mesmo passo — e chegava a tentar gravar uma segunda marcação sobre
-    # uma sessão já reiniciada. Tabela nova: migração automática e inofensiva.
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS mensagens_processadas ("
-        "id TEXT PRIMARY KEY, "
-        "recebida_em TEXT NOT NULL)"
-    )
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS reservas_temporarias ("
-        "telefone TEXT PRIMARY KEY, "
-        "data TEXT NOT NULL, "
-        "hora TEXT NOT NULL, "
-        "servico TEXT, "
-        "duracao TEXT, "
-        "criado_em TEXT NOT NULL, "
-        "expira_em TEXT NOT NULL)"
-    )
-    return conn
+    Diferenças face à versão antiga:
+      • já NÃO cria tabelas nem corre ALTER TABLE a cada chamada — o schema
+        é construído por migrações versionadas (ver db.MIGRACOES), aplicadas
+        uma única vez no arranque;
+      • a ligação é sempre FECHADA no fim do `with` (antes ficava aberta).
+
+    Continua a usar-se exatamente como antes: `with obter_bd() as conn:`.
+    """
+    return bd.ligacao()
 
 
 # ---------------------------------------------------------------------------
@@ -1427,7 +1248,7 @@ def guardar_configuracao(chave, valor):
             "INSERT INTO configuracoes (chave, valor, atualizado_em) VALUES (?, ?, ?) "
             "ON CONFLICT(chave) DO UPDATE SET valor = excluded.valor, "
             "atualizado_em = excluded.atualizado_em",
-            (chave, str(valor), datetime.utcnow().isoformat()),
+            (chave, str(valor), tempo.iso_utc()),
         )
     return str(valor)
 
@@ -1444,25 +1265,25 @@ def configuracoes_atuais():
     return {CONFIG_LIBERTAR_AO_CANCELAR: libertar_horario_ao_cancelar()}
 
 
-# Quanto tempo se guarda o id de uma mensagem já tratada. Bem acima da
-# janela de reenvios da Meta, e curto o suficiente para a tabela não crescer.
+# Quanto tempo se guarda o wamid de uma mensagem já tratada — bem acima da
+# janela de reenvios da Meta, curto o suficiente para a tabela não crescer.
 IDEMPOTENCIA_HORAS = 24
 
 
 def mensagem_ja_processada(id_mensagem):
-    """True se esta mensagem JÁ foi tratada — nesse caso não se volta a agir.
-    Regista-a atomicamente: o INSERT OR IGNORE só afeta uma linha na primeira
-    vez, por isso dois webhooks simultâneos com o mesmo id nunca passam os
-    dois. Sem id (mensagens de teste, formatos antigos) segue o fluxo normal."""
+    """True se esta mensagem (wamid) JÁ foi tratada. Regista-a atomicamente:
+    o INSERT OR IGNORE só afeta uma linha na primeira vez, por isso dois
+    webhooks simultâneos com o mesmo id nunca passam ambos. Sem id (mensagens
+    de teste / formatos antigos) segue o fluxo normal."""
     if not id_mensagem:
         return False
-    agora = datetime.utcnow()
+    agora = tempo.agora_utc()
     with obter_bd() as conn:
         conn.execute("DELETE FROM mensagens_processadas WHERE recebida_em < ?",
-                     ((agora - timedelta(hours=IDEMPOTENCIA_HORAS)).isoformat(),))
+                     (tempo.iso_utc(agora - timedelta(hours=IDEMPOTENCIA_HORAS)),))
         cur = conn.execute(
             "INSERT OR IGNORE INTO mensagens_processadas (id, recebida_em) VALUES (?, ?)",
-            (str(id_mensagem), agora.isoformat()))
+            (str(id_mensagem), tempo.iso_utc(agora)))
         return cur.rowcount == 0
 
 
@@ -1491,7 +1312,9 @@ def apagar_sessao(telefone):
 # Colunas de `agendamentos` lidas em todo o lado — uma lista só, para nunca
 # haver um SELECT a devolver menos colunas do que o dicionário espera.
 CAMPOS_AGENDAMENTO = ["id", "telefone", "nome", "categoria", "servico", "extra", "data", "hora",
-                      "preco", "duracao", "estado", "criado_em", "carrinho_json", "bloqueia_horario"]
+                      "preco", "duracao", "estado", "criado_em", "carrinho_json", "bloqueia_horario",
+                      # colunas ESTRUTURADAS (migração 4) — a lógica usa estas
+                      "servico_id", "data_iso", "hora_hhmm", "duracao_min", "preco_cents"]
 SQL_COLUNAS_AGENDAMENTO = ", ".join(CAMPOS_AGENDAMENTO)
 
 
@@ -1505,6 +1328,15 @@ def guardar_agendamento(telefone, sessao):
     hora = hora_hhmm_de_texto(sessao.get("hora"))
     duracao = recuperar_duracao(sessao.get("servico"), sessao.get("duracao"))
 
+    servico_id = sessao.get("servico_id")
+    duracao_min = sessao.get("duracao_min")
+    preco_cents = sessao.get("preco_cents")
+    if servico_id and (duracao_min is None or preco_cents is None):
+        s = bd.obter_servico(servico_id) or {}
+        duracao_min = duracao_min if duracao_min is not None else s.get("duracao_min")
+        preco_cents = preco_cents if "preco_cents" in sessao else s.get("preco_cents")
+    estado = estado_inicial_marcacao()
+
     with obter_bd() as conn:
         conn.execute("BEGIN IMMEDIATE")
         if data_iso and hora:
@@ -1517,15 +1349,17 @@ def guardar_agendamento(telefone, sessao):
         cur = conn.execute(
             "INSERT INTO agendamentos "
             "(telefone, nome, categoria, servico, extra, data, hora, preco, duracao, estado, criado_em, "
-            "carrinho_json, bloqueia_horario) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmado', ?, ?, 1)",
+            "carrinho_json, bloqueia_horario, servico_id, data_iso, hora_hhmm, duracao_min, preco_cents) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)",
             (
                 telefone, sessao.get("nome"), sessao.get("categoria"),
                 sessao.get("servico"), sessao.get("extra"),
                 sessao.get("data"), sessao.get("hora"),
                 sessao.get("preco"), sessao.get("duracao"),
-                datetime.utcnow().isoformat(),
+                estado,
+                tempo.iso_utc(),
                 json.dumps(sessao.get("carrinho", [])),
+                servico_id, data_iso, hora, duracao_min, preco_cents,
             ),
         )
         return cur.lastrowid
@@ -1551,7 +1385,7 @@ def ultimo_agendamento_ativo(telefone):
     with obter_bd() as conn:
         linha = conn.execute(
             "SELECT id, servico, data, hora, preco, duracao FROM agendamentos "
-            "WHERE telefone = ? AND estado = 'confirmado' ORDER BY id DESC LIMIT 1",
+            "WHERE telefone = ? AND estado IN ('confirmed', 'pending') ORDER BY id DESC LIMIT 1",
             (telefone,),
         ).fetchone()
     if not linha:
@@ -1577,7 +1411,7 @@ def agendamentos_confirmados_por_telefone(telefone):
     with obter_bd() as conn:
         linhas = conn.execute(
             f"SELECT {SQL_COLUNAS_AGENDAMENTO} FROM agendamentos "
-            "WHERE telefone = ? AND estado = 'confirmado' ORDER BY id DESC",
+            "WHERE telefone = ? AND estado IN ('confirmed', 'pending') ORDER BY id DESC",
             (telefone,),
         ).fetchall()
     return [dict(zip(CAMPOS_AGENDAMENTO, l)) for l in linhas]
@@ -1595,35 +1429,54 @@ def linhas_carrinho_agendamento(agendamento):
     return linhas if isinstance(linhas, list) else []
 
 
+def preco_por_confirmar_agendamento(agendamento):
+    """True quando a marcação é de um serviço SEM preço definido (preco_cents
+    NULL) e não tem carrinho nem preço legado. Nesses casos NÃO se mostra
+    "CHF 0" — mostra-se "a confirmar"."""
+    ag = agendamento or {}
+    if linhas_carrinho_agendamento(ag):
+        return False
+    if ag.get("preco") not in (None, "", 0, 0.0):
+        return False
+    if ag.get("preco_cents") is not None:
+        return False
+    return bool(ag.get("servico_id"))
+
+
 def total_centimos_agendamento(agendamento):
-    """Total de uma marcação em cêntimos. Usa sempre o carrinho_json guardado
-    com a marcação; se não existir (marcações antigas), cai para a coluna
-    `preco` (em CHF). Nunca devolve 0 quando há de facto um preço guardado."""
-    linhas = linhas_carrinho_agendamento(agendamento)
+    """Total de uma marcação em cêntimos, ou None quando o preço está por
+    confirmar (serviço sem preço definido). Callers de apresentação devem
+    tratar None como "a confirmar" e NUNCA como 0."""
+    ag = agendamento or {}
+    linhas = linhas_carrinho_agendamento(ag)
     if linhas:
         return sum(int(l.get("preco", 0)) * int(l.get("quantidade", 1) or 1) for l in linhas)
-    preco = agendamento.get("preco")
-    return int(round(float(preco) * 100)) if preco else 0
+    if ag.get("preco_cents") is not None:
+        return int(ag["preco_cents"])
+    preco = ag.get("preco")
+    if preco not in (None, ""):
+        return int(round(float(preco) * 100))
+    return None if preco_por_confirmar_agendamento(ag) else 0
 
 
 def atualizar_estado_agendamento(id_agendamento, estado, bloqueia_horario=None):
-    """Muda o estado de uma marcação. `bloqueia_horario` é OPCIONAL e, quando
-    indicado, é gravado na mesma instrução — o estado e a disponibilidade do
-    horário nunca ficam por um instante em desacordo.
+    """Muda o estado de uma marcação (valor canónico — ver estados.py).
+    `bloqueia_horario` é OPCIONAL e, quando indicado, é gravado na mesma
+    instrução, para o estado e a ocupação do horário nunca ficarem em
+    desacordo.
 
-    Quando não é indicado, aplica-se a regra por omissão do estado: uma
-    marcação REAGENDADA (a antiga, que já não vai acontecer) deixa sempre de
-    ocupar o horário; concluída e confirmada continuam a ocupá-lo; o
-    cancelamento tem caminho próprio (ver marcar_agendamento_cancelado), por
-    ser o único caso em que a decisão pertence ao negócio."""
-    if bloqueia_horario is None and chave_estado(estado) == "reagendado":
+    Regra por omissão: `no_show` liberta o horário (o cliente não veio);
+    `completed`/`confirmed`/`pending` mantêm-no; `cancelled` tem caminho
+    próprio (marcar_agendamento_cancelado — a decisão é do negócio)."""
+    canonico = estados.normalizar(estado)
+    if bloqueia_horario is None and canonico == estados.NO_SHOW:
         bloqueia_horario = 0
     with obter_bd() as conn:
         if bloqueia_horario is None:
-            conn.execute("UPDATE agendamentos SET estado = ? WHERE id = ?", (estado, id_agendamento))
+            conn.execute("UPDATE agendamentos SET estado = ? WHERE id = ?", (canonico, id_agendamento))
         else:
             conn.execute("UPDATE agendamentos SET estado = ?, bloqueia_horario = ? WHERE id = ?",
-                         (estado, int(bool(bloqueia_horario)), id_agendamento))
+                         (canonico, int(bool(bloqueia_horario)), id_agendamento))
 
 
 # ---------------------------------------------------------------------------
@@ -1642,94 +1495,72 @@ CALENDARIO_INTERVALO_MIN = 30   # intervalos de 30 minutos
 DURACAO_DIA_INTEIRO_MIN = (CALENDARIO_HORA_FIM - CALENDARIO_HORA_INICIO) * 60
 
 # ---------------------------------------------------------------------------
-# Cor de cada SERVIÇO no calendário — mapa central, fácil de editar.
-# A chave é sempre o nome CANÓNICO em português (o que fica gravado na coluna
-# `servico`), nunca o texto traduzido nem uma cor gerada ao acaso: assim a cor
-# de um serviço é estável entre sessões, idiomas e atualizações da página.
-# A COR identifica o serviço; o ESTADO (confirmado/concluído/reagendado/
-# cancelado) é sempre comunicado à parte, por texto (ver ESTADO_CALENDARIO).
+# Cor de cada SERVIÇO no calendário. A verdade é a coluna `cor` da tabela
+# `servicos` (fonte única). Os nomes LEGADOS (Spotless) ficam aqui só para o
+# calendário não perder a cor das marcações antigas já gravadas.
+# A COR identifica o serviço; o ESTADO é sempre comunicado à parte, por texto.
 # ---------------------------------------------------------------------------
-CORES_SERVICOS = {
-    # Mãos / Manicure
-    "Gellack mãos": "#d1478f",          # magenta
-    "Aplicação de gel": "#a45cc4",      # roxo
-    "Reenchimento": "#6f5ae0",          # violeta-azulado
-    "Manicure clássica": "#e896c8",     # rosa claro
-    # Pés / Pedicure
-    "Pedicure clássica": "#20a4b8",     # turquesa
-    "Pedicure + Gellack": "#2ea05a",    # verde
-    "Spa pedicure": "#e8963c",          # laranja
-    # Serviços do catálogo ANTIGO: continuam aqui para as marcações já
-    # gravadas não perderem a cor no calendário nem no histórico.
-    "Interior": "#3878e8",
-    "Exterior": "#3d8f9e",
-    "Interior + Exterior": "#5a6fd0",
-    "Polimento": "#c08a3c",
-    "Proteção cerâmica": "#3f8f5f",
-    "Polimento de faróis": "#d4c23a",
-    "Wrap total": "#b0538c",
-    "Wrap parcial": "#8f63a8",
+CORES_SERVICOS_LEGADAS = {
+    "Interior": "#3878e8", "Exterior": "#20a4b8", "Interior + Exterior": "#6f5ae0",
+    "Polimento": "#e8963c", "Proteção cerâmica": "#2ea05a", "Polimento de faróis": "#d4c23a",
+    "Wrap total": "#d1478f", "Wrap parcial": "#a45cc4",
 }
-# Só os serviços ATUAIS entram na legenda do painel — os antigos continuam a
-# ter cor, mas não enchem a legenda com nomes que já não se podem marcar.
-SERVICOS_NA_LEGENDA = ("Gellack mãos", "Aplicação de gel", "Reenchimento", "Manicure clássica",
-                       "Pedicure clássica", "Pedicure + Gellack", "Spa pedicure")
-COR_SERVICO_OMISSAO = "#8b95a6"         # cinzento-azulado, para serviços desconhecidos
+COR_SERVICO_OMISSAO = catalogo.COR_OMISSAO
+
+
+def _cores_servicos_atuais():
+    """{nome_pt: cor} a partir da tabela de serviços (fonte única)."""
+    return {s["nome_pt"]: (s.get("cor") or COR_SERVICO_OMISSAO)
+            for s in bd.listar_servicos(incluir_inativos=True)}
 
 
 def cor_do_servico(servico_pt):
-    """Cor estável de um serviço, a partir do nome canónico em português."""
-    return CORES_SERVICOS.get((servico_pt or "").strip(), COR_SERVICO_OMISSAO)
+    """Cor estável de um serviço pelo nome canónico (português)."""
+    nome = (servico_pt or "").strip()
+    return _cores_servicos_atuais().get(nome) or CORES_SERVICOS_LEGADAS.get(nome, COR_SERVICO_OMISSAO)
 
 
 def cores_servicos_legenda():
-    """Mapa nome -> cor para a legenda "Cores dos serviços" do painel: os
-    serviços atuais, mais a entrada de reserva para tudo o resto (incluindo
-    as marcações antigas, que mantêm a sua cor própria em CORES_SERVICOS)."""
-    return {**{n: CORES_SERVICOS[n] for n in SERVICOS_NA_LEGENDA},
+    """Mapa nome -> cor para a legenda "Cores dos serviços" do painel: só os
+    serviços ATIVOS + a entrada de reserva para tudo o resto."""
+    return {**{s["nome_pt"]: (s.get("cor") or COR_SERVICO_OMISSAO)
+               for s in bd.listar_servicos()},
             "Outro serviço": COR_SERVICO_OMISSAO}
 
 
-# Estados de uma marcação tal como aparecem no calendário (texto sempre
-# visível, além da cor do serviço).
-ESTADO_CALENDARIO = {
-    "confirmado": "Confirmado",
-    "concluido": "Concluído",
-    "reagendado": "Reagendado",
-    "cancelado": "Cancelado",
-}
+# Compat: código/legado que ainda importa CORES_SERVICOS como dict.
+CORES_SERVICOS = CORES_SERVICOS_LEGADAS
+
+
+# Estados de uma marcação tal como aparecem no calendário (chave CANÓNICA ->
+# rótulo em português para a equipa). Ver estados.py.
+ESTADO_CALENDARIO = dict(estados.ROTULO_PT)
 
 
 def chave_estado(estado):
-    """"Concluído" -> "concluido". A base de dados guarda o estado como foi
-    escrito (com acento); a chave normalizada é a que se usa para comparar,
-    filtrar e escolher classes CSS. Mesma regra do chaveEstado() do painel."""
-    limpo = unicodedata.normalize("NFD", str(estado or ""))
-    return "".join(c for c in limpo if not unicodedata.combining(c)).strip().lower()
+    """Estado (EN/PT/acentos) -> valor CANÓNICO. Mesma regra do chaveEstado()
+    do painel. Ver estados.normalizar()."""
+    return estados.normalizar(estado)
 
 
 # ---------------------------------------------------------------------------
 # DISPONIBILIDADE REAL — o estado da marcação e a ocupação do horário são
-# duas coisas diferentes (ver a coluna bloqueia_horario):
-#   • confirmada ................................. bloqueia
-#   • concluída .................................. bloqueia
-#   • cancelada com bloqueia_horario = 1 ......... bloqueia
-#   • cancelada com bloqueia_horario = 0 ......... NÃO bloqueia
-#   • reagendada (a antiga) ...................... NÃO bloqueia
-#   • a marcação nova saída do reagendamento fica confirmada -> bloqueia
-# Esta é a ÚNICA função que decide se um registo ocupa um horário; tudo o
-# resto (calendário, painel, WhatsApp) pergunta-lhe a ela.
+# coisas diferentes (ver a coluna bloqueia_horario):
+#   • confirmed / pending / completed ........... bloqueia
+#   • cancelled com bloqueia_horario = 1 ........ bloqueia
+#   • cancelled com bloqueia_horario = 0 ........ NÃO bloqueia
+#   • no_show (sempre no passado) ............... NÃO bloqueia agenda futura
+# Um REAGENDAMENTO altera a MESMA marcação (continua confirmed) — não há
+# estado "reagendado".
+# Esta é a ÚNICA função que decide se um registo ocupa um horário.
 # ---------------------------------------------------------------------------
-ESTADOS_QUE_BLOQUEIAM_SEMPRE = ("confirmado", "concluido")
+ESTADOS_QUE_BLOQUEIAM_SEMPRE = estados.BLOQUEIAM_SEMPRE
 
 
 def agendamento_bloqueia_horario(agendamento):
-    estado = chave_estado((agendamento or {}).get("estado") or "confirmado")
-    if estado in ESTADOS_QUE_BLOQUEIAM_SEMPRE:
-        return True
-    if estado == "cancelado":
-        return int((agendamento or {}).get("bloqueia_horario") or 0) == 1
-    return False        # reagendada antiga (e qualquer estado desconhecido)
+    ag = agendamento or {}
+    return estados.bloqueia_horario(ag.get("estado") or estados.CONFIRMED,
+                                    ag.get("bloqueia_horario"))
 
 
 def horario_livre_de_uma_marcacao(agendamento):
@@ -1740,56 +1571,10 @@ def horario_livre_de_uma_marcacao(agendamento):
         and not agendamento_bloqueia_horario(agendamento)
 
 
-def data_iso_de_texto(texto):
-    """"02.09.2026 (qua)" -> "2026-09-02". Ignora o dia da semana e qualquer
-    texto extra. Devolve None se não houver uma data válida."""
-    achado = re.search(r"(\d{1,2})[./-](\d{1,2})[./-](\d{4})", str(texto or ""))
-    if not achado:
-        return None
-    dia, mes, ano = (int(x) for x in achado.groups())
-    try:
-        return date(ano, mes, dia).isoformat()
-    except ValueError:
-        return None
-
-
-def hora_hhmm_de_texto(texto):
-    """"🕝 14:30" -> "14:30". Ignora emojis e texto à volta. None se
-    não houver uma hora válida."""
-    achado = re.search(r"(\d{1,2})[:hH](\d{2})", str(texto or ""))
-    if not achado:
-        return None
-    horas, minutos = int(achado.group(1)), int(achado.group(2))
-    if not (0 <= horas <= 23 and 0 <= minutos <= 59):
-        return None
-    return f"{horas:02d}:{minutos:02d}"
-
-
-def duracao_para_minutos(texto):
-    """Converte a duração guardada em (minutos, dia_inteiro).
-
-    Aceita "45min", "1h", "1h30", "2h", "3h", "aproximadamente 1h", "1 dia"
-    e "1 Tag"/"1 day". "1 dia" devolve (duração da grelha, True) — é
-    apresentado como serviço de dia inteiro. Devolve (None, False) quando não
-    consegue interpretar nada."""
-    bruto = str(texto or "").strip().lower()
-    if not bruto:
-        return None, False
-    if re.search(r"\d+\s*(dia|dias|tag|tage|day|days)\b", bruto):
-        return DURACAO_DIA_INTEIRO_MIN, True
-
-    # "1h30" / "1h 30" / "2h" (as horas podem trazer minutos colados)
-    achado = re.search(r"(\d+)\s*[hH](?:\s*(\d{1,2}))?", bruto)
-    if achado:
-        minutos = int(achado.group(1)) * 60 + int(achado.group(2) or 0)
-        return (minutos, False) if minutos > 0 else (None, False)
-
-    # "45min" / "45 minutos"
-    achado = re.search(r"(\d+)\s*(min|minuto|minutos|minuten)\b", bruto)
-    if achado:
-        minutos = int(achado.group(1))
-        return (minutos, False) if minutos > 0 else (None, False)
-    return None, False
+# data_iso_de_texto / hora_hhmm_de_texto / duracao_para_minutos vivem agora em
+# `parsing.py` (importadas no topo). São a interpretação de datas/horas/durações
+# LEGADAS gravadas como texto de apresentação; as marcações novas já gravam
+# colunas estruturadas.
 
 
 def evento_calendario(agendamento, pedido=None):
@@ -1843,6 +1628,7 @@ def evento_calendario(agendamento, pedido=None):
         "preco": agendamento.get("preco"),
         "cor": cor_do_servico(agendamento.get("servico")),
         "total_centimos": total_centimos_agendamento(agendamento),
+        "preco_por_confirmar": preco_por_confirmar_agendamento(agendamento),
         "carrinho": linhas_carrinho_agendamento(agendamento),
         "criado_em": agendamento.get("criado_em"),
         "pedido": None,
@@ -1949,7 +1735,7 @@ def criar_pedido_orcamento(telefone, sessao, estado="rascunho"):
                 _wrap_tipo_nome(sessao),
                 _wrap_cor_acabamento_combinado(sessao),
                 estado,
-                datetime.utcnow().isoformat(),
+                tempo.iso_utc(),
                 json.dumps(sessao.get("carrinho", [])),
                 sessao.get("wrap_modo") or MODO_DETALHE,
             ),
@@ -1986,7 +1772,7 @@ def adicionar_fotografia(pedido_id, nome_ficheiro, mime_tipo):
     with obter_bd() as conn:
         conn.execute(
             "INSERT INTO fotografias (pedido_id, nome_ficheiro, mime_tipo, criado_em) VALUES (?, ?, ?, ?)",
-            (pedido_id, nome_ficheiro, mime_tipo, datetime.utcnow().isoformat()),
+            (pedido_id, nome_ficheiro, mime_tipo, tempo.iso_utc()),
         )
 
 
@@ -2073,7 +1859,7 @@ CAMPOS_LINHA_ORCAMENTO = ["id", "orcamento_id", "descricao", "quantidade", "prec
 
 
 def _agora_iso():
-    return datetime.utcnow().isoformat()
+    return tempo.iso_utc()
 
 
 def listar_linhas_orcamento(orcamento_id):
@@ -2257,19 +2043,25 @@ def dentro_da_janela_24h(telefone):
         ).fetchone()
     if not linha or not linha[0]:
         return False
-    try:
-        ultima = datetime.fromisoformat(linha[0])
-    except ValueError:
+    ultima_dt = tempo.parse_iso(linha[0])
+    if ultima_dt is None:
         return False
-    return (datetime.utcnow() - ultima) < timedelta(hours=24)
+    return (tempo.agora_utc() - ultima_dt) < timedelta(hours=24)
 
 
 # ---------------------------------------------------------------------------
 # Envio de mensagens
 # ---------------------------------------------------------------------------
 def enviar(payload):
+    url = graph_url()
+    if not url or not TOKEN:
+        # Sem credenciais WhatsApp configuradas: não rebenta (útil em testes e
+        # no arranque antes de configurar o ambiente). NUNCA imprime o token.
+        print("[enviar] WHATSAPP não configurado (WHATSAPP_TOKEN / PHONE_NUMBER_ID) — envio ignorado")
+        return None
     headers = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
-    r = requests.post(GRAPH_URL, headers=headers, json=payload, timeout=10)
+    r = requests.post(url, headers=headers, json=payload, timeout=10)
+    # Status + corpo ajudam a depurar; o token vai só no header, nunca no log.
     print("Resposta da Meta:", r.status_code, r.text)
     return r
 
@@ -2375,10 +2167,9 @@ def enviar_lista(destinatario, corpo, titulo_seccao, opcoes, idioma, botao="👉
     todas = [linha_de(opc, i) for i, opc in enumerate(opcoes)]
 
     # Linhas fixas que ocupam espaço no fim da lista.
+    # (A linha "🛒 Carrinho · CHF X" era do fluxo Spotless com carrinho —
+    # removida: a Daniela Beauty marca um serviço de cada vez, sem carrinho.)
     fixas = []
-    if sessao is not None:
-        fixas.append({"id": "ver_carrinho",
-                      "title": titulo_linha_carrinho(destinatario, idioma, sessao)[:MAX_TITULO_LINHA]})
     if com_voltar:
         fixas.append({"id": ID_VOLTAR, "title": t("voltar_titulo", idioma), "description": t("voltar_desc", idioma)})
     if com_cancelar:
@@ -2563,16 +2354,16 @@ def recuperar_duracao(servico, duracao_guardada):
 def _procurar_servico_por_nome_pt(nome_pt):
     """Vai buscar a entrada do catálogo (Limpeza ou Estética) cujo nome em
     português corresponde ao valor canónico guardado em sessao/DB."""
-    for catalogo in (LIMPEZA_TIPOS, ESTETICA_SERVICOS):
-        opcao = next((o for o in catalogo if o["titulo"]["pt"] == nome_pt), None)
+    for _cat in (LIMPEZA_TIPOS, ESTETICA_SERVICOS):
+        opcao = next((o for o in _cat if o["titulo"]["pt"] == nome_pt), None)
         if opcao:
             return opcao
     return None
 
 
 def _procurar_extra_por_nome_pt(nome_pt):
-    for catalogo in (EXTRAS_LIMPEZA, EXTRAS_ESTETICA):
-        opcao = next((o for o in catalogo if o["titulo"]["pt"] == nome_pt), None)
+    for _cat in (EXTRAS_LIMPEZA, EXTRAS_ESTETICA):
+        opcao = next((o for o in _cat if o["titulo"]["pt"] == nome_pt), None)
         if opcao:
             return opcao
     return None
@@ -2666,13 +2457,13 @@ def guardar_media_local(pedido_id, media_id, conteudo, mime_tipo):
 # SEMPRE recalculado a partir das linhas atuais (carrinho_total_centimos),
 # nunca somado/subtraído sobre um valor antigo guardado.
 # ---------------------------------------------------------------------------
-GRUPO_SERVICO_BASE = "servico_base"        # serviço de Mãos ou de Pés
-GRUPO_TAMANHO_VEICULO = "tamanho_veiculo"  # comprimento das unhas (Mãos) ou remoção (Pés)
+GRUPO_SERVICO_BASE = "servico_base"        # tipo de Limpeza / serviço de Estética
+GRUPO_TAMANHO_VEICULO = "tamanho_veiculo"  # tamanho (Limpeza) ou estado (Estética) do veículo
 GRUPO_WRAP_VEICULO = "wrap_veiculo"        # tipo de veículo (Wrap, passo 1)
 GRUPO_WRAP_TIPO = "wrap_tipo"              # wrap total / parcial
 GRUPO_WRAP_COR = "wrap_cor"                # cor (família + cor, ou personalizada)
 GRUPO_ACABAMENTO = "acabamento"            # acabamento do wrap (brilhante, mate, ...)
-GRUPO_EXTRA = "extra"                      # extras de Mãos/Pés
+GRUPO_EXTRA = "extra"                      # extras de Limpeza/Estética
 GRUPO_DESCONTO = "desconto"                # reservado para futuros descontos/promoções
 
 GRUPOS_CARRINHO = (GRUPO_SERVICO_BASE, GRUPO_TAMANHO_VEICULO, GRUPO_WRAP_VEICULO, GRUPO_WRAP_TIPO,
@@ -2790,17 +2581,6 @@ def nome_com_preco(nome, centimos, idioma, estilo="base"):
     return f"{nome}{SEPARADOR_PRECO}{rotulo}" if rotulo else nome
 
 
-def _encurtar_titulo(nome, limite=None):
-    """Encurta um título ao limite da API do WhatsApp sem partir palavras."""
-    limite = limite or MAX_TITULO_LINHA
-    if len(nome) <= limite:
-        return nome
-    corte = nome[:limite - 1].rstrip()
-    if " " in corte:
-        corte = corte[:corte.rfind(" ")].rstrip()
-    return corte + "…"
-
-
 def opcao_com_preco(opcao, centimos, idioma, estilo="base"):
     """Devolve uma CÓPIA da opção de catálogo com o preço visível, sem nunca
     tocar no catálogo original (os nomes canónicos em português, gravados no
@@ -2822,13 +2602,8 @@ def opcao_com_preco(opcao, centimos, idioma, estilo="base"):
         nova["titulo"] = titulo_com_preco
         nova["descricao"] = descricao or None
     else:
-        # Nem com o preço fora do título o nome cabe? Então corta-se numa
-        # fronteira de palavra e o nome COMPLETO vai para a descrição — nunca
-        # se deixa uma palavra partida a meio na lista.
-        nova["titulo"] = _encurtar_titulo(nome)
-        detalhe = f"{nome}{SEPARADOR_PRECO}" if nova["titulo"] != nome else ""
-        nova["descricao"] = f"{detalhe}{rotulo}{SEPARADOR_PRECO}{descricao}".strip() \
-            if descricao else f"{detalhe}{rotulo}".strip()
+        nova["titulo"] = nome
+        nova["descricao"] = f"{rotulo}{SEPARADOR_PRECO}{descricao}" if descricao else rotulo
     return nova
 
 
@@ -2880,8 +2655,8 @@ def opcoes_categorias_com_precos(idioma):
 
 
 def _procurar_modificador_veiculo_por_nome_pt(nome_pt):
-    for catalogo in (TAMANHOS_VEICULO, ESTADO_VEICULO):
-        opcao = next((o for o in catalogo if o["titulo"]["pt"] == nome_pt), None)
+    for _cat in (TAMANHOS_VEICULO, ESTADO_VEICULO):
+        opcao = next((o for o in _cat if o["titulo"]["pt"] == nome_pt), None)
         if opcao:
             return opcao
     return None
@@ -2955,7 +2730,7 @@ def _preco_servico_base_centimos(sessao):
 
 
 def delta_modificador_veiculo_centimos(sessao, catalogo, item_id):
-    """Acréscimo, em cêntimos, que um comprimento/remoção vai somar ao
+    """Acréscimo, em cêntimos, que um tamanho/estado de veículo vai somar ao
     carrinho. É EXATAMENTE a mesma conta de carrinho_definir_modificador_
     veiculo() — partilhada aqui para o preço mostrado na opção ser sempre
     idêntico ao que depois aparece no carrinho e no resumo."""
@@ -2974,7 +2749,7 @@ def carrinho_definir_servico_base(sessao, catalogo, item_id):
 
 
 def carrinho_definir_modificador_veiculo(sessao, catalogo, item_id):
-    """Comprimento das unhas (Mãos) ou remoção de produto (Pés): aplicam um FATOR
+    """Tamanho (Limpeza) ou estado (Estética) do veículo: aplicam um FATOR
     multiplicativo sobre o preço base — aqui é convertido no acréscimo em
     cêntimos correspondente, para poder ser somado como mais uma linha do
     carrinho (nunca se multiplica um total antigo)."""
@@ -3095,14 +2870,107 @@ def passo_estetica_extra(de, idioma, sessao=None):
 
 
 # ---------------------------------------------------------------------------
-# Data / hora / resumo / confirmação (comuns a limpeza e estética)
+# FLUXO DANIELA BEAUTY — serviço -> dia -> hora -> resumo -> confirmar
 # ---------------------------------------------------------------------------
-def passo_data(de, idioma, passo_n=4, sessao=None):
+# Simples e sem carrinho: uma marcação = um serviço. Toda a informação
+# (nome/duração/preço/cor) vem da FONTE ÚNICA: a tabela `servicos` (db.py).
+# ---------------------------------------------------------------------------
+def estado_inicial_marcacao():
+    """"confirmed" (por agora) ou "pending" quando BOOKING_REQUIRES_APPROVAL
+    estiver ligado. Muda o comportamento sem refactor — só a config."""
+    return "pending" if config.BOOKING_REQUIRES_APPROVAL else "confirmed"
+
+
+# IDs de botões/listas dos fluxos LEGADOS (Spotless: Wrap, orçamento rápido,
+# carrinho, negociação de orçamento, categorias de detailing). Não existem no
+# fluxo Daniela Beauty — se um cliente carregar num destes (mensagem antiga
+# ainda na conversa), é levado ao menu. NUNCA apanha os IDs atuais
+# (svc_*, mp_*, gerir_ag_*, reagendar_*, cancelar_ag_*, opt_*, lang_*).
+_PREFIXOS_LEGADOS = (
+    "modo_", "wrap_", "wv_", "cf_", "cor_", "rapido_", "carrinho_", "ver_carrinho",
+    "orcamento_", "pedido_cancelar_cliente_", "cat_wrap", "cat_limpeza", "cat_estetica",
+    "lp_", "ex_", "es_", "exe_", "tam_", "est_", "modo_rapido", "modo_detalhe",
+    "modo_especialista", "mp_orcamento",
+)
+
+
+def _id_legado_spotless(id_botao):
+    s = str(id_botao or "")
+    return s in ("ver_carrinho", "modo_rapido", "modo_detalhe", "modo_especialista",
+                 "cat_wrap", "cat_limpeza", "cat_estetica", "mp_orcamento") \
+        or s.startswith(_PREFIXOS_LEGADOS)
+
+
+def _servico_da_sessao(sessao):
+    """Linha do serviço escolhido nesta sessão, da tabela `servicos`."""
+    return bd.obter_servico((sessao or {}).get("servico_id"))
+
+
+def _preco_cents_de_servico(servico):
+    return servico.get("preco_cents") if servico else None
+
+
+def opcoes_servicos_lista(idioma):
+    """Serviços ativos como opções de lista, cada um com preço + duração na
+    descrição. Preço NULL -> "Preço a confirmar" (nunca "CHF 0")."""
+    opcoes = []
+    for s in bd.listar_servicos():
+        cents = s.get("preco_cents")
+        preco = t("preco_a_confirmar", idioma) if cents is None else catalogo.formatar_cents(cents, idioma)
+        dur = catalogo.duracao_label(s.get("duracao_min"), idioma)
+        opcoes.append({
+            "id": f"svc_{s['id']}",
+            "titulo": catalogo.nome(s, idioma),
+            "descricao": f"{preco} · {dur}",
+        })
+    return opcoes
+
+
+def iniciar_escolha_servico(de, idioma, sessao):
+    """Passo 1 de 3 — mostra os serviços da Daniela Beauty."""
+    sessao = sessao_preservando_perfil(sessao)
+    sessao["fluxo"] = "beauty"
+    guardar_sessao(de, sessao)
+    opcoes = opcoes_servicos_lista(idioma)
+    if not opcoes:
+        enviar_texto(de, t("servico_sem_ativos", idioma))
+        enviar_menu_principal(de, idioma, saudacao=False, sessao=sessao)
+        return
+    enviar_lista(de, t("servico_corpo", idioma), t("servico_seccao", idioma), opcoes, idioma,
+                 botao=t("servico_botao", idioma), com_voltar=True, rodape=t("rodape_padrao", idioma))
+
+
+def escolher_servico(de, idioma, sessao, servico_id):
+    """Guarda o serviço escolhido (com os valores canónicos) e avança para a
+    escolha do dia."""
+    servico = bd.obter_servico(servico_id)
+    if not servico or not servico.get("ativo"):
+        nao_entendi_com_opcoes(de, idioma, sessao)
+        return
+    cents = servico.get("preco_cents")
+    sessao["fluxo"] = "beauty"
+    sessao["servico_id"] = servico_id
+    sessao["servico"] = catalogo.nome_pt(servico)          # canónico (DB/painel)
+    sessao["duracao_min"] = servico["duracao_min"]
+    sessao["duracao"] = catalogo.duracao_label(servico["duracao_min"])  # rótulo legível p/ conflitos legados
+    sessao["preco_cents"] = cents
+    sessao["preco"] = round(cents / 100, 2) if cents is not None else None
+    sessao["extra"] = None
+    sessao.pop("data", None)
+    sessao.pop("hora", None)
+    guardar_sessao(de, sessao)
+    passo_data(de, idioma, sessao=sessao)
+
+
+# ---------------------------------------------------------------------------
+# Data / hora / resumo / confirmação
+# ---------------------------------------------------------------------------
+def passo_data(de, idioma, passo_n=2, sessao=None):
     enviar_lista(de, t("data_corpo", idioma, n=passo_n), t("data_seccao", idioma), proximos_dias(idioma), idioma,
                  botao=t("data_botao", idioma), com_voltar=True, rodape=t("rodape_padrao", idioma), sessao=sessao)
 
 
-def passo_hora(de, idioma, passo_n=5, sessao=None):
+def passo_hora(de, idioma, passo_n=3, sessao=None):
     """Mostra só os horários REALMENTE livres na data escolhida. Não aparece
     um horário bloqueado (marcação confirmada, concluída, ou cancelada que o
     negócio decidiu manter ocupado) nem um horário que outro cliente acabou
@@ -3118,12 +2986,20 @@ def passo_hora(de, idioma, passo_n=5, sessao=None):
 
 
 def calcular_preco_duracao(sessao):
-    """Preços e fatores são sempre os mesmos, independentemente do idioma.
-    O nome do serviço/extra e a duração devolvidos aqui são sempre o valor
-    CANÓNICO em português — é o que fica guardado na sessão e na base de
-    dados (dashboard e notificações internas continuam em português). A
-    tradução para o idioma do cliente acontece só na apresentação, via
-    nome_servico_traduzido()/nome_extra_traduzido()/duracao_traduzida()."""
+    """Devolve (preco_chf_ou_None, duracao_pt, servico_pt, extra_pt).
+
+    Fluxo Daniela Beauty: tudo vem da tabela `servicos`. Preço a confirmar ->
+    preco = None (nunca 0). Extra é sempre None (não há extras).
+
+    Fluxos LEGADOS (cat_limpeza / cat_estetica): comportamento inalterado,
+    para as sessões antigas ainda a decorrer não partirem."""
+    sessao = sessao or {}
+    if sessao.get("servico_id"):
+        s = bd.obter_servico(sessao["servico_id"]) or {}
+        cents = s.get("preco_cents")
+        preco = round(cents / 100, 2) if cents is not None else None
+        return (preco, catalogo.duracao_label(s.get("duracao_min")),
+                catalogo.nome_pt(s) if s else sessao.get("servico"), None)
     if sessao.get("categoria") == "cat_limpeza":
         tipo = encontrar_opcao(LIMPEZA_TIPOS, sessao.get("tipo_id")) or {}
         tamanho = encontrar_opcao(TAMANHOS_VEICULO, sessao.get("tamanho_id")) or {"fator": 1.0}
@@ -3141,22 +3017,59 @@ def calcular_preco_duracao(sessao):
     return None, None, None, None
 
 
+def _linha_preco_resumo(idioma, servico):
+    """Linha de preço para o resumo/confirmação. Preço a confirmar -> texto
+    próprio, NUNCA "CHF 0"."""
+    cents = _preco_cents_de_servico(servico)
+    if cents is None:
+        return t("resumo_total_a_confirmar", idioma)
+    return t("resumo_total", idioma, total=catalogo.formatar_cents(cents, idioma))
+
+
 def passo_resumo(de, idioma, sessao):
-    # calcular_preco_duracao() continua a dar-nos a duração e os nomes
-    # canónicos (português); o PREÇO em si vem agora sempre do carrinho — a
-    # única fonte de verdade, recalculada a partir das linhas atuais.
+    """Passo final antes de confirmar. Fluxo Daniela Beauty: um serviço, sem
+    carrinho. (Sessões legadas com `categoria` continuam pelo ramo antigo.)"""
+    if not sessao.get("servico_id"):
+        return _passo_resumo_legado(de, idioma, sessao)
+
+    servico = bd.obter_servico(sessao["servico_id"]) or {}
+    cents = servico.get("preco_cents")
+    # valores canónicos gravados na sessão/DB
+    sessao["servico"] = catalogo.nome_pt(servico)
+    sessao["duracao_min"] = servico.get("duracao_min")
+    sessao["duracao"] = catalogo.duracao_label(servico.get("duracao_min"))
+    sessao["preco_cents"] = cents
+    sessao["preco"] = round(cents / 100, 2) if cents is not None else None
+    sessao["extra"] = None
+    guardar_sessao(de, sessao)
+
+    nome = primeiro_nome(sessao.get("nome"))
+    titulo = t("resumo_titulo", idioma) + (f", {nome}" if nome else "")
+    linhas = [titulo, ""]
+    linhas.append(f"✨ {catalogo.nome(servico, idioma)}")
+    linhas.append(t("resumo_data", idioma, data=sessao["data"]))
+    linhas.append(t("resumo_hora", idioma, hora=sessao["hora"]))
+    linhas.append(t("resumo_duracao", idioma, duracao=catalogo.duracao_label(servico.get("duracao_min"), idioma)))
+    linhas.append(_linha_preco_resumo(idioma, servico))
+    linhas.append("\n" + t("resumo_pergunta", idioma))
+
+    enviar_botoes(de, "\n".join(linhas), [
+        {"id": "confirmar", "titulo": t("botao_confirmar", idioma)},
+        {"id": "alterar", "titulo": t("botao_alterar", idioma)},
+        {"id": ID_CANCELAR, "titulo": t("botao_cancelar", idioma)},
+    ], idioma, rodape=t("rodape_padrao", idioma), com_voltar=True,
+        titulo_seccao=t("resumo_seccao", idioma), botao_lista=t("menu_botao", idioma))
+
+
+def _passo_resumo_legado(de, idioma, sessao):
     _, duracao_pt, servico_pt, extra_pt = calcular_preco_duracao(sessao)
     total_centimos = carrinho_total_centimos(sessao)
-
-    # canónico (português) — é isto que fica na sessão/DB, tal como antes
     sessao["servico"] = servico_pt
     sessao["extra"] = extra_pt if extra_pt and "nenhum" not in extra_pt.lower() else None
     sessao["preco"] = round(total_centimos / 100, 2)
     sessao["duracao"] = duracao_pt
     guardar_sessao(de, sessao)
-
     duracao_disp = duracao_traduzida(servico_pt, duracao_pt, idioma)
-
     nome = primeiro_nome(sessao.get("nome"))
     titulo = t("resumo_titulo", idioma) + (f", {nome}" if nome else "")
     linhas = [titulo]
@@ -3168,32 +3081,43 @@ def passo_resumo(de, idioma, sessao):
     linhas.extend(linhas_discriminacao(sessao, idioma))
     linhas.append(t("resumo_total", idioma, total=formatar_centimos(total_centimos, idioma)))
     linhas.append("\n" + t("resumo_pergunta", idioma))
-
-    # Exatamente 3 botões = o máximo da API do WhatsApp. Ficam VISÍVEIS de
-    # imediato, sem obrigar o cliente a abrir primeiro "Escolher opção" — é o
-    # passo em que isso mais custa. Por isso não se junta aqui o ⬅️ Voltar
-    # (que promoveria a mensagem a lista): "✏️ Não, alterar" faz o mesmo
-    # papel, devolve o horário retido e leva de volta à escolha do serviço.
     enviar_botoes(de, "\n".join(linhas), [
-        {"id": "confirmar", "titulo": t("botao_resumo_sim", idioma)},
-        {"id": "alterar", "titulo": t("botao_resumo_nao", idioma)},
+        {"id": "confirmar", "titulo": t("botao_confirmar", idioma)},
+        {"id": "alterar", "titulo": t("botao_alterar", idioma)},
         {"id": ID_CANCELAR, "titulo": t("botao_cancelar", idioma)},
-    ], idioma, rodape=t("rodape_padrao", idioma),
+    ], idioma, rodape=t("rodape_padrao", idioma), com_voltar=True,
         titulo_seccao=t("resumo_seccao", idioma), botao_lista=t("menu_botao", idioma))
 
 
 def mensagem_confirmacao_final(sessao, idioma):
     nome = primeiro_nome(sessao.get("nome"))
     saudacao = t("obrigado_nome", idioma, nome=nome) if nome else t("obrigado", idioma)
-
-    duracao_disp = duracao_traduzida(sessao["servico"], sessao.get("duracao", "-"), idioma)
     hora_curta = sessao["hora"].split(" ")[-1] if " " in sessao["hora"] else sessao["hora"]
-    total_centimos = carrinho_total_centimos(sessao)
 
     linhas = [t("confirmado_titulo", idioma, saudacao=saudacao), ""]
+
+    if sessao.get("servico_id"):
+        servico = bd.obter_servico(sessao["servico_id"]) or {}
+        linhas.append(f"✨ {catalogo.nome(servico, idioma)}")
+        linhas.append(t("confirmado_data_hora", idioma, data=sessao["data"], hora=hora_curta))
+        linhas.append(t("confirmado_duracao", idioma,
+                        duracao=catalogo.duracao_label(servico.get("duracao_min"), idioma)))
+        if MORADA_OFICINA:
+            linhas.append(f"📍 {MORADA_OFICINA}")
+        linhas.append(_linha_preco_resumo(idioma, servico))
+        if _preco_cents_de_servico(servico) is None:
+            linhas.append(t("confirmado_preco_a_confirmar", idioma))
+        linhas.append("")
+        linhas.append(t("confirmado_instrucao", idioma))
+        return "\n".join(linhas)
+
+    # --- ramo legado (carrinho) ---
+    duracao_disp = duracao_traduzida(sessao["servico"], sessao.get("duracao", "-"), idioma)
+    total_centimos = carrinho_total_centimos(sessao)
     linhas.append(t("confirmado_data_hora", idioma, data=sessao["data"], hora=hora_curta))
     linhas.append(t("confirmado_duracao", idioma, duracao=duracao_disp))
-    linhas.append(f"📍 {MORADA_OFICINA}")
+    if MORADA_OFICINA:
+        linhas.append(f"📍 {MORADA_OFICINA}")
     linhas.append("")
     linhas.append(t("resumo_discriminacao", idioma))
     linhas.extend(linhas_discriminacao(sessao, idioma))
@@ -3204,19 +3128,30 @@ def mensagem_confirmacao_final(sessao, idioma):
 
 
 def mensagem_notificacao_provider(de, sessao, id_agendamento):
-    """Sempre em português, independentemente do idioma do cliente — é o
-    idioma de trabalho da equipa/dono do negócio. Inclui sempre a
-    discriminação completa do carrinho e o total."""
-    linhas = [f"🆕📅 *Novo pedido confirmado (#{id_agendamento})*", ""]
+    """Sempre em português — idioma de trabalho da equipa. Deixa CLARO quando
+    o preço ainda não está definido."""
+    estado = estado_inicial_marcacao()
+    cabec = "🆕📅 *Novo pedido confirmado" if estado == "confirmed" else "🆕📅 *Novo pedido (a APROVAR)"
+    linhas = [f"{cabec} (#{id_agendamento})*", ""]
     linhas.append(f"👤 Cliente: {sessao.get('nome') or 'sem nome'}")
     linhas.append(f"📱 Contacto: {formatar_telefone(de)}")
     linhas.append(f"📅 Data: {sessao['data']} às {sessao['hora']}")
+
+    if sessao.get("servico_id"):
+        servico = bd.obter_servico(sessao["servico_id"]) or {}
+        linhas.append(f"✨ Serviço: {catalogo.nome_pt(servico)}")
+        linhas.append(f"⏱️ Duração: {catalogo.duracao_label(servico.get('duracao_min'))}")
+        cents = servico.get("preco_cents")
+        if cents is None:
+            linhas.append("💰 Preço: ❗ AINDA NÃO DEFINIDO — combinar com o cliente")
+        else:
+            linhas.append(f"💰 Preço: {catalogo.formatar_cents(cents, 'pt')}")
+        return "\n".join(linhas)
+
     linhas.append("")
     linhas.append("Discriminação:")
     linhas.extend(linhas_discriminacao(sessao, "pt"))
     linhas.append(f"💰 Total: {formatar_centimos(carrinho_total_centimos(sessao), 'pt')}")
-    # Sem instruções escritas: as ações da equipa são a lista interativa que
-    # acompanha esta mensagem (ver enviar_notificacao_interna_marcacao).
     return "\n".join(linhas)
 
 
@@ -3353,12 +3288,12 @@ def marcar_agendamento_cancelado(id_agendamento, libertar=None, exigir_confirmad
         linha = conn.execute("SELECT estado FROM agendamentos WHERE id = ?", (id_agendamento,)).fetchone()
         if not linha:
             raise LookupError("Marcação não encontrada.")
-        if exigir_confirmado and linha[0] != "confirmado":
+        if exigir_confirmado and chave_estado(linha[0]) not in estados.GERIVEIS_PELO_CLIENTE:
             raise EstadoInvalido(linha[0])
-        # O registo NUNCA é apagado: fica no histórico como cancelado, só a
+        # O registo NUNCA é apagado: fica no histórico como cancelled, só a
         # ocupação do horário é que muda.
-        conn.execute("UPDATE agendamentos SET estado = 'cancelado', bloqueia_horario = ? WHERE id = ?",
-                     (bloqueia, id_agendamento))
+        conn.execute("UPDATE agendamentos SET estado = ?, bloqueia_horario = ? WHERE id = ?",
+                     (estados.CANCELLED, bloqueia, id_agendamento))
     return bool(libertar)
 
 
@@ -3375,19 +3310,30 @@ def cancelar_agendamento(id_agendamento, libertar=None, avisar_cliente=True):
 
 def _intervalo_agendamento(agendamento, data_iso=None, hora=None):
     """(início, fim) em datetime de uma marcação, opcionalmente já com a
-    data/hora NOVAS — usa exatamente a mesma duração do calendário."""
-    dia = data_iso or data_iso_de_texto(agendamento.get("data"))
-    hhmm = hora or hora_hhmm_de_texto(agendamento.get("hora"))
+    data/hora NOVAS.
+
+    Prefere sempre as colunas ESTRUTURADAS (`data_iso`, `hora_hhmm`,
+    `duracao_min`); só cai para o texto legado quando essas faltam (marcações
+    antigas)."""
+    ag = agendamento or {}
+    dia = data_iso or ag.get("data_iso") or data_iso_de_texto(ag.get("data"))
+    hhmm = hora or ag.get("hora_hhmm") or hora_hhmm_de_texto(ag.get("hora"))
     if not dia or not hhmm:
         return None, None
-    minutos, dia_inteiro = duracao_para_minutos(
-        recuperar_duracao(agendamento.get("servico"), agendamento.get("duracao")))
+    minutos = ag.get("duracao_min")
+    dia_inteiro = False
+    if minutos is None:
+        minutos, dia_inteiro = duracao_para_minutos(
+            recuperar_duracao(ag.get("servico"), ag.get("duracao")))
     if minutos is None:
         return None, None
-    inicio = datetime.fromisoformat(f"{dia}T{hhmm}:00")
+    try:
+        inicio = datetime.fromisoformat(f"{dia}T{hhmm}:00")
+    except ValueError:
+        return None, None
     if dia_inteiro:
         inicio = inicio.replace(hour=CALENDARIO_HORA_INICIO, minute=0)
-    return inicio, inicio + timedelta(minutes=minutos)
+    return inicio, inicio + timedelta(minutes=int(minutos))
 
 
 def _intervalo_solto(servico, duracao, data_iso, hora):
@@ -3424,7 +3370,8 @@ def conflitos_no_intervalo(agendamentos, data_iso, hora, servico, duracao, ignor
             continue
         if not agendamento_bloqueia_horario(outro):
             continue
-        if data_iso_de_texto(outro.get("data")) != data_iso:
+        dia_outro = outro.get("data_iso") or data_iso_de_texto(outro.get("data"))
+        if dia_outro != data_iso:
             continue
         inicio, fim = _intervalo_agendamento(outro)
         if not inicio:
@@ -3437,13 +3384,16 @@ def conflitos_no_intervalo(agendamentos, data_iso, hora, servico, duracao, ignor
 
 
 def conflitos_de_horario(id_agendamento, data_iso, hora):
-    """Marcações que ocupam o horário para onde se quer mover a marcação
-    `id_agendamento` (a própria é sempre ignorada)."""
+    """Marcações OU reservas temporárias que ocupam o horário para onde se
+    quer mover a marcação `id_agendamento` (a própria é sempre ignorada).
+    Inclui as retenções para o painel não colidir com um horário que um
+    cliente está a confirmar no WhatsApp nesse instante."""
     alvo = obter_agendamento(id_agendamento)
     if not alvo:
         return []
+    ocup = listar_agendamentos() + horarios_retidos(excluir_telefone=alvo.get("telefone"))
     return conflitos_no_intervalo(
-        listar_agendamentos(), data_iso, hora,
+        ocup, data_iso, hora,
         alvo.get("servico"), alvo.get("duracao"), ignorar_id=id_agendamento)
 
 
@@ -3462,7 +3412,7 @@ RESERVA_TEMPORARIA_MINUTOS = 15
 
 def _limpar_reservas_expiradas(conn):
     conn.execute("DELETE FROM reservas_temporarias WHERE expira_em <= ?",
-                 (datetime.utcnow().isoformat(),))
+                 (tempo.iso_utc(),))
 
 
 def reter_horario(telefone, sessao):
@@ -3473,7 +3423,7 @@ def reter_horario(telefone, sessao):
     if not data or not hora:
         return False
     _, duracao_pt, servico_pt, _ = calcular_preco_duracao(sessao)
-    agora = datetime.utcnow()
+    agora = tempo.agora_utc()
     with obter_bd() as conn:
         _limpar_reservas_expiradas(conn)
         conn.execute(
@@ -3504,7 +3454,7 @@ def horarios_retidos(excluir_telefone=None, conn=None):
         _limpar_reservas_expiradas(c)
         return c.execute(
             "SELECT telefone, data, hora, servico, duracao FROM reservas_temporarias "
-            "WHERE expira_em > ?", (datetime.utcnow().isoformat(),)).fetchall()
+            "WHERE expira_em > ?", (tempo.iso_utc(),)).fetchall()
 
     if conn is not None:
         linhas = _ler(conn)
@@ -3544,32 +3494,47 @@ def horarios_livres_para_sessao(sessao, telefone=None):
         return list(HORARIOS)          # ainda não há data: nada a filtrar
     _, duracao_pt, servico_pt, _ = calcular_preco_duracao(sessao)
     servico = sessao.get("servico") or servico_pt
-    duracao = recuperar_duracao(servico, sessao.get("duracao") or duracao_pt)
+    duracao = sessao.get("duracao") or duracao_pt
+    if sessao.get("duracao_min"):
+        duracao = catalogo.duracao_label(sessao["duracao_min"])
+    duracao = recuperar_duracao(servico, duracao)
+    # Reagendamento: a PRÓPRIA marcação a ser movida não conta como conflito.
+    ignorar_id = None
+    if sessao.get("fluxo") == "reagendar" and sessao.get("reagendar_id"):
+        try:
+            ignorar_id = int(sessao["reagendar_id"])
+        except (TypeError, ValueError):
+            ignorar_id = None
     existentes = ocupacoes(telefone)
     livres = []
     for etiqueta in HORARIOS:
         hora = hora_hhmm_de_texto(etiqueta)
         if not hora:
             continue
-        if not conflitos_no_intervalo(existentes, data_iso, hora, servico, duracao):
+        if not conflitos_no_intervalo(existentes, data_iso, hora, servico, duracao, ignorar_id=ignorar_id):
             livres.append(etiqueta)
     return livres
 
 
-def reagendar_agendamento(id_agendamento, data_iso, hora, origem="dashboard"):
-    """Move uma marcação CONFIRMADA para uma nova data/hora, preservando
-    serviço, extras, duração, preço, carrinho, cliente e fotografias — só as
-    colunas `data` e `hora` mudam. Guarda o histórico e tenta avisar o
-    cliente. Devolve (agendamento_atualizado, cliente_notificado).
+def reagendar_agendamento(id_agendamento, data_iso, hora, origem="dashboard", avisar_cliente=True):
+    """Move uma marcação ATIVA (confirmed/pending) para nova data/hora,
+    preservando serviço, duração, preço, cliente e histórico — a MESMA
+    marcação, só `data`/`hora` (e as colunas estruturadas) mudam. Nunca cria
+    um registo novo; nunca há um estado "reagendado".
 
-    Levanta EstadoInvalido (marcação já não confirmada) ou HorarioOcupado
-    (sobreposição real com outra marcação confirmada)."""
+    A verificação final de conflitos corre DENTRO da mesma transação
+    `BEGIN IMMEDIATE` que faz o UPDATE, contando também com as reservas
+    temporárias: dois reagendamentos concorrentes para o mesmo horário nunca
+    ganham os dois; se falhar, a marcação antiga fica intacta.
+
+    Levanta EstadoInvalido, HorarioOcupado ou LookupError. Devolve
+    (agendamento_atualizado, cliente_notificado)."""
     alvo = obter_agendamento(id_agendamento)
     if not alvo:
         raise LookupError("Marcação não encontrada.")
-    if alvo["estado"] != "confirmado":
-        raise EstadoInvalido(alvo["estado"])
-    if conflitos_de_horario(id_agendamento, data_iso, hora):
+    if chave_estado(alvo.get("estado")) not in estados.GERIVEIS_PELO_CLIENTE:
+        raise EstadoInvalido(alvo.get("estado"))
+    if not data_iso or not hora:
         raise HorarioOcupado(f"{data_iso} {hora}")
 
     d = date.fromisoformat(data_iso)
@@ -3580,22 +3545,31 @@ def reagendar_agendamento(id_agendamento, data_iso, hora, origem="dashboard"):
 
     with obter_bd() as conn:
         conn.execute("BEGIN IMMEDIATE")
-        linha = conn.execute("SELECT estado FROM agendamentos WHERE id = ?", (id_agendamento,)).fetchone()
-        if not linha or linha[0] != "confirmado":
+        linha = conn.execute(
+            "SELECT estado FROM agendamentos WHERE id = ?", (id_agendamento,)).fetchone()
+        if not linha or chave_estado(linha[0]) not in estados.GERIVEIS_PELO_CLIENTE:
             raise EstadoInvalido(linha[0] if linha else "inexistente")
-        # a marcação continua ATIVA e confirmada, apenas na nova data/hora
-        # bloqueia_horario = 1: a marcação nova resultante do reagendamento
-        # ocupa o novo horário normalmente.
-        conn.execute("UPDATE agendamentos SET data = ?, hora = ?, bloqueia_horario = 1 WHERE id = ?",
-                     (data_texto, hora_texto, id_agendamento))
+        # CONFLITO revalidado DENTRO da transação: marcações gravadas +
+        # reservas temporárias, exceto a própria marcação e a própria retenção.
+        ocup = (_agendamentos_da_conexao(conn)
+                + horarios_retidos(excluir_telefone=alvo.get("telefone"), conn=conn))
+        if conflitos_no_intervalo(ocup, data_iso, hora, alvo.get("servico"),
+                                  alvo.get("duracao"), ignorar_id=id_agendamento):
+            raise HorarioOcupado(f"{data_iso} {hora}")
+        conn.execute(
+            "UPDATE agendamentos SET data = ?, hora = ?, data_iso = ?, hora_hhmm = ?, "
+            "bloqueia_horario = 1 WHERE id = ?",
+            (data_texto, hora_texto, data_iso, hora, id_agendamento))
         conn.execute(
             "INSERT INTO agendamento_historico (agendamento_id, data_anterior, hora_anterior, "
             "data_nova, hora_nova, origem, alterado_em) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (id_agendamento, data_antiga, hora_antiga, data_texto, hora_texto, origem, _agora_iso()))
 
     agendamento = obter_agendamento(id_agendamento)
-    notificado = _avisar_cliente_marcacao_reagendada(
-        agendamento, f"{data_antiga} {hora_antiga}".strip(), f"{data_texto} {hora_texto}")
+    notificado = False
+    if avisar_cliente:
+        notificado = _avisar_cliente_marcacao_reagendada(
+            agendamento, f"{data_antiga} {hora_antiga}".strip(), f"{data_texto} {hora_texto}")
     return agendamento, notificado
 
 
@@ -3722,14 +3696,11 @@ def processar_acao_equipa_marcacao(de, id_botao):
         return True
 
     if acao == "concluir_sim":
-        if ag["estado"] != "confirmado":
-            _responder_equipa(f"ℹ️ A marcação #{id_agendamento} já não está confirmada "
-                              f"(estado atual: {ag['estado']}).")
+        if chave_estado(ag["estado"]) not in (estados.CONFIRMED, estados.PENDING):
+            _responder_equipa(f"ℹ️ A marcação #{id_agendamento} já não está ativa "
+                              f"(estado atual: {estados.ROTULO_PT.get(chave_estado(ag['estado']), ag['estado'])}).")
             return True
-        # "concluído" não é um estado confirmado, por isso a marcação sai
-        # automaticamente do carrinho persistente do cliente (ver
-        # agendamentos_confirmados_por_telefone).
-        atualizar_estado_agendamento(id_agendamento, "concluído")
+        atualizar_estado_agendamento(id_agendamento, estados.COMPLETED)
         _responder_equipa(f"✅ Marcação {resumo} marcada como concluída.")
         return True
 
@@ -4541,26 +4512,18 @@ def mudar_para_modo_rapido(de, idioma, sessao):
 
 
 def iniciar_escolha_categoria(de, idioma, sessao):
-    """Ponto único que arranca o fluxo 'Marcar': mostra as categorias
-    (Limpeza/Estética/Wrap). Reutilizado em todos os sítios que precisam de
-    (re)começar a marcação — menu principal, gestão de marcação, voltar.
-    Esvazia sempre o carrinho e quaisquer escolhas Wrap residuais: uma nova
-    escolha de categoria é sempre um recomeço, nunca deve arrastar dados de
-    uma tentativa anterior (e o rascunho anterior fica arquivado)."""
-    arquivar_rascunho_wrap(sessao)
-    carrinho_esvaziar(sessao)
-    _wrap_limpar_escolhas(sessao)
-    sessao.pop("pedido_id", None)
-    sessao.pop("wrap_modo", None)
-    sessao.pop("preco_sob_analise", None)
-    sessao["fluxo"] = "escolher_categoria"
-    guardar_sessao(de, sessao)
-    # Preço mínimo de cada categoria, lido das tabelas centrais (ver
-    # preco_minimo_categoria_centimos). Com Voltar + Cancelar já são 5
-    # opções, por isso isto vai como lista.
-    enviar_botoes(de, t("categoria_pergunta", idioma), opcoes_categorias_com_precos(idioma), idioma,
-                  rodape=t("rodape_padrao", idioma), com_voltar=True, com_cancelar=True,
-                  titulo_seccao=t("categoria_seccao", idioma))
+    """Compat: o fluxo Daniela Beauty escolhe o serviço diretamente, sem a
+    camada de "categorias" do detailing. Redireciona para iniciar_escolha_servico."""
+    # Limpa qualquer resíduo do fluxo legado (carrinho/wrap) antes de começar.
+    try:
+        carrinho_esvaziar(sessao)
+        _wrap_limpar_escolhas(sessao)
+    except Exception:
+        pass
+    for chave in ("categoria", "tipo_id", "tamanho_id", "estado_id", "extra_id", "wrap_modo",
+                  "pedido_id", "preco_sob_analise"):
+        sessao.pop(chave, None)
+    iniciar_escolha_servico(de, idioma, sessao)
 
 
 def mostrar_carrinho(de, idioma, sessao):
@@ -4891,9 +4854,8 @@ def falar_com_equipa(de, idioma, sessao):
 
 def mensagem_ajuda(idioma):
     linhas = [t("ajuda_header", idioma), "", t("ajuda_menu", idioma), t("ajuda_voltar", idioma),
-              t("ajuda_cancelar", idioma), t("ajuda_gerir", idioma), t("ajuda_carrinho", idioma),
-              t("ajuda_rapido", idioma), t("ajuda_ajuda", idioma), t("ajuda_humano", idioma),
-              t("ajuda_idioma", idioma)]
+              t("ajuda_cancelar", idioma), t("ajuda_gerir", idioma),
+              t("ajuda_ajuda", idioma), t("ajuda_humano", idioma), t("ajuda_idioma", idioma)]
     return "\n".join(linhas)
 
 
@@ -4927,12 +4889,14 @@ def requer_autenticacao(func):
     @wraps(func)
     def wrapper(*args, **kwargs):
         if not DASHBOARD_USER or not DASHBOARD_PASSWORD:
-            return Response("Painel não configurado.", 401)
+            return Response("Painel não configurado.", 503)
         auth = request.authorization
-        if not auth or auth.username != DASHBOARD_USER or auth.password != DASHBOARD_PASSWORD:
+        if (not auth or not hmac.compare_digest(auth.username or "", DASHBOARD_USER)
+                or not hmac.compare_digest(auth.password or "", DASHBOARD_PASSWORD)):
+            # O valor de um header HTTP tem de ser ASCII — realm fixo e simples.
             return Response(
-                "Autenticação necessária.", 401,
-                {"WWW-Authenticate": 'Basic realm="Painel Daniela Nails"'},
+                "Autenticacao necessaria.", 401,
+                {"WWW-Authenticate": 'Basic realm="Painel", charset="UTF-8"'},
             )
         return func(*args, **kwargs)
     return wrapper
@@ -5207,6 +5171,26 @@ def api_agendamento_cancelar(id_agendamento):
     })
 
 
+@app.route("/api/agendamentos/<int:id_agendamento>/estado", methods=["POST"])
+@requer_autenticacao
+def api_agendamento_estado(id_agendamento):
+    """Marca uma marcação como CONCLUÍDA (completed) ou NÃO COMPARECEU
+    (no_show) a partir do painel. Só a partir de uma marcação ativa
+    (confirmed/pending). Cancelar e reagendar têm rotas próprias."""
+    dados = request.get_json(force=True, silent=True) or {}
+    novo = estados.normalizar(dados.get("estado"))
+    if novo not in (estados.COMPLETED, estados.NO_SHOW):
+        return jsonify(erro="Estado inválido (esperado 'completed' ou 'no_show')."), 400
+    ag = obter_agendamento(id_agendamento)
+    if not ag:
+        return jsonify(erro="Marcação não encontrada."), 404
+    if chave_estado(ag.get("estado")) not in (estados.CONFIRMED, estados.PENDING):
+        return jsonify(erro=f"Esta marcação já não está ativa (estado atual: {ag.get('estado')}).",
+                       estado=ag.get("estado")), 409
+    atualizar_estado_agendamento(id_agendamento, novo)
+    return _resposta_evento(id_agendamento, False)
+
+
 @app.route("/api/agendamentos/<int:id_agendamento>/reagendar", methods=["POST"])
 @requer_autenticacao
 def api_agendamento_reagendar(id_agendamento):
@@ -5247,21 +5231,16 @@ def media(nome_ficheiro):
 
 
 def _escapar_html(texto):
-    """Escape mínimo para injetar texto de configuração no HTML do painel."""
     return (str(texto).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
             .replace('"', "&quot;").replace("'", "&#39;"))
-
-
-def dashboard_html():
-    """HTML do painel com a identidade do negócio já substituída. O nome vem
-    sempre de BUSINESS_NAME (variável de ambiente), nunca escrito à mão."""
-    return DASHBOARD_HTML.replace("{{BUSINESS_NAME}}", _escapar_html(BUSINESS_NAME))
 
 
 @app.route("/dashboard", methods=["GET"])
 @requer_autenticacao
 def dashboard():
-    return dashboard_html()
+    """HTML do painel com a identidade do negócio já substituída — o nome vem
+    sempre de BUSINESS_NAME (ambiente), nunca escrito à mão."""
+    return DASHBOARD_HTML.replace("{{BUSINESS_NAME}}", _escapar_html(BUSINESS_NAME))
 
 
 # String RAW (r"""), para o Python não tentar interpretar sequências de escape
@@ -5274,14 +5253,11 @@ DASHBOARD_HTML = r"""
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{BUSINESS_NAME}} — Agenda de Teste</title>
+<title>{{BUSINESS_NAME}} — Painel</title>
 <style>
   :root{
     --bg:#0d0f12; --panel:#15181d; --panel2:#1b1f26; --border:#262b33;
-    /* Cor principal da marca (Daniela Nails). O nome da variável mantém-se
-       --gold para não ter de tocar nas ~90 utilizações espalhadas pela CSS
-       e pelo JavaScript; o que muda é o valor. */
-    --gold:#e454a0; --text:#f2f3f5; --muted:#9aa1ac;
+    --gold:#e8b923; --text:#f2f3f5; --muted:#9aa1ac;
     /* laranja do indicador "Agora" — deliberadamente diferente do vermelho
        dos cancelamentos, para os dois nunca se confundirem */
     --agora:#ff7a59;
@@ -5325,7 +5301,6 @@ DASHBOARD_HTML = r"""
   .cascata .cal-agenda-dia h4{position:sticky;top:-10px;background:var(--panel);padding:0.25rem 0;margin:0 0 0.3125rem;z-index:1;}
   .cal-nota{padding:1.625rem 1rem;text-align:center;color:var(--muted);font-size:0.7812rem;line-height:1.6;}
   .lista{background:var(--panel);border:1px solid var(--border);border-radius:0.75rem;overflow:hidden;}
-  .marca{color:var(--gold);font-weight:700;letter-spacing:.2px;margin-left:0.375rem;text-transform:none;}
   .lista h2{font-size:0.7812rem;margin:0;padding:0.5625rem 0.75rem;border-bottom:1px solid var(--border);color:var(--muted);font-weight:600;letter-spacing:.4px;text-transform:uppercase;}
   table{width:100%;border-collapse:collapse;}
   th,td{text-align:left;padding:0.75rem 1.125rem;font-size:0.875rem;border-bottom:1px solid var(--border);}
@@ -5622,7 +5597,7 @@ DASHBOARD_HTML = r"""
 <div class="wrap">
   <div class="topo">
     <div class="lista">
-      <h2>📅 Calendário <span class="marca">{{BUSINESS_NAME}}</span></h2>
+      <h2>📅 {{BUSINESS_NAME}} — Calendário</h2>
       <div class="cal-barra">
         <div class="cal-grupo">
           <button class="cal-btn" onclick="calHoje()">Hoje</button>
@@ -5682,16 +5657,14 @@ DASHBOARD_HTML = r"""
   </div>
 
   <div class="lista" style="margin-top:14px;">
-    <h2>Agendamentos</h2>
+    <h2>Marcações</h2>
     <div id="conteudo"><div class="vazio">A carregar…</div></div>
   </div>
 
-  <!-- Área de pedidos de orçamento (Wrap & Proteção): OCULTA nesta versão.
-       O bloco fica no HTML, e a rota /api/pedidos, as tabelas e as migrations
-       continuam todas a funcionar — só deixou de ser mostrada. Basta remover
-       o atributo hidden para a ter de volta. -->
-  <div class="lista" style="margin-top:14px;" id="painel-pedidos-wrap" hidden>
-    <h2>Pedidos de orçamento (Wrap &amp; Proteção)</h2>
+  <!-- Bloco legado (pedidos de orcamento). Oculto: a rota /api/pedidos e as
+       tabelas continuam a existir apenas para dados antigos. -->
+  <div class="lista" style="margin-top:14px;" hidden>
+    <h2>Pedidos de orçamento (legado)</h2>
     <div id="conteudo-pedidos"><div class="vazio">A carregar…</div></div>
   </div>
 
@@ -5746,7 +5719,9 @@ function esc(valor){
 }
 
 function formatarCentimos(centimos){
-  return 'CHF ' + ((centimos||0)/100).toFixed(2);
+  // null/undefined = serviço sem preço definido -> "A confirmar" (nunca CHF 0).
+  if(centimos == null) return 'A confirmar';
+  return 'CHF ' + (centimos/100).toFixed(2);
 }
 
 async function carregar(){
@@ -5762,7 +5737,12 @@ async function carregar(){
   const clientes = new Set(dados.map(d => d.telefone));
   document.getElementById('st-clientes').textContent = clientes.size;
 
-  const receita = dados.filter(d => d.estado === 'confirmado').reduce((s,d) => s + (d.preco||0), 0);
+  // Receita estimada: só marcações ativas/realizadas COM preço definido
+  // (as de "preço a confirmar" não entram — nunca se soma 0 artificial).
+  const RECEITA_ESTADOS = ['confirmed', 'pending', 'completed'];
+  const receita = dados
+    .filter(d => RECEITA_ESTADOS.includes(chaveEstado(d.estado)) && d.preco != null)
+    .reduce((s,d) => s + Number(d.preco || 0), 0);
   document.getElementById('st-receita').textContent = 'CHF ' + receita.toFixed(0);
 
   const cont = document.getElementById('conteudo');
@@ -5774,7 +5754,9 @@ async function carregar(){
   let html = '<table><thead><tr><th>Cliente</th><th>Serviço</th><th>Data</th><th>Hora</th><th>Preço</th><th>Estado</th><th>Horário</th><th>Recebido em</th></tr></thead><tbody>';
   dados.forEach(d => {
     const criado = d.criado_em ? new Date(d.criado_em).toLocaleString('pt-PT') : '-';
-    const classeEstado = d.estado !== 'confirmado' ? 'estado-cancelado' : '';
+    const ce = chaveEstado(d.estado);
+    const classeEstado = (ce === 'confirmed' || ce === 'pending') ? '' : 'estado-cancelado';
+    const estadoRotulo = (infoEstado(d.estado) || {}).nome || d.estado;
     // A tabela diz, por texto e ícone, se o registo ainda ocupa o horário.
     const bloqueia = evBloqueiaHorario(d);
     const horario = bloqueia
@@ -5785,8 +5767,8 @@ async function carregar(){
       <td><span class="tag">${esc(d.servico)}</span>${d.extra ? '<br><span style="color:var(--muted);font-size:12px;">+ '+esc(d.extra)+'</span>' : ''}</td>
       <td>${esc(d.data) || '-'}</td>
       <td>${esc(d.hora) || '-'}</td>
-      <td>${d.preco ? 'CHF '+esc(d.preco) : '-'}</td>
-      <td class="${classeEstado}">${esc(d.estado)}</td>
+      <td>${d.preco != null ? 'CHF '+esc(d.preco) : '<span style="color:var(--muted);">A confirmar</span>'}</td>
+      <td class="${classeEstado}">${esc(estadoRotulo)}</td>
       <td>${horario}</td>
       <td style="color:var(--muted);">${esc(criado)}</td>
     </tr>`;
@@ -6127,12 +6109,17 @@ function calAjustarAlturaFaixa(){
 // O ESTADO nunca é comunicado só pela cor (a cor identifica o SERVIÇO):
 // cada evento leva sempre o nome do estado em texto, em todas as vistas.
 const CAL_ESTADOS = [
-  {id: 'confirmado', nome: 'Confirmado', cor: '#3878e8', classe: 'est-confirmado'},
-  {id: 'concluido',  nome: 'Concluído',  cor: '#2ea05a', classe: 'est-concluido'},
-  {id: 'reagendado', nome: 'Reagendado', cor: '#9678c8', classe: 'est-reagendado'},
-  {id: 'cancelado',  nome: 'Cancelado',  cor: '#e05252', classe: 'est-cancelado',
-   rotuloFiltro: 'Cancelados (horário livre)'},
+  {id: 'confirmed', nome: 'Confirmada',     cor: '#3878e8', classe: 'est-confirmado'},
+  {id: 'pending',   nome: 'A aprovar',      cor: '#d4a017', classe: 'est-confirmado'},
+  {id: 'completed', nome: 'Concluída',      cor: '#2ea05a', classe: 'est-concluido'},
+  {id: 'no_show',   nome: 'Não compareceu', cor: '#9678c8', classe: 'est-reagendado'},
+  {id: 'cancelled', nome: 'Cancelada',      cor: '#e05252', classe: 'est-cancelado',
+   rotuloFiltro: 'Canceladas (horário livre)'},
 ];
+// Mapa de estados LEGADOS (português) -> canónico, para dados antigos em cache.
+const ESTADO_LEGADO = {confirmado:'confirmed', confirmada:'confirmed', pendente:'pending',
+  concluido:'completed', concluida:'completed', cancelado:'cancelled', cancelada:'cancelled',
+  reagendado:'cancelled', reagendada:'cancelled'};
 // Cor do indicador "Agora" — laranja quente, deliberadamente DIFERENTE do
 // vermelho dos cancelamentos, para nunca se confundirem.
 const COR_AGORA = '#ff7a59';
@@ -6142,13 +6129,13 @@ const COR_AGORA = '#ff7a59';
 // o SERVIÇO, o texto diz o ESTADO, e um terceiro texto (com ícone e borda
 // próprios) diz se o horário está BLOQUEADO ou LIVRE.
 function evCancelado(ev){
-  return chaveEstado(ev.estado) === 'cancelado';
+  return chaveEstado(ev.estado) === 'cancelled';
 }
 function evBloqueiaHorario(ev){
   if(typeof ev.bloqueia_horario === 'boolean') return ev.bloqueia_horario;
   const chave = chaveEstado(ev.estado);
-  if(chave === 'confirmado' || chave === 'concluido') return true;
-  if(chave === 'cancelado') return Number(ev.bloqueia_horario || 0) === 1;
+  if(chave === 'confirmed' || chave === 'completed' || chave === 'pending') return true;
+  if(chave === 'cancelled') return Number(ev.bloqueia_horario || 0) === 1;
   return false;
 }
 // '' (marcação ativa normal) | 'bloqueado' | 'livre'
@@ -6197,14 +6184,16 @@ const MESES = ['janeiro','fevereiro','março','abril','maio','junho',
 
 let calVista = 'semana';                          // semana (por defeito) | dia | mes
 let calAncora = new Date();
-let calFiltros = {confirmado: true, concluido: true, reagendado: false, cancelado: false};
+let calFiltros = {confirmed: true, pending: true, completed: true, no_show: false, cancelled: false};
 let calEventos = [];                              // eventos do intervalo atual
 const calPorId = new Map();                       // cache id -> evento (dossiê)
 
-// "concluído" chega da BD com acento; a chave dos filtros/classes não tem.
+// Aceita canónico (EN), legado (PT) e acentos; devolve sempre o canónico.
 function chaveEstado(estado){
-  const limpo = String(estado || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
-  return CAL_ESTADOS.some(e => e.id === limpo) ? limpo : 'confirmado';
+  let limpo = String(estado || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .trim().toLowerCase().replace(/-/g, '_');
+  if(ESTADO_LEGADO[limpo]) limpo = ESTADO_LEGADO[limpo];
+  return CAL_ESTADOS.some(e => e.id === limpo) ? limpo : 'confirmed';
 }
 function infoEstado(estado){
   const chave = chaveEstado(estado);
@@ -6306,7 +6295,7 @@ function calDesenharControlos(){
   const filtros = document.getElementById('cal-filtros');
   if(!filtros.dataset.pronto){
     filtros.innerHTML = CAL_ESTADOS.map(e =>
-      '<label class="cal-filtro" title="' + esc(e.id === 'cancelado'
+      '<label class="cal-filtro" title="' + esc(e.id === 'cancelled'
           ? 'As marcações canceladas que CONTINUAM a bloquear o horário aparecem sempre — se não '
             + 'aparecessem, o calendário mostrava como livre um horário que está ocupado.'
           : 'Mostrar/ocultar marcações neste estado.')
@@ -6547,7 +6536,8 @@ function calHtmlEvento(ev, estilo, classeExtra, altura, estreito){
   const disp = classeDisponibilidade(ev);
   // nos cartões em cascata a altura é livre -> cabe a frase toda
   const cascata = (classeExtra || '').indexOf('cal-agenda-ev') !== -1;
-  const total = ev.total_centimos ? formatarCentimos(ev.total_centimos) : '';
+  const total = ev.total_centimos != null ? formatarCentimos(ev.total_centimos)
+              : (ev.preco_por_confirmar ? 'A confirmar' : '');
   const hora = esc(ev.dia_inteiro ? 'Dia inteiro' : hhmmDeIso(ev.inicio));
   const quem = esc(ev.primeiro_nome || ev.telefone || '');
   const servico = esc(ev.servico || '');
@@ -6842,7 +6832,7 @@ function mostrarPreview(id, elemento){
     ? '<img src="/media/' + encodeURIComponent(p.fotografias[0].nome_ficheiro) + '" alt="">' : '';
   const veiculo = p.veiculo
     ? '<div>🚗 ' + esc(p.veiculo) + (p.ano_veiculo ? ' (' + esc(p.ano_veiculo) + ')' : '') + '</div>' : '';
-  const podeAgir = chaveEstado(ev.estado) === 'confirmado';
+  const podeAgir = (chaveEstado(ev.estado) === 'confirmed' || chaveEstado(ev.estado) === 'pending');
   caixa.innerHTML =
       '<div class="pv-t"><i class="cal-ponto" style="background:' + esc(cor) + '"></i> '
     + esc(ev.nome || ev.telefone || '') + '</div>'
@@ -6953,7 +6943,7 @@ async function abrirPainelAgendamento(id){
         + '💬 Contactar no WhatsApp</a></div>';
   // As MESMAS ações da pré-visualização, aqui sempre disponíveis — é assim
   // que telemóvel e tablet lhes chegam, sem depender de hover.
-  if(chaveEstado(ev.estado) === 'confirmado'){
+  if((chaveEstado(ev.estado) === 'confirmed' || chaveEstado(ev.estado) === 'pending')){
     html += '<div class="pv-acoes" id="painel-acoes-marcacao">'
           + '<button data-acao="reagendar">✏️ Alterar/Reagendar</button>'
           + '<button class="perigo" data-acao="cancelar">❌ Cancelar marcação</button>'
@@ -7244,16 +7234,40 @@ abrirPedidoPeloHash();
 
 @app.route("/versao", methods=["GET"])
 def versao():
-    return jsonify(versao="daniela-v1.0-alpha", negocio=BUSINESS_NAME,
-                   fluxos=["maos", "pes"], fluxos_ocultos=["wrap"],
-                   idiomas=list(IDIOMAS_VALIDOS)), 200
+    return jsonify(versao="daniela-beauty-v1.0", negocio=BUSINESS_NAME,
+                   fluxo="servico->dia->hora->confirmar",
+                   idiomas=list(IDIOMAS_VALIDOS),
+                   servicos=[s["id"] for s in bd.listar_servicos()]), 200
 
 
 @app.route("/webhook", methods=["GET"])
 def verificar_webhook():
-    if request.args.get("hub.verify_token") == VERIFY_TOKEN:
+    """Handshake de verificação da Meta. Sem VERIFY_TOKEN configurado, recusa
+    (falha fechado — nunca ecoa o challenge às cegas)."""
+    if not VERIFY_TOKEN:
+        return "VERIFY_TOKEN não configurado", 503
+    if (request.args.get("hub.mode") == "subscribe"
+            and request.args.get("hub.verify_token") == VERIFY_TOKEN):
         return request.args.get("hub.challenge", ""), 200
     return "Token inválido", 403
+
+
+def verificar_assinatura(corpo_bruto: bytes) -> bool:
+    """Valida o header X-Hub-Signature-256 (HMAC-SHA256 do corpo com APP_SECRET).
+
+    • APP_SECRET definido -> assinatura é OBRIGATÓRIA e verificada
+      (comparação em tempo constante). É a postura de produção.
+    • APP_SECRET ausente -> aceita, mas AVISA no log. Só aceitável em
+      desenvolvimento local.
+    """
+    if not APP_SECRET:
+        print("[webhook] APP_SECRET não configurado — assinatura NÃO verificada (ok só em dev)")
+        return True
+    recebida = request.headers.get("X-Hub-Signature-256", "")
+    if not recebida.startswith("sha256="):
+        return False
+    esperada = "sha256=" + hmac.new(APP_SECRET.encode(), corpo_bruto, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(esperada, recebida)
 
 
 def sessao_preservando_perfil(sessao):
@@ -7307,12 +7321,6 @@ def processar_comando_texto(de, idioma, sessao, comando):
     if comando == "gerir":
         mostrar_gestao_marcacao(de, idioma)
         return True
-    if comando in COMANDOS_CARRINHO:
-        mostrar_carrinho(de, idioma, sessao)
-        return True
-    if comando in COMANDOS_RAPIDO:
-        mudar_para_modo_rapido(de, idioma, sessao)
-        return True
     if comando == "cancelar":
         cancelar_processo(de, idioma, sessao)
         return True
@@ -7325,6 +7333,30 @@ def processar_comando_texto(de, idioma, sessao, comando):
 def voltar_um_passo(de, idioma, sessao):
     fluxo = sessao.get("fluxo")
     categoria = sessao.get("categoria")
+
+    # --- FLUXO DANIELA BEAUTY: serviço -> dia -> hora -> resumo -----------
+    if fluxo in ("beauty", "reagendar") and sessao.get("servico_id"):
+        if "hora" in sessao:
+            libertar_horario_retido(de)      # desfazer a hora liberta o horário
+            sessao.pop("hora", None)
+            guardar_sessao(de, sessao)
+            passo_hora(de, idioma, sessao=sessao)
+        elif "data" in sessao:
+            sessao.pop("data", None)
+            guardar_sessao(de, sessao)
+            passo_data(de, idioma, sessao=sessao)
+        elif fluxo == "reagendar":
+            # Do 1.º passo do reagendamento, VOLTAR desiste (marcação intacta).
+            enviar_texto(de, t("reagendar_ja_nao_valida", idioma))
+            nova = reiniciar_sessao(de)
+            enviar_menu_principal(de, idioma, saudacao=False, sessao=nova)
+        else:
+            # Do passo do serviço, VOLTAR regressa à lista de serviços.
+            for c in ("servico_id", "servico", "duracao", "duracao_min", "preco", "preco_cents"):
+                sessao.pop(c, None)
+            guardar_sessao(de, sessao)
+            iniciar_escolha_servico(de, idioma, sessao)
+        return
 
     if fluxo == "wrap" and sessao.get("wrap_modo") == MODO_RAPIDO:
         # Cadeia do modo rápido: resumo -> fotografias -> interesse -> modo.
@@ -7432,7 +7464,14 @@ def voltar_um_passo(de, idioma, sessao):
 
 @app.route("/webhook", methods=["POST"])
 def receber_mensagem():
-    data = request.get_json(force=True)
+    corpo_bruto = request.get_data()
+    if not verificar_assinatura(corpo_bruto):
+        # Não revela porquê; a Meta nunca deve chegar aqui com APP_SECRET certo.
+        return jsonify(status="assinatura invalida"), 403
+    try:
+        data = json.loads(corpo_bruto.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return jsonify(status="ignorado"), 200
     try:
         entry = data["entry"][0]["changes"][0]["value"]
         if "messages" not in entry:
@@ -7442,9 +7481,8 @@ def receber_mensagem():
         de = msg["from"]
 
         # IDEMPOTÊNCIA: a Meta reenvia o mesmo webhook se não receber o 200 a
-        # tempo. Uma mensagem já tratada é reconhecida e devolvida em silêncio
-        # — sem repetir o passo, sem responder outra vez ao cliente e, acima
-        # de tudo, sem duplicar marcações.
+        # tempo. Uma mensagem já tratada é reconhecida em silêncio — sem
+        # repetir o passo, sem responder de novo, sem duplicar marcações.
         if mensagem_ja_processada(msg.get("id")):
             return jsonify(status="repetida"), 200
 
@@ -7618,10 +7656,18 @@ def receber_mensagem():
             id_botao = {
                 ACAO_MENU: "menu_principal",
                 ACAO_NOVA_MARCACAO: "mp_marcar",
-                ACAO_CARRINHO: "ver_carrinho",
                 ACAO_CANCELAR: ID_CANCELAR,
-                ACAO_RAPIDO: "modo_rapido",
             }.get(id_botao, id_botao)
+
+            # LEGADO (Spotless): botões dos fluxos Wrap / orçamento rápido /
+            # negociação de orçamento. Já não existem para a Daniela Beauty.
+            # Um cliente com uma mensagem antiga na conversa que carregue num
+            # destes é levado em segurança ao menu — os handlers legados
+            # abaixo ficam inalcançáveis de propósito.
+            if _id_legado_spotless(id_botao):
+                nova = reiniciar_sessao(de)
+                enviar_menu_principal(de, idioma, saudacao=False, sessao=nova)
+                return jsonify(status="ok"), 200
 
             if id_botao == ACAO_VOLTAR:
                 voltar_um_passo(de, idioma, sessao)
@@ -7705,20 +7751,13 @@ def receber_mensagem():
                 return jsonify(status="ok"), 200
 
             if id_botao == "mp_marcar":  # ex.: botão "Nova marcação" em "Gerir a minha marcação"
-                iniciar_escolha_categoria(de, idioma, sessao)
+                iniciar_escolha_servico(de, idioma, sessao)
                 return jsonify(status="ok"), 200
 
-            if id_botao in NOME_CATEGORIA:  # categoria dentro de "Marcar"
-                if id_botao == CATEGORIA_WRAP_OCULTA["id"]:
-                    # Categoria oculta nesta versão (ver CATEGORIA_WRAP_OCULTA).
-                    # Continua a existir na base de dados e no painel para as
-                    # marcações antigas, mas não se pode entrar nela por aqui.
-                    nova = reiniciar_sessao(de)
-                    enviar_menu_principal(de, idioma, saudacao=False, sessao=nova)
-                    return jsonify(status="ok"), 200
-                sessao.update({"fluxo": "marcar", "categoria": id_botao})
-                guardar_sessao(de, sessao)
-                (passo_limpeza_tipo if id_botao == "cat_limpeza" else passo_estetica_servico)(de, idioma, sessao)
+            # Escolha de um serviço Daniela Beauty (svc_<id>) — pode chegar como
+            # botão OU como linha de lista; tratada nos dois sítios.
+            if id_botao.startswith("svc_"):
+                escolher_servico(de, idioma, sessao, id_botao[len("svc_"):])
                 return jsonify(status="ok"), 200
 
             # --- Escolha do modo de pedido Wrap ---------------------------
@@ -7809,18 +7848,55 @@ def receber_mensagem():
                 return jsonify(status="ok"), 200
 
             if id_botao == "confirmar":
-                # Um "Confirmar" de uma mensagem antiga pode chegar quando a
-                # sessão já foi reiniciada (marcação feita, processo cancelado).
-                # Sem serviço, data e hora não há nada para gravar: em vez de
-                # rebentar contra a base de dados, volta-se ao menu.
-                if not (sessao.get("servico") and sessao.get("data") and sessao.get("hora")):
+                # Sessão obsoleta (marcação já feita / processo cancelado): sem
+                # dados essenciais não há nada para gravar — volta ao menu.
+                if not (sessao.get("data") and sessao.get("hora")
+                        and (sessao.get("servico_id") or sessao.get("servico"))):
                     nova = reiniciar_sessao(de)
                     enviar_menu_principal(de, idioma, saudacao=False, sessao=nova)
                     return jsonify(status="ok"), 200
+
+                # --- MODO REAGENDAMENTO — move a MESMA marcação -------------
+                # A marcação atual mantém-se INTACTA até este ponto. Só aqui,
+                # dentro de reagendar_agendamento (transação atómica, conflito
+                # revalidado lá dentro), é que data/hora mudam. Se falhar, a
+                # marcação antiga fica exatamente como estava.
+                if sessao.get("fluxo") == "reagendar" and sessao.get("reagendar_id"):
+                    id_ag = int(sessao["reagendar_id"])
+                    d_iso = data_iso_de_texto(sessao.get("data"))
+                    h_hhmm = hora_hhmm_de_texto(sessao.get("hora"))
+                    try:
+                        reagendar_agendamento(id_ag, d_iso, h_hhmm, origem="cliente",
+                                              avisar_cliente=False)
+                    except HorarioOcupado:
+                        libertar_horario_retido(de)
+                        sessao.pop("hora", None)
+                        guardar_sessao(de, sessao)
+                        enviar_texto(de, t("reagendar_ocupado", idioma))
+                        passo_hora(de, idioma, sessao=sessao)
+                        return jsonify(status="ok"), 200
+                    except (EstadoInvalido, LookupError):
+                        libertar_horario_retido(de)
+                        reiniciar_sessao(de)
+                        enviar_texto(de, t("reagendar_ja_nao_valida", idioma))
+                        return jsonify(status="ok"), 200
+                    libertar_horario_retido(de)
+                    enviar_texto(de, t("reagendar_confirmado", idioma, id=id_ag,
+                                       data=sessao["data"], hora=sessao["hora"]))
+                    enviar_botoes(de, t("e_agora_pergunta", idioma), [
+                        {"id": ACAO_GERIR, "titulo": t("botao_gerir_marcacao", idioma)},
+                        {"id": ACAO_MENU, "titulo": t("botao_menu_principal", idioma)},
+                    ], idioma)
+                    if PROVIDER_WHATSAPP:
+                        enviar_texto(PROVIDER_WHATSAPP,
+                                     f"✏️ Marcação #{id_ag} reagendada pelo cliente "
+                                     f"{formatar_telefone(de)} para {sessao['data']} {sessao['hora']}.")
+                    reiniciar_sessao(de)
+                    return jsonify(status="ok"), 200
+
+                # --- MODO NORMAL — nova marcação --------------------------
                 # Última verificação, atómica com a gravação: entre o resumo e
-                # este clique o horário pode ter sido ocupado por outro
-                # cliente. Nesse caso nada é gravado e volta-se ao passo da
-                # hora, já sem o horário que entretanto desapareceu.
+                # este clique o horário pode ter sido ocupado por outro cliente.
                 try:
                     id_ag = guardar_agendamento(de, sessao)
                 except HorarioOcupado:
@@ -7833,7 +7909,6 @@ def receber_mensagem():
                 # a retenção cumpriu o seu papel: agora há uma marcação a sério
                 libertar_horario_retido(de)
                 enviar_texto(de, mensagem_confirmacao_final(sessao, idioma))
-                # Em vez de mandar escrever comandos no próprio texto: botões.
                 enviar_botoes(de, t("e_agora_pergunta", idioma), [
                     {"id": ACAO_GERIR, "titulo": t("botao_gerir_marcacao", idioma)},
                     {"id": ACAO_MENU, "titulo": t("botao_menu_principal", idioma)},
@@ -7844,15 +7919,22 @@ def receber_mensagem():
 
             if id_botao == "alterar":
                 libertar_horario_retido(de)     # a hora vai ser reescolhida
-                categoria = sessao.get("categoria")
-                for campo in ("tipo_id", "tamanho_id", "estado_id", "extra_id", "data", "hora",
-                              "servico", "extra", "preco", "duracao"):
+                em_reagendamento = sessao.get("fluxo") == "reagendar" and sessao.get("reagendar_id")
+                try:
+                    carrinho_esvaziar(sessao)
+                except Exception:
+                    pass
+                for campo in ("tipo_id", "tamanho_id", "estado_id", "extra_id", "data", "hora", "extra"):
                     sessao.pop(campo, None)
-                carrinho_remover_grupo(sessao, GRUPO_SERVICO_BASE)
-                carrinho_remover_grupo(sessao, GRUPO_TAMANHO_VEICULO)
-                carrinho_remover_grupo(sessao, GRUPO_EXTRA)
+                if not em_reagendamento:
+                    for campo in ("servico_id", "servico", "preco", "preco_cents",
+                                  "duracao", "duracao_min", "categoria"):
+                        sessao.pop(campo, None)
                 guardar_sessao(de, sessao)
-                (passo_limpeza_tipo if categoria == "cat_limpeza" else passo_estetica_servico)(de, idioma, sessao)
+                if em_reagendamento:
+                    passo_data(de, idioma, sessao=sessao)      # mesmo serviço, nova data
+                else:
+                    iniciar_escolha_servico(de, idioma, sessao)
                 return jsonify(status="ok"), 200
 
             # --- Marcação confirmada aberta a partir do carrinho -------------
@@ -7866,10 +7948,29 @@ def receber_mensagem():
 
             if id_botao.startswith("reagendar_"):
                 id_ag = int(id_botao.split("_")[-1])
-                atualizar_estado_agendamento(id_ag, "reagendado")
+                alvo = obter_agendamento(id_ag)
+                if (not alvo or alvo.get("telefone") != de
+                        or chave_estado(alvo.get("estado")) not in estados.GERIVEIS_PELO_CLIENTE):
+                    enviar_texto(de, t("reagendar_ja_nao_valida", idioma))
+                    enviar_menu_principal(de, idioma, saudacao=False, sessao=sessao)
+                    return jsonify(status="ok"), 200
+                # A marcação atual NÃO é tocada. Só escolhemos a nova data/hora;
+                # o movimento acontece (atómico) ao confirmar (ver id_botao=="confirmar").
                 sessao = sessao_preservando_perfil(sessao)
+                sessao["fluxo"] = "reagendar"
+                sessao["reagendar_id"] = id_ag
+                sessao["servico_id"] = alvo.get("servico_id")
+                sessao["servico"] = alvo.get("servico")
+                sessao["duracao_min"] = alvo.get("duracao_min")
+                sessao["duracao"] = (alvo.get("duracao")
+                                     or catalogo.duracao_label(alvo.get("duracao_min")))
+                sessao["preco_cents"] = alvo.get("preco_cents")
+                sessao["preco"] = alvo.get("preco")
+                sessao.pop("data", None)
+                sessao.pop("hora", None)
+                guardar_sessao(de, sessao)
                 enviar_texto(de, t("reagendar_aviso", idioma))
-                iniciar_escolha_categoria(de, idioma, sessao)
+                passo_data(de, idioma, sessao=sessao)
                 return jsonify(status="ok"), 200
 
             if id_botao.startswith("cancelar_ag_"):
@@ -7954,11 +8055,15 @@ def receber_mensagem():
             id_escolhido = {
                 ACAO_MENU: "menu_principal",
                 ACAO_NOVA_MARCACAO: "mp_marcar",
-                ACAO_CARRINHO: "ver_carrinho",
                 ACAO_CANCELAR: ID_CANCELAR,
                 ACAO_VOLTAR: ID_VOLTAR,
-                ACAO_RAPIDO: "modo_rapido",
             }.get(id_escolhido, id_escolhido)
+
+            # LEGADO (Spotless): linhas de lista dos fluxos Wrap/orçamento.
+            if _id_legado_spotless(id_escolhido):
+                nova = reiniciar_sessao(de)
+                enviar_menu_principal(de, idioma, saudacao=False, sessao=nova)
+                return jsonify(status="ok"), 200
 
             if id_escolhido == ID_CANCELAR:
                 cancelar_processo(de, idioma, sessao)
@@ -7992,13 +8097,12 @@ def receber_mensagem():
 
             # Menu principal
             if id_escolhido == "mp_marcar":
-                iniciar_escolha_categoria(de, idioma, sessao)
+                iniciar_escolha_servico(de, idioma, sessao)
                 return jsonify(status="ok"), 200
             if id_escolhido == "mp_orcamento":
-                # Nesta versão o pedido de orçamento não está no menu público.
-                # O ID pode na mesma chegar de uma mensagem antiga que o
-                # cliente ainda tenha na conversa: em vez de arrancar um fluxo
-                # que já não existe aqui, volta-se em segurança ao menu.
+                # LEGADO (Spotless): o pedido de orçamento não faz parte da
+                # Daniela Beauty. Um ID antigo ainda na conversa do cliente
+                # volta em segurança ao menu.
                 nova = reiniciar_sessao(de)
                 enviar_menu_principal(de, idioma, saudacao=False, sessao=nova)
                 return jsonify(status="ok"), 200
@@ -8153,9 +8257,29 @@ def receber_mensagem():
                 nao_entendi_com_opcoes(de, idioma, sessao)
                 return jsonify(status="ok"), 200
 
+            # --- FLUXO DANIELA BEAUTY (serviço -> dia -> hora) --------------
+            # Escolha do serviço (chega como linha de lista: svc_<id>).
+            if id_escolhido.startswith("svc_"):
+                escolher_servico(de, idioma, sessao, id_escolhido[len("svc_"):])
+                return jsonify(status="ok"), 200
+
+            if sessao.get("fluxo") in ("beauty", "reagendar") and sessao.get("servico_id"):
+                if "data" not in sessao:
+                    sessao["data"] = msg["interactive"]["list_reply"]["title"]
+                    guardar_sessao(de, sessao)
+                    passo_hora(de, idioma, sessao=sessao)
+                    return jsonify(status="ok"), 200
+                if "hora" not in sessao:
+                    sessao["hora"] = msg["interactive"]["list_reply"]["title"]
+                    guardar_sessao(de, sessao)
+                    # Horário RETIDO em nome deste cliente até confirmar.
+                    reter_horario(de, sessao)
+                    passo_resumo(de, idioma, sessao)
+                    return jsonify(status="ok"), 200
+
             categoria = sessao.get("categoria")
 
-            # Limpeza
+            # Limpeza (LEGADO)
             if categoria == "cat_limpeza":
                 if "tipo_id" not in sessao:
                     sessao["tipo_id"] = id_escolhido
@@ -8257,12 +8381,16 @@ def reenviar_passo_atual(de, idioma, sessao):
     categoria = sessao.get("categoria")
     fluxo = sessao.get("fluxo")
 
-    # Ecrã de escolha da categoria: é aqui que o cliente estava se abriu o
-    # carrinho logo no início (ver ID_VOLTAR_CARRINHO).
-    if fluxo == "escolher_categoria" and not categoria:
-        enviar_lista(de, t("categoria_pergunta", idioma), t("categoria_seccao", idioma),
-                     opcoes_categorias_com_precos(idioma), idioma, botao=t("menu_botao", idioma),
-                     com_voltar=True, com_cancelar=True, rodape=t("rodape_padrao", idioma))
+    # --- FLUXO DANIELA BEAUTY -------------------------------------------
+    if fluxo in ("beauty", "reagendar"):
+        if not sessao.get("servico_id"):
+            iniciar_escolha_servico(de, idioma, sessao)
+        elif "hora" in sessao:
+            passo_resumo(de, idioma, sessao)
+        elif "data" in sessao:
+            passo_hora(de, idioma, sessao=sessao)
+        else:
+            passo_data(de, idioma, sessao=sessao)
         return
 
     if fluxo == "wrap" and sessao.get("wrap_modo") == MODO_RAPIDO:
