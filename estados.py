@@ -36,6 +36,15 @@ BLOQUEIAM_SEMPRE = (CONFIRMED, COMPLETED, PENDING)
 
 # Estados "ativos" para o cliente gerir/ver a sua marcação.
 GERIVEIS_PELO_CLIENTE = (CONFIRMED, PENDING)
+# Marcações que "contam" como ativas/futuras (nem canceladas nem passadas).
+ATIVOS = (CONFIRMED, PENDING)
+
+
+def sql_lista(*ests) -> str:
+    """('confirmed','pending') -> "'confirmed', 'pending'" para usar em SQL
+    `LOWER(estado) IN (...)`. Mantém as queries ligadas às CONSTANTES, nunca a
+    literais soltos — evita o drift PT/EN."""
+    return ", ".join(f"'{e}'" for e in ests)
 
 _LEGADO = {
     "confirmado": CONFIRMED,
