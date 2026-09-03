@@ -167,10 +167,6 @@ TEXTOS = {
     "menu_titulo_lista": {"pt": "Menu principal", "de": "Hauptmenü", "en": "Main menu"},
     "menu_botao": {"pt": "👉 Escolher opção", "de": "👉 Option wählen", "en": "👉 Choose option"},
 
-    # --- Categorias --------------------------------------------------------
-    "categoria_pergunta": {"pt": "Que tipo de serviço procura?",
-                            "de": "Welche Art von Service suchen Sie?",
-                            "en": "What type of service are you looking for?"},
 
     # --- Marcação Daniela Beauty: escolha do serviço (passo 1 de 3) --------
     "servico_corpo": {"pt": "Passo 1 de 3 — Que serviço deseja marcar?",
@@ -202,48 +198,15 @@ TEXTOS = {
     "rodape_padrao": {"pt": "Escreva VOLTAR, CANCELAR ou MENU",
                        "de": "Schreiben Sie VOLTAR, CANCELAR oder MENU",
                        "en": "Type VOLTAR, CANCELAR or MENU"},
-    # Rodapé do fluxo Wrap: acrescenta RAPIDO, o comando que muda para o
-    # orçamento rápido a qualquer momento. Mantido dentro dos 60 caracteres
-    # que a API do WhatsApp aceita num footer (ver enviar_lista/enviar_botoes).
-    "rodape_wrap": {"pt": "Escreva VOLTAR, CANCELAR, MENU, CARRINHO ou RAPIDO",
-                     "de": "Schreiben Sie VOLTAR, CANCELAR, CARRINHO oder RAPIDO",
-                     "en": "Type VOLTAR, CANCELAR, MENU, CARRINHO or RAPIDO"},
     "voltar_titulo": {"pt": "⬅️ Voltar", "de": "⬅️ Zurück", "en": "⬅️ Back"},
     "voltar_desc": {"pt": "Passo anterior", "de": "Vorheriger Schritt", "en": "Previous step"},
     "cancelar_titulo": {"pt": "❌ Cancelar processo", "de": "❌ Vorgang abbrechen", "en": "❌ Cancel process"},
     "cancelar_desc": {"pt": "Terminar sem marcar", "de": "Ohne Buchung beenden", "en": "End without booking"},
 
-    # --- Passos: Limpeza -----------------------------------------------
-    "limpeza_tipo_corpo": {"pt": "Passo 1 de 5 — Escolha o tipo de limpeza:",
-                            "de": "Schritt 1 von 5 — Wählen Sie die Art der Reinigung:",
-                            "en": "Step 1 of 5 — Choose the type of cleaning:"},
-    "limpeza_tipo_seccao": {"pt": "Tipo de limpeza", "de": "Art der Reinigung", "en": "Cleaning type"},
-    "limpeza_tipo_botao": {"pt": "🧼 Escolher", "de": "🧼 Wählen", "en": "🧼 Choose"},
 
-    "limpeza_tamanho_corpo": {"pt": "Passo 2 de 5 — Qual o tamanho do veículo?",
-                               "de": "Schritt 2 von 5 — Wie gross ist das Fahrzeug?",
-                               "en": "Step 2 of 5 — What is the vehicle size?"},
-    "tamanho_seccao": {"pt": "Tamanho do veículo", "de": "Fahrzeuggrösse", "en": "Vehicle size"},
-    "tamanho_botao": {"pt": "🚗 Escolher", "de": "🚗 Wählen", "en": "🚗 Choose"},
 
-    "extra_corpo": {"pt": "Passo 3 de 5 — Deseja algum extra?",
-                    "de": "Schritt 3 von 5 — Möchten Sie ein Extra?",
-                    "en": "Step 3 of 5 — Would you like any extra?"},
-    "extra_seccao": {"pt": "Extras disponíveis", "de": "Verfügbare Extras", "en": "Available extras"},
-    "extra_botao": {"pt": "➕ Escolher", "de": "➕ Wählen", "en": "➕ Choose"},
 
-    # --- Passos: Estética -----------------------------------------------
-    "estetica_servico_corpo": {"pt": "Passo 1 de 5 — Escolha o serviço de estética:",
-                                "de": "Schritt 1 von 5 — Wählen Sie den Aufbereitungsservice:",
-                                "en": "Step 1 of 5 — Choose the detailing service:"},
-    "estetica_servico_seccao": {"pt": "Estética automóvel", "de": "Fahrzeugaufbereitung", "en": "Car detailing"},
-    "estetica_servico_botao": {"pt": "✨ Escolher", "de": "✨ Wählen", "en": "✨ Choose"},
 
-    "estetica_estado_corpo": {"pt": "Passo 2 de 5 — Como está o estado atual do veículo?",
-                               "de": "Schritt 2 von 5 — Wie ist der aktuelle Zustand des Fahrzeugs?",
-                               "en": "Step 2 of 5 — What is the vehicle's current condition?"},
-    "estado_seccao": {"pt": "Estado do veículo", "de": "Fahrzeugzustand", "en": "Vehicle condition"},
-    "estado_botao": {"pt": "🚗 Escolher", "de": "🚗 Wählen", "en": "🚗 Choose"},
 
     # --- Data / hora --------------------------------------------------------
     "data_corpo": {"pt": "Passo {n} de 3 — Para que dia gostaria de marcar?",
@@ -271,13 +234,10 @@ TEXTOS = {
     # --- Resumo / confirmação -----------------------------------------------
     "resumo_titulo": {"pt": "📋 *Confirme a sua marcação*", "de": "📋 *Bestätigen Sie Ihre Buchung*",
                        "en": "📋 *Confirm your booking*"},
-    "resumo_servico": {"pt": "🔧 Serviço: {servico}", "de": "🔧 Service: {servico}", "en": "🔧 Service: {servico}"},
-    "resumo_extra": {"pt": "➕ Extra: {extra}", "de": "➕ Extra: {extra}", "en": "➕ Extra: {extra}"},
     "resumo_data": {"pt": "📅 Data: {data}", "de": "📅 Datum: {data}", "en": "📅 Date: {data}"},
     "resumo_hora": {"pt": "🕒 Hora: {hora}", "de": "🕒 Uhrzeit: {hora}", "en": "🕒 Time: {hora}"},
     "resumo_duracao": {"pt": "⏱️ Duração estimada: {duracao}", "de": "⏱️ Geschätzte Dauer: {duracao}",
                         "en": "⏱️ Estimated duration: {duracao}"},
-    "resumo_preco": {"pt": "💰 Preço: {preco}", "de": "💰 Preis: {preco}", "en": "💰 Price: {preco}"},
     "resumo_discriminacao": {"pt": "📊 Discriminação:", "de": "📊 Aufschlüsselung:", "en": "📊 Breakdown:"},
     "resumo_total": {"pt": "💰 Total: {total}", "de": "💰 Gesamtbetrag: {total}", "en": "💰 Total: {total}"},
     "resumo_pergunta": {"pt": "Está tudo correto?", "de": "Ist alles korrekt?", "en": "Is everything correct?"},
@@ -301,191 +261,24 @@ TEXTOS = {
     # removido — essas ações são agora os botões enviados logo a seguir à
     # confirmação: "🗓️ Gerir marcação" e "🏠 Menu principal".)
 
-    # --- Wrap & Proteção: escolha do modo (entrada do fluxo) -----------------
-    "wrap_modo_corpo": {"pt": "🎨 *Wrap & Proteção*\n\nComo prefere avançar?",
-                         "de": "🎨 *Folierung & Schutz*\n\nWie möchten Sie fortfahren?",
-                         "en": "🎨 *Wrap & Protection*\n\nHow would you like to proceed?"},
-    "wrap_modo_rapido_botao": {"pt": "⚡ Orçamento rápido", "de": "⚡ Schnellangebot", "en": "⚡ Quick quote"},
-    "wrap_modo_detalhe_botao": {"pt": "🎨 Configurar tudo", "de": "🎨 Alles einstellen", "en": "🎨 Configure in full"},
-    "wrap_modo_especialista_botao": {"pt": "💬 Especialista", "de": "💬 Spezialist", "en": "💬 Specialist"},
 
-    # --- Wrap & Proteção: orçamento rápido -----------------------------------
-    "rapido_interesse_corpo": {"pt": "⚡ *Orçamento rápido* (1 de 2)\n\nO que está a considerar?",
-                                "de": "⚡ *Schnellangebot* (1 von 2)\n\nWoran denken Sie?",
-                                "en": "⚡ *Quick quote* (1 of 2)\n\nWhat are you considering?"},
-    "rapido_nao_sei_botao": {"pt": "Ainda não sei", "de": "Weiss noch nicht", "en": "Not sure yet"},
-    "rapido_fotos_corpo": {"pt": "⚡ *Orçamento rápido* (2 de 2)\n\nDeseja enviar fotografias do veículo "
-                                  "(até 5)? Ajuda a equipa a preparar um orçamento mais rigoroso.",
-                            "de": "⚡ *Schnellangebot* (2 von 2)\n\nMöchten Sie Fotos des Fahrzeugs "
-                                  "(bis zu 5) senden? Das hilft dem Team, ein genaueres Angebot zu erstellen.",
-                            "en": "⚡ *Quick quote* (2 of 2)\n\nWould you like to send photos of the vehicle "
-                                  "(up to 5)? It helps our team prepare a more accurate quote."},
-    "rapido_ver_pedido_botao": {"pt": "🛒 Ver pedido", "de": "🛒 Anfrage ansehen", "en": "🛒 View request"},
 
-    "rapido_resumo_titulo": {"pt": "⚡ *Resumo do pedido rápido*", "de": "⚡ *Zusammenfassung der Schnellanfrage*",
-                              "en": "⚡ *Quick request summary*"},
-    "rapido_resumo_nome": {"pt": "👤 Nome: {nome}", "de": "👤 Name: {nome}", "en": "👤 Name: {nome}"},
-    "rapido_resumo_contacto": {"pt": "📱 Contacto: {contacto}", "de": "📱 Kontakt: {contacto}",
-                                "en": "📱 Contact: {contacto}"},
-    "rapido_resumo_interesse": {"pt": "🎨 Interesse: {interesse}", "de": "🎨 Interesse: {interesse}",
-                                 "en": "🎨 Interest: {interesse}"},
-    "rapido_preco_sob_analise": {"pt": "💰 Preço: sob análise da equipa",
-                                  "de": "💰 Preis: wird vom Team geprüft",
-                                  "en": "💰 Price: under review by our team"},
-    "rapido_finalizado_cliente": {"pt": "✅ Pedido rápido enviado! A nossa equipa vai analisar "
-                                        "(e as fotografias, se enviadas) e responde-lhe em breve com "
-                                        "o orçamento.",
-                                   "de": "✅ Schnellanfrage gesendet! Unser Team prüft sie (und die Fotos, "
-                                        "falls gesendet) und meldet sich in Kürze mit dem Angebot.",
-                                   "en": "✅ Quick request sent! Our team will review it (and the photos, "
-                                        "if sent) and will get back to you shortly with the quote."},
 
-    # --- Wrap & Proteção: carrinho no modo rápido ----------------------------
-    "carrinho_rapido_titulo": {"pt": "🛒 *Pedido rápido de Wrap*", "de": "🛒 *Schnellanfrage Folierung*",
-                                "en": "🛒 *Quick wrap request*"},
-    "carrinho_rapido_preferencia": {"pt": "Preferência: {preferencia}", "de": "Präferenz: {preferencia}",
-                                     "en": "Preference: {preferencia}"},
-    "carrinho_rapido_preco": {"pt": "Preço: sob análise", "de": "Preis: wird geprüft",
-                               "en": "Price: under review"},
 
-    # --- Wrap & Proteção: falar com especialista -----------------------------
-    "especialista_cliente": {"pt": "💬 Pedido recebido! Um especialista de wrap vai entrar em contacto "
-                                    "consigo por aqui em breve, sem compromisso.",
-                              "de": "💬 Anfrage erhalten! Ein Folierungs-Spezialist meldet sich in Kürze "
-                                    "unverbindlich hier bei Ihnen.",
-                              "en": "💬 Request received! A wrap specialist will get in touch with you here "
-                                    "shortly, with no obligation."},
 
     # --- Notificação interna sobre um pedido: reação do cliente (recusa) ----
     "botao_menu_principal": {"pt": "🏠 Menu principal", "de": "🏠 Hauptmenü", "en": "🏠 Main menu"},
-    "rapido_recusado_cliente": {
-        "pt": "Lamentamos, mas não vamos avançar com este pedido de Wrap & Proteção "
-              "neste momento. Obrigado pelo seu interesse!",
-        "de": "Es tut uns leid, aber wir werden diese Anfrage für Folierung & Schutz "
-              "derzeit nicht weiterverfolgen. Danke für Ihr Interesse!",
-        "en": "We're sorry, but we won't be proceeding with this Wrap & Protection "
-              "request at this time. Thank you for your interest!"},
 
     "rapido_linha_lista": {"pt": "⚡ Pedido rápido", "de": "⚡ Schnellanfrage", "en": "⚡ Quick request"},
-    "rapido_mudou_modo": {"pt": "⚡ Sem problema — vamos pelo caminho rápido.",
-                           "de": "⚡ Kein Problem — nehmen wir den schnellen Weg.",
-                           "en": "⚡ No problem — let's take the quick route."},
 
-    # --- Wrap & Proteção -----------------------------------------------------
-    "wrap_veiculo_corpo": {"pt": "Passo 1 de 8 — Que tipo de veículo é?",
-                            "de": "Schritt 1 von 8 — Um welchen Fahrzeugtyp handelt es sich?",
-                            "en": "Step 1 of 8 — What type of vehicle is it?"},
-    "wrap_veiculo_seccao": {"pt": "Tipo de veículo", "de": "Fahrzeugtyp", "en": "Vehicle type"},
-    "wrap_veiculo_botao": {"pt": "🚗 Escolher", "de": "🚗 Wählen", "en": "🚗 Choose"},
-    "wrap_veiculo_outro_pedir": {"pt": "Indique o tipo de veículo (ex: \"Pick-up\").",
-                                  "de": "Geben Sie den Fahrzeugtyp an (z.B. \"Pick-up\").",
-                                  "en": "Please specify the vehicle type (e.g. \"Pick-up\")."},
 
-    "wrap_ano_corpo": {"pt": "Passo 2 de 8 — Qual o ano do veículo?",
-                       "de": "Schritt 2 von 8 — Welches Baujahr hat das Fahrzeug?",
-                       "en": "Step 2 of 8 — What year is the vehicle?"},
-    "wrap_ano_seccao": {"pt": "Ano do veículo", "de": "Baujahr", "en": "Vehicle year"},
-    "wrap_ano_botao": {"pt": "📅 Escolher ano", "de": "📅 Jahr wählen", "en": "📅 Choose year"},
-    "wrap_ano_outro_botao": {"pt": "Outro/mais antigo", "de": "Anderes/älter", "en": "Other/older"},
-    "wrap_ano_outro_pedir": {"pt": "Indique o ano do veículo, com 4 algarismos (ex: 1998).",
-                              "de": "Geben Sie das Baujahr des Fahrzeugs mit 4 Ziffern an (z.B. 1998).",
-                              "en": "Please provide the vehicle's year, with 4 digits (e.g. 1998)."},
-    "wrap_ano_invalido": {"pt": "Isso não parece um ano válido. Escreva um ano com 4 algarismos (ex: 1998).",
-                           "de": "Das scheint kein gültiges Baujahr zu sein. Geben Sie ein Jahr mit 4 Ziffern an (z.B. 1998).",
-                           "en": "That doesn't look like a valid year. Please write a 4-digit year (e.g. 1998)."},
 
-    "wrap_tipo_corpo": {"pt": "Passo 3 de 8 — Pretende wrap total ou parcial?",
-                        "de": "Schritt 3 von 8 — Möchten Sie eine Voll- oder Teilfolierung?",
-                        "en": "Step 3 of 8 — Would you like a full or partial wrap?"},
-    "wrap_tipo_seccao": {"pt": "Tipo de wrap", "de": "Folierungsart", "en": "Wrap type"},
-    "wrap_tipo_botao": {"pt": "🎨 Escolher", "de": "🎨 Wählen", "en": "🎨 Choose"},
-    "wrap_total_botao": {"pt": "🚗 Wrap total", "de": "🚗 Vollfolierung", "en": "🚗 Full wrap"},
-    "wrap_parcial_botao": {"pt": "🔧 Wrap parcial", "de": "🔧 Teilfolierung", "en": "🔧 Partial wrap"},
 
-    "wrap_cor_familia_corpo": {"pt": "Passo 4 de 8 — Que família de cor prefere?",
-                                "de": "Schritt 4 von 8 — Welche Farbfamilie bevorzugen Sie?",
-                                "en": "Step 4 of 8 — Which colour family do you prefer?"},
-    "wrap_cor_familia_seccao": {"pt": "Família de cor", "de": "Farbfamilie", "en": "Colour family"},
-    "wrap_cor_familia_botao": {"pt": "🎨 Escolher", "de": "🎨 Wählen", "en": "🎨 Choose"},
 
-    "wrap_cor_corpo": {"pt": "Passo 5 de 8 — Escolha a cor:",
-                       "de": "Schritt 5 von 8 — Wählen Sie die Farbe:",
-                       "en": "Step 5 of 8 — Choose the colour:"},
-    "wrap_cor_seccao": {"pt": "Cor", "de": "Farbe", "en": "Colour"},
-    "wrap_cor_botao": {"pt": "🎨 Escolher", "de": "🎨 Wählen", "en": "🎨 Choose"},
-    "wrap_cor_personalizada_pedir": {"pt": "Descreva a cor que pretende. Ex: \"Azul petróleo com reflexos dourados\".",
-                                      "de": "Beschreiben Sie die gewünschte Farbe. Z.B. \"Petrolblau mit goldenen Reflexen\".",
-                                      "en": "Describe the colour you'd like. E.g. \"Petrol blue with golden highlights\"."},
 
-    "wrap_acabamento_corpo": {"pt": "Passo 6 de 8 — Que acabamento prefere?",
-                               "de": "Schritt 6 von 8 — Welches Finish bevorzugen Sie?",
-                               "en": "Step 6 of 8 — Which finish do you prefer?"},
-    "wrap_acabamento_seccao": {"pt": "Acabamento", "de": "Finish", "en": "Finish"},
-    "wrap_acabamento_botao": {"pt": "✨ Escolher", "de": "✨ Wählen", "en": "✨ Choose"},
 
-    "wrap_fotos_pergunta_corpo": {"pt": "Passo 7 de 8 — Deseja enviar fotografias do veículo (até 5) para "
-                                        "ajudar a equipa a preparar o orçamento?",
-                                   "de": "Schritt 7 von 8 — Möchten Sie Fotos des Fahrzeugs (bis zu 5) senden, "
-                                        "damit unser Team den Kostenvoranschlag vorbereiten kann?",
-                                   "en": "Step 7 of 8 — Would you like to send photos of the vehicle (up to 5) "
-                                        "to help our team prepare the quote?"},
-    "wrap_fotos_sim_botao": {"pt": "📸 Sim, enviar fotos", "de": "📸 Ja, Fotos senden", "en": "📸 Yes, send photos"},
-    "wrap_fotos_nao_botao": {"pt": "➡️ Sem fotos", "de": "➡️ Ohne Fotos", "en": "➡️ No photos"},
-    "wrap_fotos_pedir": {"pt": "Pode enviar agora até 5 fotografias do veículo, uma de cada vez, diretamente aqui na conversa.",
-                          "de": "Sie können jetzt bis zu 5 Fotos des Fahrzeugs senden, eines nach dem anderen, direkt hier im Chat.",
-                          "en": "You can now send up to 5 photos of the vehicle, one at a time, directly here in the chat."},
-    "wrap_foto_recebida_contagem": {"pt": "📸 Fotografia {atual} de {total} recebida.",
-                                     "de": "📸 Foto {atual} von {total} erhalten.",
-                                     "en": "📸 Photo {atual} of {total} received."},
-    "wrap_fotos_mais_ou_concluir": {"pt": "Pode enviar mais fotografias ou tocar em \"Concluir pedido\" para terminarmos.",
-                                     "de": "Sie können weitere Fotos senden oder auf \"Anfrage abschliessen\" tippen, um fortzufahren.",
-                                     "en": "You can send more photos or tap \"Finish request\" to continue."},
-    "wrap_fotos_concluir_botao": {"pt": "✅ Concluir pedido", "de": "✅ Anfrage beenden", "en": "✅ Finish request"},
-    "wrap_foto_formato_invalido": {"pt": "Só conseguimos aceitar fotografias (imagens). Por favor envie uma fotografia, "
-                                          "ou toque em \"Concluir pedido\".",
-                                    "de": "Wir können nur Fotos (Bilder) akzeptieren. Bitte senden Sie ein Foto, "
-                                          "oder tippen Sie auf \"Anfrage abschliessen\".",
-                                    "en": "We can only accept photographs (images). Please send a photo, "
-                                          "or tap \"Finish request\"."},
-    "wrap_fotos_limite_atingido": {"pt": "✅ Já recebemos o máximo de 5 fotografias. Vamos agora rever o seu pedido.",
-                                    "de": "✅ Wir haben bereits die maximal 5 Fotos erhalten. Sehen wir uns nun Ihre Anfrage an.",
-                                    "en": "✅ We've already received the maximum of 5 photos. Let's now review your request."},
-    "wrap_finalizado_cliente": {"pt": "✅ Pedido de orçamento enviado! A nossa equipa vai analisar os detalhes "
-                                      "(e as fotografias, se enviadas) e responde-lhe em breve com o orçamento e "
-                                      "disponibilidade para *{veiculo}*.",
-                                 "de": "✅ Kostenvoranschlag-Anfrage gesendet! Unser Team prüft die Details "
-                                      "(und die Fotos, falls gesendet) und meldet sich in Kürze mit dem Angebot und "
-                                      "der Verfügbarkeit für *{veiculo}*.",
-                                 "en": "✅ Quote request sent! Our team will review the details (and the photos, "
-                                      "if sent) and will get back to you shortly with the quote and availability "
-                                      "for *{veiculo}*."},
-    "wrap_veiculo_generico": {"pt": "o seu veículo", "de": "Ihr Fahrzeug", "en": "your vehicle"},
-    "wrap_total_estimado": {"pt": "💰 Total estimado: {total}\n(o valor final pode variar após a análise das fotografias)",
-                             "de": "💰 Geschätzter Gesamtbetrag: {total}\n(der endgültige Betrag kann nach der Analyse der Fotos abweichen)",
-                             "en": "💰 Estimated total: {total}\n(the final amount may vary after we review the photos)"},
 
-    "wrap_resumo_titulo": {"pt": "📋 *Resumo do pedido — Wrap & Proteção*",
-                            "de": "📋 *Zusammenfassung — Folierung & Schutz*",
-                            "en": "📋 *Request summary — Wrap & Protection*"},
-    "wrap_resumo_veiculo": {"pt": "🚗 Tipo de veículo: {veiculo}", "de": "🚗 Fahrzeugtyp: {veiculo}",
-                             "en": "🚗 Vehicle type: {veiculo}"},
-    "wrap_resumo_ano": {"pt": "📅 Ano: {ano}", "de": "📅 Baujahr: {ano}", "en": "📅 Year: {ano}"},
-    "wrap_resumo_tipo": {"pt": "🎨 Wrap: {tipo}", "de": "🎨 Folierung: {tipo}", "en": "🎨 Wrap: {tipo}"},
-    "wrap_resumo_cor": {"pt": "🖌️ Cor: {cor}", "de": "🖌️ Farbe: {cor}", "en": "🖌️ Colour: {cor}"},
-    "wrap_resumo_acabamento": {"pt": "✨ Acabamento: {acabamento}", "de": "✨ Finish: {acabamento}",
-                                "en": "✨ Finish: {acabamento}"},
-    "wrap_resumo_fotos": {"pt": "📸 Fotografias: {n}", "de": "📸 Fotos: {n}", "en": "📸 Photos: {n}"},
 
-    # --- Orçamento genérico ---------------------------------------------------
-    "orcamento_pedido": {"pt": "💰 Sem problema! Descreva em poucas palavras o serviço que pretende e o veículo "
-                                "(ex: \"Polimento completo, Audi A4 2019\"). A nossa equipa responde com um orçamento em breve.",
-                          "de": "💰 Kein Problem! Beschreiben Sie kurz den gewünschten Service und das Fahrzeug "
-                                "(z.B. \"Komplettpolitur, Audi A4 2019\"). Unser Team antwortet Ihnen in Kürze mit einem Kostenvoranschlag.",
-                          "en": "💰 No problem! Briefly describe the service you'd like and the vehicle "
-                                "(e.g. \"Full polish, Audi A4 2019\"). Our team will reply with a quote shortly."},
-    "orcamento_recebido_cliente": {"pt": "✅ Recebido! A equipa vai analisar e responde-lhe em breve.",
-                                    "de": "✅ Erhalten! Das Team prüft die Anfrage und meldet sich in Kürze.",
-                                    "en": "✅ Received! Our team will review it and get back to you shortly."},
 
     # --- Gestão de marcação -----------------------------------------------
     "gerir_sem_marcacao": {"pt": "Não encontrei nenhuma marcação ativa associada a este número.",
@@ -547,34 +340,7 @@ TEXTOS = {
     "ajuda_idioma": {"pt": "• IDIOMA / SPRACHE / LANGUAGE — mudar de idioma",
                       "de": "• IDIOMA / SPRACHE / LANGUAGE — Sprache ändern",
                       "en": "• IDIOMA / SPRACHE / LANGUAGE — change language"},
-    "ajuda_carrinho": {"pt": "• CARRINHO / CART / WARENKORB — ver o carrinho atual",
-                        "de": "• CARRINHO / CART / WARENKORB — aktuellen Warenkorb ansehen",
-                        "en": "• CARRINHO / CART / WARENKORB — view your current cart"},
-    "ajuda_rapido": {"pt": "• RAPIDO / QUICK / SCHNELL — mudar para o orçamento rápido de wrap",
-                      "de": "• RAPIDO / QUICK / SCHNELL — zum Schnellangebot für Folierung wechseln",
-                      "en": "• RAPIDO / QUICK / SCHNELL — switch to the quick wrap quote"},
 
-    # --- Carrinho -----------------------------------------------------------
-    "carrinho_titulo": {"pt": "🛒 *O seu carrinho*", "de": "🛒 *Ihr Warenkorb*", "en": "🛒 *Your cart*"},
-    "carrinho_vazio": {"pt": "🛒 O seu carrinho está vazio.",
-                        "de": "🛒 Ihr Warenkorb ist leer.",
-                        "en": "🛒 Your cart is empty."},
-    "carrinho_subtotal": {"pt": "Subtotal: {subtotal}", "de": "Zwischensumme: {subtotal}", "en": "Subtotal: {subtotal}"},
-    "carrinho_total": {"pt": "💰 Total: {total}", "de": "💰 Gesamtbetrag: {total}", "en": "💰 Total: {total}"},
-    "carrinho_total_estimado": {"pt": "💰 Total estimado: {total}", "de": "💰 Geschätzter Gesamtbetrag: {total}",
-                                 "en": "💰 Estimated total: {total}"},
-    "carrinho_botao_alterar": {"pt": "✏️ Alterar item", "de": "✏️ Artikel ändern", "en": "✏️ Change item"},
-    "carrinho_botao_esvaziar": {"pt": "🗑️ Esvaziar carrinho", "de": "🗑️ Warenkorb leeren", "en": "🗑️ Empty cart"},
-    "carrinho_alterar_pergunta": {"pt": "Qual item deseja alterar ou remover?",
-                                   "de": "Welchen Artikel möchten Sie ändern oder entfernen?",
-                                   "en": "Which item would you like to change or remove?"},
-    "carrinho_item_substituir": {"pt": "🔁 Substituir", "de": "🔁 Ersetzen", "en": "🔁 Replace"},
-    "carrinho_item_remover": {"pt": "🗑️ Remover", "de": "🗑️ Entfernen", "en": "🗑️ Remove"},
-    "carrinho_item_removido": {"pt": "✅ Item removido do carrinho.", "de": "✅ Artikel aus dem Warenkorb entfernt.",
-                                "en": "✅ Item removed from cart."},
-    "carrinho_esvaziado": {"pt": "🗑️ Carrinho esvaziado. Vamos recomeçar.",
-                            "de": "🗑️ Warenkorb geleert. Fangen wir neu an.",
-                            "en": "🗑️ Cart emptied. Let's start again."},
     "carrinho_botao_ver": {"pt": "🛒 Carrinho", "de": "🛒 Warenkorb", "en": "🛒 Cart"},
 
     "nao_entendi": {"pt": "Desculpe, não consegui perceber 😅\n\nEscolha uma das opções abaixo.",
@@ -605,144 +371,14 @@ TEXTOS = {
                             "de": "Versuchen wir es anders. Was möchten Sie tun?",
                             "en": "Let's try another way. What would you like to do?"},
 
-    # --- Orçamento enviado pelo painel ao cliente ----------------------------
-    "orcamento_cliente_titulo": {"pt": "💰 *Orçamento — Pedido #{pedido}*", "de": "💰 *Angebot — Anfrage #{pedido}*",
-                                  "en": "💰 *Quote — Request #{pedido}*"},
-    "orcamento_cliente_subtotal": {"pt": "Subtotal: {subtotal}", "de": "Zwischensumme: {subtotal}",
-                                    "en": "Subtotal: {subtotal}"},
-    "orcamento_cliente_desconto": {"pt": "Desconto: -{desconto}", "de": "Rabatt: -{desconto}",
-                                    "en": "Discount: -{desconto}"},
-    "orcamento_cliente_total": {"pt": "💰 Total: {total}", "de": "💰 Gesamtbetrag: {total}", "en": "💰 Total: {total}"},
-    "orcamento_cliente_observacoes": {"pt": "📝 Observações: {observacoes}", "de": "📝 Anmerkungen: {observacoes}",
-                                       "en": "📝 Notes: {observacoes}"},
-    "orcamento_cliente_validade": {"pt": "⏳ Válido por {dias} dias", "de": "⏳ Gültig für {dias} Tage",
-                                    "en": "⏳ Valid for {dias} days"},
-    "botao_orcamento_aceitar": {"pt": "✅ Aceitar orçamento", "de": "✅ Angebot annehmen", "en": "✅ Accept quote"},
-    "botao_orcamento_alterar": {"pt": "✏️ Pedir alteração", "de": "✏️ Änderung anfragen", "en": "✏️ Request change"},
-    "botao_orcamento_recusar": {"pt": "❌ Recusar", "de": "❌ Ablehnen", "en": "❌ Decline"},
-    "orcamento_ja_respondido": {"pt": "Este orçamento já foi respondido anteriormente.",
-                                 "de": "Dieses Angebot wurde bereits beantwortet.",
-                                 "en": "This quote has already been responded to."},
-    "orcamento_aceite_cliente": {"pt": "✅ Ótimo! O seu orçamento foi aceite. A nossa equipa entra em contacto "
-                                       "para combinar os detalhes.",
-                                  "de": "✅ Grossartig! Ihr Angebot wurde angenommen. Unser Team meldet sich, "
-                                       "um die Details zu vereinbaren.",
-                                  "en": "✅ Great! Your quote has been accepted. Our team will get in touch "
-                                       "to arrange the details."},
-    "botao_avancar_agendamento": {"pt": "📅 Marcar agendamento", "de": "📅 Termin buchen", "en": "📅 Book appointment"},
-    "orcamento_recusar_confirmar_pergunta": {"pt": "Tem a certeza de que quer recusar este orçamento?",
-                                              "de": "Sind Sie sicher, dass Sie dieses Angebot ablehnen möchten?",
-                                              "en": "Are you sure you want to decline this quote?"},
-    "botao_sim_recusar": {"pt": "❌ Sim, recusar", "de": "❌ Ja, ablehnen", "en": "❌ Yes, decline"},
-    "botao_nao_voltar": {"pt": "↩️ Não, voltar", "de": "↩️ Nein, zurück", "en": "↩️ No, go back"},
-    "orcamento_recusado_cliente": {"pt": "Sem problema. Obrigado pelo seu tempo — ficamos à disposição "
-                                         "para um novo pedido quando quiser.",
-                                    "de": "Kein Problem. Danke für Ihre Zeit — wir stehen für eine neue "
-                                         "Anfrage jederzeit zur Verfügung.",
-                                    "en": "No problem. Thank you for your time — we're happy to help "
-                                         "with a new request whenever you'd like."},
-    "botao_novo_pedido": {"pt": "📅 Novo pedido", "de": "📅 Neue Anfrage", "en": "📅 New request"},
 
-    # --- Pedir alteração ao orçamento ----------------------------------------
-    "alteracao_pergunta": {"pt": "O que gostaria de alterar?", "de": "Was möchten Sie ändern?",
-                            "en": "What would you like to change?"},
-    "alteracao_seccao": {"pt": "Alterações possíveis", "de": "Mögliche Änderungen", "en": "Possible changes"},
-    "alteracao_botao": {"pt": "✏️ Escolher", "de": "✏️ Wählen", "en": "✏️ Choose"},
-    "alteracao_opcao_servico": {"pt": "Serviço/tipo de wrap", "de": "Service/Folierungsart",
-                                 "en": "Service/wrap type"},
-    "alteracao_opcao_veiculo": {"pt": "Veículo", "de": "Fahrzeug", "en": "Vehicle"},
-    "alteracao_opcao_cor": {"pt": "Cor/acabamento", "de": "Farbe/Finish", "en": "Colour/finish"},
-    "alteracao_opcao_prazo": {"pt": "Prazo/data", "de": "Frist/Termin", "en": "Timeline/date"},
-    "alteracao_opcao_outra": {"pt": "Outra alteração", "de": "Andere Änderung", "en": "Other change"},
-    "alteracao_opcao_equipa": {"pt": "Falar com a equipa", "de": "Mit dem Team sprechen", "en": "Talk to the team"},
-    "alteracao_outra_pedir": {"pt": "Descreva a alteração que pretende. Ex.: \"Gostaria de um prazo mais curto\".",
-                               "de": "Beschreiben Sie die gewünschte Änderung. Z.B. \"Ich hätte gerne einen "
-                                    "kürzeren Termin\".",
-                               "en": "Describe the change you'd like. E.g. \"I'd like a shorter timeline\"."},
-    "alteracao_recebida_cliente": {"pt": "✅ Pedido de alteração recebido! A equipa vai rever e envia um novo "
-                                         "orçamento em breve.",
-                                    "de": "✅ Änderungsanfrage erhalten! Das Team prüft sie und sendet in "
-                                         "Kürze ein neues Angebot.",
-                                    "en": "✅ Change request received! The team will review it and send a "
-                                         "new quote shortly."},
 
-    # --- Notificação interna: ações sobre um novo pedido ---------------------
-    "botao_pedido_analisar": {"pt": "🔎 Analisar pedido", "de": "🔎 Anfrage prüfen", "en": "🔎 Review request"},
-    "botao_pedido_contactar": {"pt": "💬 Contactar cliente", "de": "💬 Kunde kontaktieren", "en": "💬 Contact client"},
-    "botao_pedido_recusar": {"pt": "❌ Recusar pedido", "de": "❌ Anfrage ablehnen", "en": "❌ Decline request"},
-    "pedido_em_analise_cliente": {"pt": "✅ O seu pedido foi aceite e está agora em análise pela nossa equipa. "
-                                        "Vai receber o orçamento em breve.",
-                                   "de": "✅ Ihre Anfrage wurde angenommen und wird nun von unserem Team geprüft. "
-                                        "Sie erhalten in Kürze das Angebot.",
-                                   "en": "✅ Your request has been accepted and is now under review by our team. "
-                                        "You'll receive the quote shortly."},
 
-    # --- Carrinho: pedido pendente persistente -------------------------------
-    "carrinho_botao_ver_pendente": {"pt": "🛒 Carrinho · {n} pendente", "de": "🛒 Warenkorb · {n} offen",
-                                     "en": "🛒 Cart · {n} pending"},
-    "carrinho_pendente_titulo": {"pt": "🛒 *Pedido pendente*", "de": "🛒 *Ausstehende Anfrage*",
-                                  "en": "🛒 *Pending request*"},
-    "carrinho_pendente_id": {"pt": "🆔 Pedido #{id}", "de": "🆔 Anfrage #{id}", "en": "🆔 Request #{id}"},
-    "carrinho_pendente_estado": {"pt": "📌 Estado: {estado}", "de": "📌 Status: {estado}", "en": "📌 Status: {estado}"},
-    "carrinho_pendente_preco_sob_analise": {"pt": "💰 Preço: sob análise da equipa",
-                                             "de": "💰 Preis: wird vom Team geprüft",
-                                             "en": "💰 Price: under review by our team"},
-    "botao_ver_pedido_orcamento": {"pt": "🛒 Ver pedido/orçamento", "de": "🛒 Anfrage/Angebot ansehen",
-                                    "en": "🛒 View request/quote"},
-    "botao_cancelar_pedido_cliente": {"pt": "❌ Cancelar pedido", "de": "❌ Anfrage stornieren",
-                                       "en": "❌ Cancel request"},
-    "cancelar_pedido_confirmar_pergunta": {"pt": "Tem a certeza de que quer cancelar este pedido?",
-                                            "de": "Sind Sie sicher, dass Sie diese Anfrage stornieren möchten?",
-                                            "en": "Are you sure you want to cancel this request?"},
-    "botao_sim_cancelar": {"pt": "❌ Sim, cancelar", "de": "❌ Ja, stornieren", "en": "❌ Yes, cancel"},
-    "pedido_cancelado_cliente": {"pt": "✅ O seu pedido foi cancelado.", "de": "✅ Ihre Anfrage wurde storniert.",
-                                  "en": "✅ Your request has been cancelled."},
-    "pedido_ja_respondido_cliente": {"pt": "Este pedido já não está ativo.",
-                                      "de": "Diese Anfrage ist nicht mehr aktiv.",
-                                      "en": "This request is no longer active."},
 
-    # --- Carrinho: marcações confirmadas persistentes ------------------------
-    "carrinho_botao_ver_marcacoes": {"pt": "🛒 Carrinho · {n} marcações",
-                                      "de": "🛒 Warenkorb · {n} Buchungen",
-                                      "en": "🛒 Cart · {n} bookings"},
-    "carrinho_marcacao_titulo": {"pt": "🗓️ *Marcação confirmada*", "de": "🗓️ *Bestätigte Buchung*",
-                                  "en": "🗓️ *Confirmed booking*"},
-    "carrinho_marcacao_id": {"pt": "🆔 Marcação #{id}", "de": "🆔 Buchung #{id}", "en": "🆔 Booking #{id}"},
-    "carrinho_marcacao_estado": {"pt": "📌 Estado: Confirmada", "de": "📌 Status: Bestätigt",
-                                  "en": "📌 Status: Confirmed"},
-    "carrinho_marcacao_servico": {"pt": "🔧 Serviço: {servico}", "de": "🔧 Service: {servico}",
-                                   "en": "🔧 Service: {servico}"},
-    "carrinho_marcacao_extra": {"pt": "➕ Extras: {extra}", "de": "➕ Extras: {extra}", "en": "➕ Extras: {extra}"},
-    "carrinho_marcacao_data": {"pt": "📅 Data: {data}", "de": "📅 Datum: {data}", "en": "📅 Date: {data}"},
-    "carrinho_marcacao_hora": {"pt": "🕘 Hora: {hora}", "de": "🕘 Uhrzeit: {hora}", "en": "🕘 Time: {hora}"},
-    "carrinho_marcacao_duracao": {"pt": "⏱️ Duração: {duracao}", "de": "⏱️ Dauer: {duracao}",
-                                   "en": "⏱️ Duration: {duracao}"},
-    "carrinho_marcacao_total": {"pt": "💰 Total: {total}", "de": "💰 Gesamtbetrag: {total}",
-                                 "en": "💰 Total: {total}"},
-    "carrinho_marcacoes_seccao": {"pt": "Marcações confirmadas", "de": "Bestätigte Buchungen",
-                                   "en": "Confirmed bookings"},
-    "carrinho_marcacoes_pergunta": {"pt": "🛒 *O seu carrinho*\n\nTem {n} marcações confirmadas. "
-                                          "Qual deseja ver?",
-                                     "de": "🛒 *Ihr Warenkorb*\n\nSie haben {n} bestätigte Buchungen. "
-                                          "Welche möchten Sie ansehen?",
-                                     "en": "🛒 *Your cart*\n\nYou have {n} confirmed bookings. "
-                                          "Which one would you like to view?"},
-    "carrinho_marcacoes_extra_linha": {"pt": "🗓️ Também tem {n} marcação(ões) confirmada(s).",
-                                        "de": "🗓️ Sie haben ausserdem {n} bestätigte Buchung(en).",
-                                        "en": "🗓️ You also have {n} confirmed booking(s)."},
-    "botao_ver_gerir_marcacao": {"pt": "🗓️ Ver/Gerir marcação", "de": "🗓️ Buchung ansehen",
-                                  "en": "🗓️ View/Manage booking"},
     "carrinho_marcacao_nao_encontrada": {"pt": "Não encontrei essa marcação confirmada.",
                                           "de": "Diese bestätigte Buchung wurde nicht gefunden.",
                                           "en": "I couldn't find that confirmed booking."},
 
-    # --- Preços visíveis nas opções + navegação visual -----------------------
-    "preco_desde": {"pt": "desde {preco}", "de": "ab {preco}", "en": "from {preco}"},
-    "preco_estimado": {"pt": "estimado {preco}", "de": "geschätzt {preco}", "en": "estimated {preco}"},
-    "preco_estimativa_desde": {"pt": "estimativa desde {preco}", "de": "Schätzung ab {preco}",
-                                "en": "estimate from {preco}"},
-    "preco_incluido": {"pt": "Incluído", "de": "Inbegriffen", "en": "Included"},
-    "preco_sob_analise_curto": {"pt": "sob análise", "de": "wird geprüft", "en": "under review"},
     "botao_voltar": {"pt": "⬅️ Voltar", "de": "⬅️ Zurück", "en": "⬅️ Back"},
     "pag_mais_opcoes": {"pt": "➡️ Mais opções", "de": "➡️ Weitere Optionen", "en": "➡️ More options"},
     "pag_opcoes_anteriores": {"pt": "⬅️ Opções anteriores", "de": "⬅️ Vorherige Optionen",
@@ -754,12 +390,7 @@ TEXTOS = {
     "pag_indicador": {"pt": "Página {pagina} de {total}", "de": "Seite {pagina} von {total}",
                        "en": "Page {pagina} of {total}"},
     "resumo_seccao": {"pt": "Resumo do pedido", "de": "Zusammenfassung", "en": "Request summary"},
-    "acoes_seccao": {"pt": "Ações", "de": "Aktionen", "en": "Actions"},
-    "wrap_modo_seccao": {"pt": "Como avançar", "de": "Wie fortfahren", "en": "How to proceed"},
-    "wrap_fotos_seccao": {"pt": "Fotografias", "de": "Fotos", "en": "Photos"},
-    "carrinho_seccao": {"pt": "Carrinho", "de": "Warenkorb", "en": "Cart"},
     "gerir_seccao": {"pt": "A sua marcação", "de": "Ihre Buchung", "en": "Your booking"},
-    "categoria_seccao": {"pt": "Categorias", "de": "Kategorien", "en": "Categories"},
     "idioma_seccao": {"pt": "Idioma", "de": "Sprache", "en": "Language"},
 
     # --- Marcação reagendada pela equipa: aviso ao cliente -------------------
