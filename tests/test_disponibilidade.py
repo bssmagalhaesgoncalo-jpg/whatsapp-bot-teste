@@ -84,9 +84,11 @@ def test_16_reserva_temporaria_expirada_deixa_de_bloquear(base_dados, monkeypatc
 
 
 def test_disponibilidade_no_whatsapp_reflete_conflitos(base_dados):
-    marcar("41790000009", "pestanas", DIA_TXT, "🕘 09:00")   # 09:00-11:00
+    # 2026-09-07 = segunda; horário 09:00-18:00 (business_hours semeado)
+    marcar("41790000009", "pestanas", DIA_TXT, "09:00")   # 09:00-11:00 (120min)
     sessao = {"fluxo": "beauty", "servico_id": "limpeza_pele", "servico": "Limpeza de pele",
               "duracao": "1h", "duracao_min": 60, "data": DIA_TXT}
     livres = bot.horarios_livres_para_sessao(sessao, telefone="novo")
-    assert "🕘 09:00" not in livres and "🕥 10:30" not in livres
-    assert "🕐 13:00" in livres
+    assert "09:00" not in livres and "10:00" not in livres and "10:45" not in livres
+    assert "11:00" in livres and "13:00" in livres
+    assert "17:00" in livres and "17:15" not in livres   # 17:00-18:00 cabe, 17:15 não

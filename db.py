@@ -411,6 +411,57 @@ def _m11_operational_status(conn):
                  "WHERE LOWER(COALESCE(estado,'')) IN ('completed','concluido','concluído')")
 
 
+def _m12_business_hours(conn):
+    """Horário de funcionamento por dia da semana + exceções (fechado,
+    feriados, férias, bloqueios). Substitui a lista fixa HORARIOS.
+    Semeado com um horário-tipo (seg-sáb 09:00-18:00, dom fechado) que a
+    Daniela ajusta no painel."""
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS business_hours ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "tenant_id INTEGER NOT NULL DEFAULT 1, "
+        "staff_id INTEGER, "                         # NULL = horário do negócio
+        "weekday INTEGER NOT NULL, "                 # 0=segunda ... 6=domingo
+        "opens TEXT, "                               # 'HH:MM' ou NULL = fechado
+        "closes TEXT, "
+        "break_start TEXT, "                         # pausa opcional
+        "break_end TEXT)"
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS business_hours_exceptions ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "tenant_id INTEGER NOT NULL DEFAULT 1, "
+        "staff_id INTEGER, "
+        "date TEXT NOT NULL, "                       # 'YYYY-MM-DD'
+        "closed INTEGER NOT NULL DEFAULT 1, "
+        "opens TEXT, closes TEXT, "                  # se closed=0, horário especial
+        "reason TEXT, "
+        "created_at TEXT NOT NULL)"
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS booking_policy ("
+        "tenant_id INTEGER PRIMARY KEY, "
+        "min_notice_min INTEGER NOT NULL DEFAULT 120, "      # antecedência mínima
+        "max_notice_days INTEGER NOT NULL DEFAULT 60, "      # antecedência máxima
+        "same_day INTEGER NOT NULL DEFAULT 1, "              # permitir marcar hoje
+        "slot_granularity_min INTEGER NOT NULL DEFAULT 15, " # passo da grelha
+        "default_buffer_after_min INTEGER NOT NULL DEFAULT 0)"
+    )
+    if not conn.execute("SELECT 1 FROM business_hours WHERE tenant_id = 1 AND staff_id IS NULL").fetchone():
+        for wd in range(6):     # segunda a sábado
+            conn.execute(
+                "INSERT INTO business_hours (tenant_id, weekday, opens, closes) VALUES (1, ?, '09:00', '18:00')",
+                (wd,))
+        conn.execute("INSERT INTO business_hours (tenant_id, weekday, opens, closes) VALUES (1, 6, NULL, NULL)")
+    if not conn.execute("SELECT 1 FROM booking_policy WHERE tenant_id = 1").fetchone():
+        conn.execute("INSERT INTO booking_policy (tenant_id) VALUES (1)")
+
+    # buffers por serviço (o motor de disponibilidade usa-os)
+    _add_coluna_se_falta(conn, "servicos", "buffer_before_min", "INTEGER NOT NULL DEFAULT 0")
+    _add_coluna_se_falta(conn, "servicos", "buffer_after_min", "INTEGER NOT NULL DEFAULT 0")
+    _add_coluna_se_falta(conn, "servicos", "rebook_days", "INTEGER")
+
+
 MIGRACOES = [
     (1, "baseline", _m1_baseline),
     (2, "colunas_legadas", _m2_colunas_legadas),
@@ -423,6 +474,7 @@ MIGRACOES = [
     (9, "customers", _m9_customers),
     (10, "events_outbox", _m10_events),
     (11, "operational_status", _m11_operational_status),
+    (12, "business_hours", _m12_business_hours),
 ]
 
 
@@ -477,7 +529,8 @@ def resetar_estado_migracao_para_testes():
 # Leitura do catálogo de serviços (tabela `servicos`)
 # ---------------------------------------------------------------------------
 _CAMPOS_SERVICO = ("id", "nome_pt", "nome_de", "nome_en", "duracao_min",
-                   "preco_cents", "ativo", "cor", "ordem")
+                   "preco_cents", "ativo", "cor", "ordem",
+                   "buffer_before_min", "buffer_after_min", "rebook_days")
 
 
 def _linha_servico(row) -> dict:
@@ -488,7 +541,7 @@ def _linha_servico(row) -> dict:
 
 def listar_servicos(incluir_inativos: bool = False, conn=None) -> list[dict]:
     def _ler(c):
-        sql = ("SELECT id, nome_pt, nome_de, nome_en, duracao_min, preco_cents, ativo, cor, ordem "
+        sql = ("SELECT id, nome_pt, nome_de, nome_en, duracao_min, preco_cents, ativo, cor, ordem, buffer_before_min, buffer_after_min, rebook_days "
                "FROM servicos")
         if not incluir_inativos:
             sql += " WHERE ativo = 1"
@@ -507,7 +560,7 @@ def obter_servico(servico_id: str, conn=None) -> dict | None:
 
     def _ler(c):
         r = c.execute(
-            "SELECT id, nome_pt, nome_de, nome_en, duracao_min, preco_cents, ativo, cor, ordem "
+            "SELECT id, nome_pt, nome_de, nome_en, duracao_min, preco_cents, ativo, cor, ordem, buffer_before_min, buffer_after_min, rebook_days "
             "FROM servicos WHERE id = ?", (servico_id,)).fetchone()
         return _linha_servico(r) if r else None
 
@@ -525,7 +578,7 @@ def servico_por_nome_pt(nome_pt: str, conn=None) -> dict | None:
 
     def _ler(c):
         r = c.execute(
-            "SELECT id, nome_pt, nome_de, nome_en, duracao_min, preco_cents, ativo, cor, ordem "
+            "SELECT id, nome_pt, nome_de, nome_en, duracao_min, preco_cents, ativo, cor, ordem, buffer_before_min, buffer_after_min, rebook_days "
             "FROM servicos WHERE nome_pt = ?", (nome_pt.strip(),)).fetchone()
         return _linha_servico(r) if r else None
 
@@ -724,3 +777,72 @@ def eventos_por_processar(limite: int = 100) -> list[dict]:
 def marcar_evento_processado(evento_id: int):
     with ligacao() as c:
         c.execute("UPDATE events SET processed_at = ? WHERE id = ?", (iso_utc(), evento_id))
+
+
+# ---------------------------------------------------------------------------
+# Ocupação de um dia — para o motor de disponibilidade (scheduling.availability)
+# ---------------------------------------------------------------------------
+def ocupacao_do_dia(data_iso: str, tenant_id: int = 1, conn=None) -> list[dict]:
+    """Marcações que BLOQUEIAM o horário + reservas temporárias ativas nesse
+    dia. Cada item: {inicio_min, dur_min, buffer_before, buffer_after, id,
+    telefone}. `inicio_min` = minutos desde a meia-noite."""
+    import estados as _est
+    import parsing as _p
+
+    def _run(c):
+        c.execute("DELETE FROM reservas_temporarias WHERE expira_em <= ?", (iso_utc(),))
+        itens = []
+        rows = c.execute(
+            "SELECT a.id, a.telefone, a.estado, a.bloqueia_horario, a.hora_hhmm, a.hora, "
+            "a.duracao_min, a.duracao, a.servico, s.buffer_before_min, s.buffer_after_min "
+            "FROM agendamentos a LEFT JOIN servicos s ON s.id = a.servico_id "
+            "WHERE a.tenant_id = ? AND (a.data_iso = ? OR a.data LIKE ?)",
+            (tenant_id, data_iso, f"%{_iso_para_dmy(data_iso)}%")).fetchall()
+        for (aid, tel, estado, bloq, hhmm, hora_txt, dmin, dur_txt, servico, bb, ba) in rows:
+            if not _est.bloqueia_horario(estado, bloq):
+                continue
+            hh = hhmm or _p.hora_hhmm_de_texto(hora_txt)
+            mins = dmin
+            if mins is None:
+                mins, _ = _p.duracao_para_minutos(dur_txt)
+            im = _hhmm_para_min(hh)
+            if im is None or not mins:
+                continue
+            itens.append({"id": aid, "telefone": tel, "inicio_min": im, "dur_min": int(mins),
+                          "buffer_before": bb or 0, "buffer_after": ba or 0})
+        for (tel, hora_txt, servico, dur_txt) in c.execute(
+                "SELECT telefone, hora, servico, duracao FROM reservas_temporarias "
+                "WHERE tenant_id = ? AND expira_em > ? AND (data LIKE ? OR data = ?)",
+                (tenant_id, iso_utc(), f"%{_iso_para_dmy(data_iso)}%", data_iso)).fetchall():
+            hh = _p.hora_hhmm_de_texto(hora_txt)
+            mins, _ = _p.duracao_para_minutos(dur_txt)
+            im = _hhmm_para_min(hh)
+            if im is None or not mins:
+                continue
+            itens.append({"id": None, "telefone": tel, "inicio_min": im, "dur_min": int(mins),
+                          "buffer_before": 0, "buffer_after": 0, "retencao": True})
+        return itens
+
+    if conn is not None:
+        return _run(conn)
+    with ligacao() as c:
+        return _run(c)
+
+
+def _hhmm_para_min(v):
+    if not v:
+        return None
+    try:
+        h, m = str(v).split(":")
+        return int(h) * 60 + int(m)
+    except (ValueError, AttributeError):
+        return None
+
+
+def _iso_para_dmy(data_iso: str) -> str:
+    """'2026-09-07' -> '07.09.2026' (a coluna legada `data` usa este formato)."""
+    try:
+        a, m, d = data_iso.split("-")
+        return f"{d}.{m}.{a}"
+    except ValueError:
+        return data_iso

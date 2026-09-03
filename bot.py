@@ -43,6 +43,8 @@ from parsing import data_iso_de_texto, hora_hhmm_de_texto, duracao_para_minutos
 from messaging import whatsapp as _wa
 from core import events as eventos
 from notifications import business as notif_negocio
+from scheduling import business_hours as bh_mod
+from scheduling import availability as av_mod
 
 app = Flask(__name__)
 
@@ -468,10 +470,6 @@ def tx(valor, idioma):
         return valor.get(idioma) or valor.get("pt") or next(iter(valor.values()), "")
     return valor
 
-
-# Grelha de horários (LEGADA). O motor de disponibilidade da Fase D vai
-# substituí-la por business_hours + availability.slots().
-HORARIOS = ["🕘 09:00", "🕥 10:30", "🕐 13:00", "🕝 14:30", "🕓 16:00"]  # iguais nos 3 idiomas
 
 DIAS_SEMANA = {
     "pt": ["seg", "ter", "qua", "qui", "sex", "sáb", "dom"],
@@ -1234,16 +1232,6 @@ def enviar_botoes(destinatario, corpo, botoes, idioma, rodape=None, com_voltar=F
     })
 
 
-def proximos_dias(idioma, n=5):
-    hoje = date.today()
-    abreviaturas = DIAS_SEMANA.get(idioma, DIAS_SEMANA["pt"])
-    dias = []
-    for i in range(1, n + 1):
-        d = hoje + timedelta(days=i)
-        dias.append(f"{d.strftime('%d.%m.%Y')} ({abreviaturas[d.weekday()]})")
-    return dias
-
-
 def primeiro_nome(nome_completo):
     if not nome_completo:
         return None
@@ -1401,17 +1389,35 @@ def escolher_servico(de, idioma, sessao, servico_id):
 # ---------------------------------------------------------------------------
 # Data / hora / resumo / confirmação
 # ---------------------------------------------------------------------------
+def _data_display(data_iso, idioma):
+    """'2026-09-07' -> '07.09.2026 (seg)' — texto guardado em sessao["data"]."""
+    d = date.fromisoformat(data_iso)
+    abrev = DIAS_SEMANA.get(idioma, DIAS_SEMANA["pt"])[d.weekday()]
+    return f"{d.strftime('%d.%m.%Y')} ({abrev})"
+
+
+def dias_para_marcacao(sessao, idioma, n=7):
+    """Próximos dias ABERTOS (business_hours + exceções + política), já em
+    texto de apresentação. Substitui proximos_dias()."""
+    return [_data_display(d, idioma)
+            for d in bh_mod.proximos_dias_abertos(n, tenant_id=(sessao or {}).get("tenant_id", 1))]
+
+
 def passo_data(de, idioma, passo_n=2, sessao=None):
-    enviar_lista(de, t("data_corpo", idioma, n=passo_n), t("data_seccao", idioma), proximos_dias(idioma), idioma,
+    dias = dias_para_marcacao(sessao, idioma)
+    if not dias:
+        enviar_texto(de, t("hora_sem_vagas", idioma))
+        enviar_menu_principal(de, idioma, saudacao=False, sessao=sessao)
+        return
+    enviar_lista(de, t("data_corpo", idioma, n=passo_n), t("data_seccao", idioma), dias, idioma,
                  botao=t("data_botao", idioma), com_voltar=True, rodape=t("rodape_padrao", idioma), sessao=sessao)
 
 
 def passo_hora(de, idioma, passo_n=3, sessao=None):
-    """Mostra só os horários REALMENTE livres na data escolhida. Não aparece
-    um horário bloqueado (marcação confirmada, concluída, ou cancelada que o
-    negócio decidiu manter ocupado) nem um horário que outro cliente acabou
-    de ESCOLHER e ainda está a confirmar. Um horário libertado volta a
-    aparecer de imediato, sem nada em cache."""
+    """Mostra só os horários REALMENTE livres na data escolhida — via o motor
+    de disponibilidade (scheduling.availability.slots): horário de
+    funcionamento + duração + buffers + marcações + reservas temporárias +
+    antecedência. Um horário libertado reaparece de imediato, sem cache."""
     livres = horarios_livres_para_sessao(sessao, telefone=de)
     if not livres:
         enviar_texto(de, t("hora_sem_vagas", idioma))
@@ -1850,47 +1856,23 @@ def ocupacoes(excluir_telefone=None, conn=None):
     return existentes + horarios_retidos(excluir_telefone, conn)
 
 
-def horario_esta_livre(data_iso, hora, servico=None, duracao=None, ignorar_id=None,
-                       excluir_telefone=None):
-    """True quando NADA ocupa esse intervalo — nem uma marcação gravada, nem
-    um horário que outro cliente acabou de escolher e ainda está a confirmar."""
-    return not conflitos_no_intervalo(
-        ocupacoes(excluir_telefone), data_iso, hora, servico, duracao, ignorar_id=ignorar_id)
-
-
 def horarios_livres_para_sessao(sessao, telefone=None):
-    """Dos HORARIOS do catálogo, os que estão mesmo livres na data escolhida
-    pelo cliente. É esta a "disponibilidade apresentada no WhatsApp": um
-    horário desaparece daqui assim que é ESCOLHIDO por alguém (retenção
-    temporária) ou marcado, e volta a aparecer assim que é libertado — sem
-    nada em cache. `telefone` é o próprio cliente: a retenção dele não o pode
-    impedir de escolher o horário que já tinha escolhido."""
+    """Horas livres na data escolhida — delega no motor de disponibilidade
+    (scheduling.availability.slots). Um horário desaparece assim que é
+    escolhido (retenção) ou marcado, e reaparece assim que é libertado."""
     sessao = sessao or {}
     data_iso = data_iso_de_texto(sessao.get("data"))
-    if not data_iso:
-        return list(HORARIOS)          # ainda não há data: nada a filtrar
-    _, duracao_pt, servico_pt, _ = calcular_preco_duracao(sessao)
-    servico = sessao.get("servico") or servico_pt
-    duracao = sessao.get("duracao") or duracao_pt
-    if sessao.get("duracao_min"):
-        duracao = catalogo.duracao_label(sessao["duracao_min"])
-    duracao = recuperar_duracao(servico, duracao)
-    # Reagendamento: a PRÓPRIA marcação a ser movida não conta como conflito.
+    servico_id = sessao.get("servico_id")
+    if not data_iso or not servico_id:
+        return []
     ignorar_id = None
     if sessao.get("fluxo") == "reagendar" and sessao.get("reagendar_id"):
         try:
             ignorar_id = int(sessao["reagendar_id"])
         except (TypeError, ValueError):
             ignorar_id = None
-    existentes = ocupacoes(telefone)
-    livres = []
-    for etiqueta in HORARIOS:
-        hora = hora_hhmm_de_texto(etiqueta)
-        if not hora:
-            continue
-        if not conflitos_no_intervalo(existentes, data_iso, hora, servico, duracao, ignorar_id=ignorar_id):
-            livres.append(etiqueta)
-    return livres
+    return av_mod.slots(servico_id, data_iso, telefone=telefone, ignorar_id=ignorar_id,
+                        tenant_id=sessao.get("tenant_id", 1))
 
 
 def reagendar_agendamento(id_agendamento, data_iso, hora, origem="dashboard", avisar_cliente=True):
