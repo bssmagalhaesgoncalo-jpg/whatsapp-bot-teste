@@ -559,6 +559,87 @@ def _m15_identidade_por_tenant(conn):
                      "ON servicos (tenant_id, id)")
 
 
+def _m16_faturacao(conn):
+    """FATURAÇÃO integrada (BILLING ENGINE). Uma marcação concluída gera uma
+    fatura. Tudo em cêntimos inteiros — NUNCA float para dinheiro.
+
+    - billing_settings: dados legais do negócio por tenant. vat_enabled=0 por
+      omissão; NADA de IBAN / MWST / UID inventado — só o que a Daniela puser.
+    - invoices: número atribuído no MOMENTO DA EMISSÃO (não na criação do
+      rascunho) -> a série emitida fica sem buracos. draft/issued/paid/cancelled.
+    - invoice_lines: linhas da fatura.
+    - snapshots: nome/morada do cliente e do negócio + info de imposto ficam
+      CONGELADOS na fatura — se o preço do serviço mudar daqui a 3 meses, a
+      fatura antiga não muda.
+    """
+    from tempo import iso_utc as _agora
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS billing_settings ("
+        "tenant_id INTEGER PRIMARY KEY, "
+        "legal_name TEXT, address TEXT, postal_code TEXT, city TEXT, "
+        "country TEXT NOT NULL DEFAULT 'CH', email TEXT, phone TEXT, iban TEXT, "
+        "vat_enabled INTEGER NOT NULL DEFAULT 0, "
+        "vat_rate_bps INTEGER NOT NULL DEFAULT 0, "     # 810 = 8.10 %
+        "vat_number TEXT, "
+        "invoice_prefix TEXT, "
+        "payment_terms_days INTEGER NOT NULL DEFAULT 30, "
+        "invoice_footer TEXT, "
+        "currency TEXT NOT NULL DEFAULT 'CHF', "
+        "updated_at TEXT NOT NULL)"
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS invoices ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "tenant_id INTEGER NOT NULL DEFAULT 1, "
+        "appointment_id INTEGER, customer_id INTEGER, "
+        "year INTEGER, seq INTEGER, invoice_number TEXT, "
+        "status TEXT NOT NULL DEFAULT 'draft', "
+        "currency TEXT NOT NULL DEFAULT 'CHF', "
+        "issue_date TEXT, due_date TEXT, "
+        "subtotal_cents INTEGER NOT NULL DEFAULT 0, "
+        "discount_cents INTEGER NOT NULL DEFAULT 0, "
+        "tax_rate_bps INTEGER NOT NULL DEFAULT 0, "
+        "tax_cents INTEGER NOT NULL DEFAULT 0, "
+        "total_cents INTEGER NOT NULL DEFAULT 0, "
+        "customer_name_snapshot TEXT, customer_address_snapshot TEXT, "
+        "business_name_snapshot TEXT, business_address_snapshot TEXT, "
+        "business_vat_snapshot TEXT, "
+        "notes TEXT, "
+        "created_at TEXT NOT NULL, issued_at TEXT, paid_at TEXT, cancelled_at TEXT)"
+    )
+    # número único por tenant; série anual sem buracos
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS ix_invoices_number "
+                 "ON invoices (tenant_id, invoice_number) WHERE invoice_number IS NOT NULL")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS ix_invoices_serie "
+                 "ON invoices (tenant_id, year, seq) WHERE seq IS NOT NULL")
+    # idempotência: uma marcação -> no máximo UMA fatura viva (não anulada)
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS ix_invoices_appointment "
+                 "ON invoices (tenant_id, appointment_id) "
+                 "WHERE appointment_id IS NOT NULL AND status <> 'cancelled'")
+    conn.execute("CREATE INDEX IF NOT EXISTS ix_invoices_status "
+                 "ON invoices (tenant_id, status)")
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS invoice_lines ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "invoice_id INTEGER NOT NULL, "
+        "description TEXT NOT NULL, "
+        "quantity INTEGER NOT NULL DEFAULT 1, "
+        "unit_price_cents INTEGER NOT NULL DEFAULT 0, "
+        "line_total_cents INTEGER NOT NULL DEFAULT 0, "
+        "sort_order INTEGER NOT NULL DEFAULT 0)"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS ix_invoice_lines_invoice "
+                 "ON invoice_lines (invoice_id)")
+
+    # seed do tenant 1 — só a partir do ambiente; nada inventado
+    if not conn.execute("SELECT 1 FROM billing_settings WHERE tenant_id = 1").fetchone():
+        nome = _limpo_env("BUSINESS_NAME") or "Daniela Beauty"
+        morada = _limpo_env("BUSINESS_ADDRESS")
+        conn.execute(
+            "INSERT INTO billing_settings (tenant_id, legal_name, address, updated_at) "
+            "VALUES (1, ?, ?, ?)", (nome, morada, _agora()))
+
+
 MIGRACOES = [
     (1, "baseline", _m1_baseline),
     (2, "colunas_legadas", _m2_colunas_legadas),
@@ -575,6 +656,7 @@ MIGRACOES = [
     (13, "webhook_idempotencia_estado", _m13_webhook_idempotencia_estado),
     (14, "recalcular_customers", _m14_recalcular_customers),
     (15, "identidade_por_tenant", _m15_identidade_por_tenant),
+    (16, "faturacao", _m16_faturacao),
 ]
 
 
