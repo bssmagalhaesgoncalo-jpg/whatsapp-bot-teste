@@ -236,12 +236,16 @@ button, a, [role="button"], .tl-row, .tab {
 .btn--primary:hover { background: var(--brand-hover); border-color: var(--brand-hover); }
 .btn--danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 38%, var(--border)); background: var(--surface); }
 .btn--danger:hover { background: var(--danger-weak); }
+.btn--secondary { background: var(--surface); border-color: var(--border-strong); color: var(--text); }
+.btn--secondary:hover { background: var(--surface-2); }
+.btn--subtle { background: transparent; border-color: var(--border); color: var(--text-2); }
+.btn--subtle:hover { background: var(--surface-2); color: var(--text); }
 .btn--ghost { background: transparent; border-color: transparent; color: var(--text-2); }
 .btn--ghost:hover { background: var(--surface-2); color: var(--text); }
 .btn--sm { padding: 5px 10px; min-height: 30px; font-size: 12.5px; }
 .btn[disabled] { opacity: .4; pointer-events: none; }
 .icon-btn {
-  width: 34px; height: 34px; padding: 0;
+  width: 38px; height: 38px; padding: 0;
   display: grid; place-items: center;
   border-radius: var(--radius-sm); border: 1px solid var(--border);
   background: var(--surface); color: var(--text-2);
@@ -513,7 +517,8 @@ input.inp:focus, select.inp:focus {
   .topbar { padding: 12px 18px; }
   .cockpit { padding: 20px; }
   .cockpit h2 { font-size: 22px; }
-  .cockpit .k-cta .btn { flex: 1; min-width: 130px; }
+  .cockpit .k-cta { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .cockpit .k-cta .btn { min-width: 0; }
 }
 @media (max-width: 560px) {
   .metrics { grid-template-columns: 1fr 1fr; }
@@ -524,6 +529,17 @@ input.inp:focus, select.inp:focus {
   .view { padding: 14px 14px 56px; }
   .topbar { padding: 11px 14px; }
   .drawer { width: 100vw; border-left: none; }
+  /* Touch targets: ensure minimum 44px */
+  .btn { min-height: 44px; padding: 10px 16px; }
+  .btn--sm { min-height: 38px; padding: 8px 14px; }
+  .icon-btn { width: 44px; height: 44px; }
+  .icon-btn svg { width: 18px; height: 18px; }
+  .nav-item { min-height: 44px; padding: 10px 12px; }
+  .tl-row { padding: 14px 10px; }
+  .att { padding: 12px 12px 12px 10px; }
+  .tab { min-height: 44px; padding: 10px 14px; }
+  .drawer-foot { padding: 16px 20px; gap: 10px; }
+  .drawer-foot .btn { min-height: 44px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

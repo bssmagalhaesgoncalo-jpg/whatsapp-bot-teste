@@ -259,7 +259,7 @@ async function viewHoje(mount) {
   // 1 — operação atual
   mount.append(cockpitCard(d.cartao));
 
-  // 2 — atenção
+  // 2 — atenção (agregada)
   const att = d.atencao || [];
   $("#nav-att").hidden = !att.length;
   $("#nav-att").textContent = att.length;
@@ -273,7 +273,20 @@ async function viewHoje(mount) {
     for (const [key, label] of [["agora", "Agora"], ["hoje", "Hoje"], ["quando_puder", "Mais tarde"]]) {
       if (!groups[key].length) continue;
       const list = h("div", { class: "att-list" });
-      groups[key].forEach((a) => list.append(attRow(a)));
+      // Aggregate by tipo within each nivel
+      const byTipo = {};
+      groups[key].forEach((a) => {
+        const t = a.tipo || "_single";
+        if (!byTipo[t]) byTipo[t] = [];
+        byTipo[t].push(a);
+      });
+      for (const [tipo, items] of Object.entries(byTipo)) {
+        if (items.length >= 2 && tipo !== "_single") {
+          list.append(attAggregatedRow(tipo, items));
+        } else {
+          items.forEach((a) => list.append(attRow(a)));
+        }
+      }
       mount.append(h("div", { class: "att-group" }, h("div", { class: "att-group-lbl" }, label), list));
     }
   }
@@ -361,9 +374,13 @@ function cockpitCta(m, op) {
     wrap.append(h("button", { class: "btn btn--primary", onclick: () => run(() => opTransition(m.id, "arrived")) }, icon("user-check"), "Chegou"));
   if (op === "arrived")
     wrap.append(h("button", { class: "btn btn--primary", onclick: () => run(() => opTransition(m.id, "in_progress")) }, icon("play"), "Iniciar"));
-  if (op === "in_progress")
+  if (op === "in_progress") {
     wrap.append(h("button", { class: "btn btn--primary", onclick: () => run(() => concluirEFaturar(m)) }, icon("check"), "Concluir"));
-  wrap.append(h("button", { class: "btn", onclick: () => openAppointment(m.id) }, "Marcação"));
+    wrap.append(h("button", { class: "btn btn--secondary", disabled: true, title: "Funcionalidade pendente de endpoint backend" }, icon("clock"), "+15 min"));
+    if (m.customer_id)
+      wrap.append(h("button", { class: "btn btn--secondary", onclick: () => openCliente(m.customer_id) }, icon("user-check"), "Cliente"));
+  }
+  wrap.append(h("button", { class: "btn btn--subtle", onclick: () => openAppointment(m.id) }, "Marcação"));
   return wrap;
 }
 
@@ -375,6 +392,31 @@ function attRow(a) {
       a.detalhe ? h("div", { class: "a-desc" }, a.detalhe) : null));
   if (a.appointment_id)
     row.append(h("button", { class: "btn btn--sm", onclick: () => openAppointment(a.appointment_id) }, "Abrir"));
+  return row;
+}
+
+const ATT_TYPE_LABELS = {
+  preco_pendente: (n) => `${n} preços por confirmar`,
+  automacao_falhou: (n) => `${n} notificações por enviar`,
+  needs_human: (n) => `${n} cliente(s) pediram ajuda`,
+  risco_no_show: (n) => `${n} cliente(s) em risco`,
+};
+function attAggregatedRow(tipo, items) {
+  const sev = items[0].nivel === "agora" ? "sev-agora" : items[0].nivel === "hoje" ? "sev-hoje" : "sev-info";
+  const labelFn = ATT_TYPE_LABELS[tipo];
+  const title = labelFn ? labelFn(items.length) : `${items.length} itens`;
+  // Extract client names from titles — strip prefix like "Preço por definir — "
+  const names = items.map((a) => {
+    const raw = a.titulo || "";
+    const dash = raw.indexOf(" — ");
+    return dash >= 0 ? raw.slice(dash + 3).split(" · ")[0] : raw;
+  });
+  const row = h("div", { class: "att " + sev },
+    h("div", { class: "a-body" },
+      h("div", { class: "a-title" }, title),
+      h("div", { class: "a-desc" }, names.join(" · "))));
+  if (items[0].appointment_id)
+    row.append(h("button", { class: "btn btn--sm", onclick: () => openAppointment(items[0].appointment_id) }, "Ver"));
   return row;
 }
 
