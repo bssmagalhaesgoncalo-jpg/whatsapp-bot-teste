@@ -36,6 +36,7 @@ function icon(name, cls = "") {
   svg.setAttribute("stroke-linecap", "round");
   svg.setAttribute("stroke-linejoin", "round");
   svg.setAttribute("class", ("ico " + (cls || "")).trim());
+  svg.setAttribute("aria-hidden", "true");
   const use = document.createElementNS(ns, "use");
   use.setAttribute("href", "#i-" + name);
   svg.append(use);
@@ -69,7 +70,7 @@ function toast(msg, kind = "") {
 
 /* ---------- formatters ---------- */
 const chf = (cents) =>
-  cents == null ? "—" : "CHF " + (cents / 100).toLocaleString("de-CH", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  cents == null ? "—" : "CHF " + (cents / 100).toFixed(2).replace(".", ",");
 function fmtMin(m) {
   m = Math.round(m || 0);
   if (m < 60) return m + " min";
@@ -110,16 +111,25 @@ const Drawer = {
     document.addEventListener("keydown", (e) => { if (e.key === "Escape") this.close(); });
   },
   open(node) {
+    if (!this.el.classList.contains("open")) this._returnFocus = document.activeElement;
     this.el.innerHTML = "";
     this.el.append(node);
     this.el.classList.add("open");
     this.scrim.classList.add("open");
     this.el.setAttribute("aria-hidden", "false");
+    this.el.setAttribute("role", "dialog");
+    this.el.setAttribute("aria-modal", "true");
+    this.el.setAttribute("tabindex", "-1");
+    const first = this.el.querySelector("button, a, input, select, [tabindex]");
+    (first || this.el).focus();
   },
   close() {
+    if (!this.el.classList.contains("open")) return;
     this.el.classList.remove("open");
     this.scrim.classList.remove("open");
     this.el.setAttribute("aria-hidden", "true");
+    if (this._returnFocus && this._returnFocus.focus) this._returnFocus.focus();
+    this._returnFocus = null;
   },
 };
 
@@ -255,15 +265,16 @@ async function viewHoje(mount) {
   $("#nav-att").textContent = att.length;
   mount.append(h("div", { class: "eyebrow" }, "Precisa da tua atenção"));
   if (!att.length) {
-    mount.append(h("div", { class: "att sev-info" }, icon("check"), h("div", { class: "a-body" }, h("div", { class: "a-title" }, "Tudo em dia."))));
+    mount.append(h("div", { class: "att-list" },
+      h("div", { class: "att sev-info" }, icon("check"), h("div", { class: "a-body" }, h("div", { class: "a-title" }, "Tudo em dia.")))));
   } else {
     const groups = { agora: [], hoje: [], quando_puder: [] };
     att.forEach((a) => (groups[a.nivel] || groups.quando_puder).push(a));
     for (const [key, label] of [["agora", "Agora"], ["hoje", "Hoje"], ["quando_puder", "Mais tarde"]]) {
       if (!groups[key].length) continue;
-      const g = h("div", { class: "att-group" }, h("div", { class: "att-group-lbl" }, label));
-      groups[key].forEach((a) => g.append(attRow(a)));
-      mount.append(g);
+      const list = h("div", { class: "att-list" });
+      groups[key].forEach((a) => list.append(attRow(a)));
+      mount.append(h("div", { class: "att-group" }, h("div", { class: "att-group-lbl" }, label), list));
     }
   }
 
@@ -712,10 +723,12 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#menu-btn").addEventListener("click", () => { $("#sidebar").classList.toggle("open"); $("#scrim").classList.toggle("open"); });
   $("#scrim").addEventListener("click", () => { $("#sidebar").classList.remove("open"); });
   const THEME_KEY = "db_theme";
+  const prefersDark = () => window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
   const applyTheme = (t) => { document.documentElement.dataset.theme = t; };
   try { const saved = localStorage.getItem(THEME_KEY); if (saved) applyTheme(saved); } catch (e) {}
   $("#theme-btn").addEventListener("click", () => {
-    const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+    const cur = document.documentElement.dataset.theme || (prefersDark() ? "dark" : "light");
+    const next = cur === "light" ? "dark" : "light";
     applyTheme(next);
     try { localStorage.setItem(THEME_KEY, next); } catch (e) {}
   });
