@@ -2231,10 +2231,94 @@ def requer_autenticacao(func):
 # ---------------------------------------------------------------------------
 # Webhook
 # ---------------------------------------------------------------------------
-@app.route("/api/agendamentos", methods=["GET"])
+@app.route("/api/agendamentos", methods=["GET", "POST"])
 @requer_autenticacao
 def api_agendamentos():
-    return jsonify(listar_agendamentos()), 200
+    if request.method == "GET":
+        return jsonify(listar_agendamentos()), 200
+    return api_agendamento_criar()
+
+
+def api_agendamento_criar():
+    """Cria uma nova marcação a partir do painel. Reutiliza guardar_agendamento()
+    — o MESMO motor usado pela confirmação via WhatsApp (deteção de conflitos
+    dentro da transação, criação/associação do cliente, outbox de eventos) —
+    o painel nunca reinventa a lógica de marcação.
+
+    Corpo JSON:
+      customer_id  -> cliente já existente (telefone/nome vêm da ficha);
+      telefone/nome -> cliente novo, se customer_id não vier;
+      servico_id, data (YYYY-MM-DD), hora (HH:MM) -> obrigatórios;
+      duracao_min, preco_cents -> opcionais, por omissão vêm do serviço;
+      notas -> texto livre opcional.
+
+    preco_cents nunca é assumido como 0: se o serviço não tiver preço e o
+    pedido não indicar um, a marcação fica com preço por confirmar."""
+    d = request.get_json(silent=True) or {}
+
+    customer_id = d.get("customer_id")
+    telefone = str(d.get("telefone") or "").strip()
+    nome = str(d.get("nome") or "").strip() or None
+    if customer_id:
+        cust = bd.obter_customer(customer_id)
+        if not cust or cust.get("tenant_id", 1) != _TENANT:
+            return jsonify(erro="Cliente não encontrado."), 404
+        telefone = cust["phone"]
+        nome = nome or cust["name"]
+    if not telefone:
+        return jsonify(erro="Cliente é obrigatório (customer_id ou telefone)."), 400
+    if not nome:
+        return jsonify(erro="Nome do cliente é obrigatório."), 400
+
+    servico_id = str(d.get("servico_id") or "").strip()
+    servico = bd.obter_servico(servico_id) if servico_id else None
+    if not servico:
+        return jsonify(erro="Serviço inválido."), 400
+
+    data_iso = str(d.get("data") or "").strip()
+    try:
+        date.fromisoformat(data_iso)
+    except ValueError:
+        return jsonify(erro="Data inválida (esperado YYYY-MM-DD)."), 400
+    hora = str(d.get("hora") or "").strip()
+    if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", hora):
+        return jsonify(erro="Hora inválida (esperado HH:MM entre 00:00 e 23:59)."), 400
+
+    try:
+        duracao_min = _inteiro(d.get("duracao_min", servico.get("duracao_min")),
+                               minimo=5, maximo=600, campo="Duração")
+    except _EntradaInvalida as e:
+        return jsonify(erro=str(e)), 400
+
+    preco_cents = d.get("preco_cents", servico.get("preco_cents"))
+    if preco_cents is not None:
+        try:
+            preco_cents = int(preco_cents)
+        except (TypeError, ValueError):
+            return jsonify(erro="preco_cents tem de ser um número inteiro."), 400
+        if preco_cents < 0:
+            return jsonify(erro="preco_cents não pode ser negativo."), 400
+
+    sessao = {
+        "nome": nome,
+        "servico": servico["nome_pt"],
+        "servico_id": servico["id"],
+        "data": _data_display(data_iso, "pt"),
+        "hora": hora,
+        "duracao": catalogo.duracao_label(duracao_min),
+        "duracao_min": duracao_min,
+        "preco_cents": preco_cents,
+        "extra": str(d.get("notas") or "").strip() or None,
+        "carrinho": [],
+        "tenant_id": _TENANT,
+    }
+    try:
+        id_ag = guardar_agendamento(telefone, sessao)
+    except HorarioOcupado:
+        return jsonify(erro="Esse horário já está ocupado."), 409
+    disparar_automacoes()
+    ag = obter_agendamento(id_ag)
+    return jsonify(ok=True, agendamento=ag, evento=evento_calendario(ag)), 201
 
 
 @app.route("/api/agendamentos/<int:id_agendamento>", methods=["GET"])
@@ -2442,6 +2526,79 @@ def api_agendamento_reagendar(id_agendamento):
         nomes = ", ".join(f"#{o['id']} {o.get('nome') or ''}".strip() for o in ocupados)
         return jsonify(erro=f"Esse horário já está ocupado ({nomes}).", conflitos=nomes), 409
     return _resposta_evento(id_agendamento, notificado)
+
+
+@app.route("/api/agendamentos/<int:id_agendamento>/editar", methods=["POST"])
+@requer_autenticacao
+def api_agendamento_editar(id_agendamento):
+    """Edita serviço, duração, preço e notas de uma marcação ATIVA — a MESMA
+    marcação, nunca cria uma nova. Data/hora só mudam por /reagendar (tem a
+    sua própria regra de conflitos). Uma duração maior é revalidada contra
+    conflitos, à semelhança do reagendamento."""
+    d = request.get_json(silent=True) or {}
+    ag = obter_agendamento(id_agendamento)
+    if not ag or ag.get("tenant_id", 1) != _TENANT:
+        return jsonify(erro="Marcação não encontrada."), 404
+    if chave_estado(ag.get("estado")) not in (estados.CONFIRMED, estados.PENDING):
+        return jsonify(erro=f"Esta marcação já não está ativa (estado atual: {ag.get('estado')}).",
+                       estado=ag.get("estado")), 409
+
+    campos, vals = [], []
+    servico_nome = ag.get("servico")
+    duracao_min = ag.get("duracao_min")
+
+    if "servico_id" in d:
+        s = bd.obter_servico(d["servico_id"])
+        if not s:
+            return jsonify(erro="Serviço inválido."), 400
+        servico_nome = s["nome_pt"]
+        campos += ["servico_id = ?", "servico = ?"]
+        vals += [s["id"], s["nome_pt"]]
+        if "duracao_min" not in d and s.get("duracao_min") is not None:
+            duracao_min = s["duracao_min"]
+        if "preco_cents" not in d:
+            campos.append("preco_cents = ?")
+            vals.append(s.get("preco_cents"))
+
+    if "duracao_min" in d:
+        try:
+            duracao_min = _inteiro(d["duracao_min"], minimo=5, maximo=600, campo="Duração")
+        except _EntradaInvalida as e:
+            return jsonify(erro=str(e)), 400
+
+    if duracao_min != ag.get("duracao_min"):
+        duracao_texto = catalogo.duracao_label(duracao_min)
+        ocup = [o for o in ocupacoes() if o.get("id") != id_agendamento]
+        conflitos = conflitos_no_intervalo(ocup, ag.get("data_iso"), ag.get("hora_hhmm"),
+                                           servico_nome, duracao_texto, ignorar_id=id_agendamento)
+        if conflitos:
+            nomes = ", ".join(f"#{o.get('id')} {o.get('nome') or ''}".strip() for o in conflitos)
+            return jsonify(erro=f"Essa duração entra em conflito com outra marcação ({nomes})."), 409
+        campos += ["duracao_min = ?", "duracao = ?"]
+        vals += [duracao_min, duracao_texto]
+
+    if "preco_cents" in d:
+        preco = d["preco_cents"]
+        if preco is not None:
+            try:
+                preco = int(preco)
+            except (TypeError, ValueError):
+                return jsonify(erro="preco_cents tem de ser um número inteiro."), 400
+            if preco < 0:
+                return jsonify(erro="preco_cents não pode ser negativo."), 400
+        campos.append("preco_cents = ?")
+        vals.append(preco)
+
+    if "notas" in d:
+        campos.append("extra = ?")
+        vals.append(str(d["notas"] or "").strip() or None)
+
+    if not campos:
+        return jsonify(erro="Nada para atualizar."), 400
+
+    with obter_bd() as c:
+        c.execute(f"UPDATE agendamentos SET {', '.join(campos)} WHERE id = ?", (*vals, id_agendamento))
+    return _resposta_evento(id_agendamento, False)
 
 
 def _escapar_html(texto):

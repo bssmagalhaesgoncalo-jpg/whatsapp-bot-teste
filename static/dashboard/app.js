@@ -85,14 +85,14 @@ function fmtDataPt(iso) {
 const initials = (name) =>
   (name || "?").split(/\s+/).slice(0, 2).map((s) => s[0] || "").join("").toUpperCase();
 
-const OP_LABEL = { scheduled: "Agendada", arrived: "Chegou", in_progress: "A decorrer", done: "Concluída" };
-const EST_LABEL = { confirmed: "Confirmada", pending: "A aprovar", cancelled: "Cancelada", completed: "Concluída", no_show: "Não compareceu" };
+const OP_LABEL = { scheduled: "Agendada", arrived: "Chegou", in_progress: "Em curso", done: "Concluída" };
+const EST_LABEL = { confirmed: "Confirmada", pending: "Pendente", cancelled: "Cancelada", completed: "Concluída", no_show: "Não compareceu" };
 function statusBadge(estado, op) {
   const e = (estado || "").toLowerCase();
   if (e === "cancelled") return h("span", { class: "badge badge--danger" }, "Cancelada");
-  if (e === "no_show") return h("span", { class: "badge badge--danger" }, "Não veio");
+  if (e === "no_show") return h("span", { class: "badge badge--danger" }, EST_LABEL.no_show);
   if (op === "done" || e === "completed") return h("span", { class: "badge badge--success" }, "Concluída");
-  if (op === "in_progress") return h("span", { class: "badge badge--warning" }, "A decorrer");
+  if (op === "in_progress") return h("span", { class: "badge badge--warning" }, "Em curso");
   if (op === "arrived") return h("span", { class: "badge badge--info" }, "Chegou");
   return h("span", { class: "badge" }, EST_LABEL[e] || "Agendada");
 }
@@ -191,13 +191,15 @@ function renderAppointment(ag) {
   const act = async (fn) => { try { await fn(); Drawer.close(); Router.reload(); } catch (e) { handleActionError(e); } };
 
   if (!encerrada && op !== "done") {
-    if (op === "scheduled")
+    if (op === "scheduled") {
       foot.append(h("button", { class: "btn", onclick: () => act(() => opTransition(ag.id, "arrived")) }, icon("user-check"), "Chegou"));
+      foot.append(h("button", { class: "btn btn--danger", onclick: () => naoCompareceuPrompt(ag) }, "Não compareceu"));
+    }
     if (op === "arrived")
       foot.append(h("button", { class: "btn btn--primary", onclick: () => act(() => opTransition(ag.id, "in_progress")) }, icon("play"), "Iniciar"));
     if (op === "in_progress" || op === "arrived")
       foot.append(h("button", { class: "btn btn--primary", onclick: () => act(() => concluirEFaturar(ag)) }, icon("check"), "Concluir"));
-    foot.append(h("button", { class: "btn", onclick: () => reagendarPrompt(ag) }, "Reagendar"));
+    foot.append(h("button", { class: "btn", onclick: () => openEditAppointment(ag) }, "Editar"));
     foot.append(h("button", { class: "btn btn--danger", onclick: () => cancelarPrompt(ag) }, "Cancelar"));
   } else if (op === "done" && !ag.fatura) {
     foot.append(h("button", { class: "btn btn--primary", onclick: () => act(() => gerarFatura(ag)) }, icon("receipt"), "Gerar fatura"));
@@ -231,18 +233,189 @@ async function gerarFatura(ag) {
   const inv = await jpost(`/api/agendamentos/${ag.id}/fatura`, preco == null ? {} : { preco_cents: preco });
   toast(`Fatura criada (${chf(inv.total_cents)}) — rascunho`);
 }
-async function reagendarPrompt(ag) {
-  const data = prompt("Nova data (AAAA-MM-DD):", "");
-  if (!data) return;
-  const hora = prompt("Nova hora (HH:MM):", ag.hora_hhmm || "");
-  if (!hora) return;
-  try { await jpost(`/api/agendamentos/${ag.id}/reagendar`, { data, hora }); toast("Reagendada."); Drawer.close(); Router.reload(); }
-  catch (e) { toast(e.message, "err"); }
-}
 async function cancelarPrompt(ag) {
   if (!confirm(`Cancelar a marcação de ${ag.nome || "cliente"}?`)) return;
   try { await jpost(`/api/agendamentos/${ag.id}/cancelar`, {}); toast("Cancelada."); Drawer.close(); Router.reload(); }
   catch (e) { toast(e.message, "err"); }
+}
+async function naoCompareceuPrompt(ag) {
+  if (!confirm(`Marcar ${ag.nome || "cliente"} como Não compareceu?`)) return;
+  const tentar = async (confirmar) => {
+    try {
+      await jpost(`/api/agendamentos/${ag.id}/estado`, { estado: "no_show", confirmar });
+      toast("Marcada como Não compareceu.");
+      Drawer.close(); Router.reload();
+    } catch (e) {
+      if (e.status === 409 && e.body && e.body.precisa_confirmacao && confirm(e.body.erro + "\n\nConfirmar mesmo assim?"))
+        return tentar(true);
+      toast(e.message, "err");
+    }
+  };
+  await tentar(false);
+}
+
+/* ---------- caches partilhadas (evitam pedidos redundantes) ---------- */
+let _servicosCache = null;
+async function getServicos() {
+  if (!_servicosCache) _servicosCache = await api("/api/servicos");
+  return _servicosCache;
+}
+let _clientesCache = null;
+async function getClientesCache() {
+  if (!_clientesCache) _clientesCache = await api("/api/clientes");
+  return _clientesCache;
+}
+function invalidateClientesCache() { _clientesCache = null; }
+const HORA_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+/* ===================================================================
+   NOVA MARCAÇÃO — POST /api/agendamentos (reutiliza guardar_agendamento)
+   =================================================================== */
+async function openCreateAppointment(prefill = {}) {
+  let servicos, clientes;
+  try { [servicos, clientes] = await Promise.all([getServicos(), getClientesCache()]); }
+  catch (e) { toast(e.message, "err"); return; }
+  servicos = servicos.filter((s) => s.ativo);
+
+  const f = (label, node) => h("div", { class: "field" }, h("label", {}, label), node);
+  const dlId = "dl-clientes-nova";
+  const iNome = h("input", { class: "inp", placeholder: "Nome do cliente", list: dlId, autocomplete: "off" });
+  const iTelefone = h("input", { class: "inp", placeholder: "+41 79 000 00 00", type: "tel" });
+  const datalist = h("datalist", { id: dlId }, clientes.map((c) => h("option", { value: c.name })));
+  iNome.addEventListener("input", () => {
+    const match = clientes.find((c) => (c.name || "").toLowerCase() === iNome.value.trim().toLowerCase());
+    if (match && match.phone) iTelefone.value = match.phone;
+  });
+
+  const selServico = h("select", { class: "inp" },
+    h("option", { value: "", disabled: true, selected: !prefill.servico_id }, "Escolher serviço…"),
+    servicos.map((s) => h("option", { value: s.id, selected: s.id === prefill.servico_id || undefined },
+      `${s.nome_pt} · ${fmtMin(s.duracao_min)}` + (s.preco_cents == null ? "" : ` · ${chf(s.preco_cents)}`))));
+
+  const iData = h("input", { class: "inp", type: "date", value: prefill.data || agendaDia });
+  const iHora = h("input", { class: "inp", type: "time", value: prefill.hora || "" });
+  const iDuracao = h("input", { class: "inp", type: "number", min: 5, max: 600, placeholder: "do serviço" });
+  const iPreco = h("input", { class: "inp", type: "number", min: 0, step: "0.05", placeholder: "a confirmar" });
+  const iNotas = h("textarea", { class: "inp", rows: 3, style: "resize:vertical" });
+
+  selServico.addEventListener("change", () => {
+    const s = servicos.find((x) => x.id === selServico.value);
+    if (!s) return;
+    iPreco.placeholder = s.preco_cents == null ? "a confirmar" : (s.preco_cents / 100).toFixed(2);
+    iDuracao.placeholder = String(s.duracao_min) + " min";
+  });
+
+  const body = h("div", { class: "drawer-body" },
+    datalist,
+    f("Cliente", iNome), f("Telefone", iTelefone),
+    f("Serviço", selServico),
+    h("div", { style: "display:flex;gap:12px" }, f("Data", iData), f("Hora", iHora)),
+    h("div", { style: "display:flex;gap:12px" },
+      f("Duração (min)", iDuracao), f("Preço (CHF)", iPreco)),
+    f("Notas (opcional)", iNotas));
+
+  const btnGuardar = h("button", { class: "btn btn--primary" }, "Criar marcação");
+  const foot = h("div", { class: "drawer-foot" },
+    h("button", { class: "btn", onclick: () => Drawer.close() }, "Cancelar"), btnGuardar);
+
+  btnGuardar.addEventListener("click", async () => {
+    const nome = iNome.value.trim(), telefone = iTelefone.value.trim();
+    if (!nome) { toast("Indica o nome do cliente.", "err"); return; }
+    if (!telefone) { toast("Indica o telefone do cliente.", "err"); return; }
+    if (!selServico.value) { toast("Escolhe um serviço.", "err"); return; }
+    if (!iData.value) { toast("Escolhe uma data.", "err"); return; }
+    if (!HORA_RE.test(iHora.value)) { toast("Indica uma hora válida.", "err"); return; }
+
+    const payload = { nome, telefone, servico_id: selServico.value, data: iData.value, hora: iHora.value };
+    if (iDuracao.value) payload.duracao_min = Number(iDuracao.value);
+    if (iPreco.value.trim() !== "") {
+      const cents = Math.round(parseFloat(iPreco.value.replace(",", ".")) * 100);
+      if (!Number.isFinite(cents) || cents < 0) { toast("Preço inválido.", "err"); return; }
+      payload.preco_cents = cents;
+    }
+    if (iNotas.value.trim()) payload.notas = iNotas.value.trim();
+
+    btnGuardar.disabled = true;
+    try {
+      await jpost("/api/agendamentos", payload);
+      toast("Marcação criada.");
+      invalidateClientesCache();
+      Drawer.close();
+      Router.reload();
+    } catch (e) {
+      toast(e.message, "err");
+      btnGuardar.disabled = false;
+    }
+  });
+
+  Drawer.open(h("div", { style: "display:flex;flex-direction:column;height:100%" },
+    h("div", { class: "drawer-head" }, icon("calendar"), h("h3", {}, "Nova marcação"),
+      h("span", { style: "flex:1" }), h("button", { class: "icon-btn", onclick: () => Drawer.close() }, icon("x"))),
+    body, foot));
+}
+
+/* ===================================================================
+   EDITAR MARCAÇÃO — /editar (serviço/duração/preço/notas) + /reagendar
+   (data/hora), na mesma marcação. Cancelar/concluir/estado operacional/
+   cliente/fatura mantêm-se nas suas próprias ações.
+   =================================================================== */
+async function openEditAppointment(ag) {
+  let servicos;
+  try { servicos = await getServicos(); }
+  catch (e) { toast(e.message, "err"); return; }
+  servicos = servicos.filter((s) => s.ativo || s.id === ag.servico_id);
+
+  const f = (label, node) => h("div", { class: "field" }, h("label", {}, label), node);
+  const iData = h("input", { class: "inp", type: "date", value: ag.data_iso || "" });
+  const iHora = h("input", { class: "inp", type: "time", value: ag.hora_hhmm || "" });
+  const selServico = h("select", { class: "inp" },
+    servicos.map((s) => h("option", { value: s.id, selected: s.id === ag.servico_id || undefined }, s.nome_pt)));
+  const iDuracao = h("input", { class: "inp", type: "number", min: 5, max: 600, value: ag.duracao_min || "" });
+  const iPreco = h("input", { class: "inp", type: "number", min: 0, step: "0.05", placeholder: "a confirmar",
+    value: ag.preco_cents == null ? "" : (ag.preco_cents / 100).toFixed(2) });
+  const iNotas = h("textarea", { class: "inp", rows: 3, style: "resize:vertical" }, ag.extra || "");
+
+  const body = h("div", { class: "drawer-body" },
+    h("div", { style: "display:flex;gap:12px" }, f("Data", iData), f("Hora", iHora)),
+    f("Serviço", selServico),
+    h("div", { style: "display:flex;gap:12px" },
+      f("Duração (min)", iDuracao), f("Preço (CHF, vazio = a confirmar)", iPreco)),
+    f("Notas", iNotas));
+
+  const btnGuardar = h("button", { class: "btn btn--primary" }, "Guardar alterações");
+  const foot = h("div", { class: "drawer-foot" },
+    h("button", { class: "btn", onclick: () => renderAppointment(ag) }, "Voltar"), btnGuardar);
+
+  btnGuardar.addEventListener("click", async () => {
+    if (!iData.value || !HORA_RE.test(iHora.value)) { toast("Data e hora são obrigatórias.", "err"); return; }
+    const patch = {};
+    if (selServico.value !== ag.servico_id) patch.servico_id = selServico.value;
+    const dur = Number(iDuracao.value);
+    if (Number.isFinite(dur) && dur > 0 && dur !== ag.duracao_min) patch.duracao_min = dur;
+    const precoTxt = iPreco.value.trim();
+    if (precoTxt === "") { if (ag.preco_cents != null) patch.preco_cents = null; }
+    else {
+      const cents = Math.round(parseFloat(precoTxt.replace(",", ".")) * 100);
+      if (!Number.isFinite(cents) || cents < 0) { toast("Preço inválido.", "err"); return; }
+      if (cents !== ag.preco_cents) patch.preco_cents = cents;
+    }
+    const notasTxt = iNotas.value.trim();
+    if (notasTxt !== (ag.extra || "")) patch.notas = notasTxt;
+
+    btnGuardar.disabled = true;
+    try {
+      if (Object.keys(patch).length) await jpost(`/api/agendamentos/${ag.id}/editar`, patch);
+      if (iData.value !== ag.data_iso || iHora.value !== ag.hora_hhmm)
+        await jpost(`/api/agendamentos/${ag.id}/reagendar`, { data: iData.value, hora: iHora.value });
+      toast("Marcação atualizada.");
+      Drawer.close(); Router.reload();
+    } catch (e) { toast(e.message, "err"); btnGuardar.disabled = false; }
+  });
+
+  Drawer.open(h("div", { style: "display:flex;flex-direction:column;height:100%" },
+    h("div", { class: "drawer-head" }, icon("calendar"), h("h3", {}, `Editar marcação #${ag.id}`),
+      h("span", { style: "flex:1" }), h("button", { class: "icon-btn", onclick: () => Drawer.close() }, icon("x"))),
+    body, foot));
 }
 
 /* ===================================================================
@@ -292,7 +465,9 @@ async function viewHoje(mount) {
   }
 
   // 3 — agenda de hoje (timeline)
-  mount.append(h("div", { class: "eyebrow" }, "Agenda de hoje"));
+  mount.append(h("div", { style: "display:flex;align-items:center;justify-content:space-between;gap:8px;margin:32px 2px 12px" },
+    h("div", { class: "eyebrow", style: "margin:0" }, "Agenda de hoje"),
+    h("button", { class: "btn btn--sm", onclick: () => openCreateAppointment({ data: ymdOf(new Date()) }) }, icon("calendar"), "Nova marcação")));
   const ag = d.agenda || [];
   if (!ag.length) mount.append(h("div", { class: "card card--pad" }, emptyState("Sem marcações hoje.")));
   else {
@@ -437,8 +612,25 @@ function metric(val, label, accent) {
    /api/calendario?inicio=&fim= cobre a semana — sem endpoint novo.
    =================================================================== */
 let agendaVista = "dia";                                 // "dia" | "semana"
-let agendaDia = new Date().toISOString().slice(0, 10);   // âncora (YYYY-MM-DD)
+let agendaDia = ymdOf(new Date());   // âncora (YYYY-MM-DD)
 let agGrelha = { hora_inicio: 8, hora_fim: 19, intervalo_min: 30 };  // vem do servidor
+let agendaFiltro = "all";
+let agendaBusca = "";
+
+const AG_FILTROS = [
+  ["all", "Todas"], ["confirmed", "Confirmadas"], ["pending", "Pendentes"],
+  ["in_progress", "Em curso"], ["completed", "Concluídas"], ["cancelled", "Canceladas"],
+  ["no_show", "Não compareceu"],
+];
+function matchFiltroAg(e, filtro) {
+  if (filtro === "all") return true;
+  if (filtro === "in_progress") return (e.op_status || "") === "in_progress";
+  return (e.estado_chave || "").toLowerCase() === filtro;
+}
+function matchBuscaAg(e, q) {
+  if (!q) return true;
+  return `${e.nome || ""} ${e.telefone || ""} ${e.servico || ""}`.toLowerCase().includes(q);
+}
 
 const DAY_SHORT = ["seg", "ter", "qua", "qui", "sex", "sáb", "dom"];
 function ymdOf(d) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
@@ -464,13 +656,30 @@ async function viewAgenda(mount) {
   const nav = h("div", { class: "ag-toolbar" },
     h("div", { class: "ag-nav" },
       h("button", { class: "btn btn--sm", "aria-label": "Anterior", onclick: () => shiftAgenda(-1) }, "‹"),
-      h("button", { class: "btn btn--sm", onclick: () => { agendaDia = new Date().toISOString().slice(0, 10); Router.reload(); } }, "Hoje"),
+      h("button", { class: "btn btn--sm", onclick: () => { agendaDia = ymdOf(new Date()); Router.reload(); } }, "Hoje"),
       h("button", { class: "btn btn--sm", "aria-label": "Seguinte", onclick: () => shiftAgenda(1) }, "›")),
     h("div", { class: "seg", role: "tablist", "aria-label": "Vista da agenda" },
       h("button", { class: (isWeek ? "" : "is-active"), role: "tab", "aria-selected": String(!isWeek), onclick: () => setAgendaVista("dia") }, "Dia"),
       h("button", { class: (isWeek ? "is-active" : ""), role: "tab", "aria-selected": String(isWeek), onclick: () => setAgendaVista("semana") }, "Semana")),
-    h("strong", { class: "ag-range tnum" }, agRangeLabel()));
-  mount.append(nav, skeletonCard());
+    h("strong", { class: "ag-range tnum" }, agRangeLabel()),
+    h("span", { class: "nav-spacer" }),
+    h("button", { class: "btn btn--sm btn--primary", onclick: () => openCreateAppointment({ data: agendaDia }) }, icon("calendar"), "Nova marcação"));
+
+  const chipsWrap = h("div", { class: "ag-filtros" });
+  function renderChips() {
+    chipsWrap.innerHTML = "";
+    AG_FILTROS.forEach(([k, l]) => chipsWrap.append(h("button", {
+      class: "chip" + (agendaFiltro === k ? " is-active" : ""),
+      onclick: () => { agendaFiltro = k; renderChips(); renderList(); },
+    }, l)));
+  }
+  renderChips();
+
+  const searchInp = h("input", { class: "inp ag-search", type: "search",
+    placeholder: "Procurar por nome, telefone ou serviço…", value: agendaBusca });
+  searchInp.addEventListener("input", () => { agendaBusca = searchInp.value; renderList(); });
+
+  mount.append(nav, chipsWrap, searchInp, skeletonCard());
 
   let d;
   try { d = await api(`/api/calendario?inicio=${anchor}&fim=${fim}`); }
@@ -478,13 +687,22 @@ async function viewAgenda(mount) {
   mount.lastChild.remove();
   if (d.grelha) agGrelha = { hora_inicio: d.grelha.hora_inicio ?? 8, hora_fim: d.grelha.hora_fim ?? 19, intervalo_min: d.grelha.intervalo_min ?? 30 };
 
-  if (isWeek) {
-    const evs = (d.eventos || []).filter((e) => e.dia >= anchor && e.dia <= fim);
-    mount.append(renderSemana(evs));
-  } else {
-    const evs = (d.eventos || []).filter((e) => e.dia === anchor).sort((a, b) => (a.hora_hhmm || "").localeCompare(b.hora_hhmm || ""));
-    mount.append(renderDiaLista(evs));
+  const listMount = h("div", {});
+  mount.append(listMount);
+
+  function renderList() {
+    listMount.innerHTML = "";
+    const q = agendaBusca.trim().toLowerCase();
+    const filtrados = (d.eventos || []).filter((e) => matchFiltroAg(e, agendaFiltro) && matchBuscaAg(e, q));
+    if (isWeek) {
+      const evs = filtrados.filter((e) => e.dia >= anchor && e.dia <= fim);
+      listMount.append(renderSemana(evs));
+    } else {
+      const evs = filtrados.filter((e) => e.dia === anchor).sort((a, b) => (a.hora_hhmm || "").localeCompare(b.hora_hhmm || ""));
+      listMount.append(renderDiaGrid(evs, anchor));
+    }
   }
+  renderList();
 }
 
 function setAgendaVista(v) {
@@ -509,20 +727,62 @@ function agRangeLabel() {
   return iniPt + " — " + fimPt;
 }
 
-/* ---- vista DIA (lista por faixa horária — comportamento atual) ---- */
-function renderDiaLista(evs) {
-  if (!evs.length) return h("div", { class: "card card--pad" }, emptyState("Nada agendado neste dia."));
-  const tl = h("div", { class: "card", style: "padding:6px 10px" });
-  evs.forEach((e) => {
-    const op = e.op_status || "scheduled";
-    tl.append(h("div", { class: `tl-row st-${op} st-${e.estado_chave}`, onclick: () => openAppointment(e.id) },
-      h("span", { class: "tl-time tnum" }, e.hora_hhmm || "—"),
-      h("span", { class: "tl-rail" }),
-      h("div", {}, h("div", { class: "tl-name" }, e.nome || "Cliente"),
-        h("div", { class: "tl-svc" }, `${e.servico || ""} · ${e.preco_por_confirmar ? "a confirmar" : chf(e.total_centimos)}`)),
-      statusBadge(e.estado, op)));
+/* ---- clique em espaço vazio + drag & drop (reagendar via /reagendar) ---- */
+function faixaHora(i) {
+  const min = agGrelha.hora_inicio * 60 + i * (agGrelha.intervalo_min || 30);
+  return String(Math.floor(min / 60)).padStart(2, "0") + ":" + String(min % 60).padStart(2, "0");
+}
+let _dragEv = null;
+async function reagendarDrag(id, data, hora) {
+  try { await jpost(`/api/agendamentos/${id}/reagendar`, { data, hora }); toast("Marcação reagendada."); Router.reload(); }
+  catch (e) { toast(e.message, "err"); }
+}
+// Uma faixa vazia é uma célula de fundo: um clique cria uma marcação pré-
+// preenchida; um drop reagenda a marcação arrastada para esta hora/dia.
+// Cartões de marcação (.ag-ev) ficam por cima e absorvem o próprio clique,
+// por isso um clique numa marcação existente NUNCA chega a esta faixa.
+function makeFaixa(i, dia) {
+  const min = agGrelha.hora_inicio * 60 + i * (agGrelha.intervalo_min || 30);
+  const el = h("div", { class: "ag-faixa" + (min % 60 === 0 ? " hora-cheia" : ""),
+    onclick: () => openCreateAppointment({ data: dia, hora: faixaHora(i) }) });
+  el.addEventListener("dragover", (e) => { e.preventDefault(); el.classList.add("drop-target"); });
+  el.addEventListener("dragleave", () => el.classList.remove("drop-target"));
+  el.addEventListener("drop", (e) => {
+    e.preventDefault();
+    el.classList.remove("drop-target");
+    if (!_dragEv) return;
+    const novaHora = faixaHora(i);
+    if (dia !== _dragEv.dia || novaHora !== _dragEv.hora) reagendarDrag(_dragEv.id, dia, novaHora);
+    _dragEv = null;
   });
-  return tl;
+  return el;
+}
+
+/* ---- vista DIA (grelha horária de uma coluna — clique/drag como a semana) ---- */
+function renderDiaGrid(evs, anchor) {
+  const bandas = agBands();
+  const hojeYmd = ymdOf(new Date());
+  const eHoje = anchor === hojeYmd;
+  const agoraMin = new Date().getHours() * 60 + new Date().getMinutes();
+  const dentro = (min) => min >= agGrelha.hora_inicio * 60 && min <= agGrelha.hora_fim * 60;
+
+  const horas = h("div", { class: "ag-hcol" });
+  for (let i = 0; i < bandas; i++) {
+    const min = agGrelha.hora_inicio * 60 + i * (agGrelha.intervalo_min || 30);
+    horas.append(h("div", { class: "ag-hora" }, (min % 60 === 0 ? String(Math.floor(min / 60)).padStart(2, "0") + ":00" : "")));
+  }
+  const body = h("div", { class: "ag-col" + (eHoje ? " is-today" : ""), "data-dia": anchor });
+  for (let i = 0; i < bandas; i++) body.append(makeFaixa(i, anchor));
+  agDispor(evs).forEach((p) => body.append(agEventCard(p, eHoje)));
+  if (eHoje && dentro(agoraMin)) {
+    const agoraTxt = String(new Date().getHours()).padStart(2, "0") + ":" + String(new Date().getMinutes()).padStart(2, "0");
+    body.append(h("div", { class: "ag-now", style: `top:${agTop(agoraMin).toFixed(1)}px`, "aria-hidden": "true" },
+      h("span", {}, "Agora · " + agoraTxt)));
+  }
+  const bodyRow = h("div", { class: "ag-bd ag-bd--dia" }, horas, body);
+  const grid = h("div", { class: "ag-grid ag-grid--dia" }, bodyRow);
+  if (!evs.length) grid.append(h("div", { class: "empty", style: "padding:14px" }, "Nada agendado neste dia."));
+  return h("div", { class: "ag-week-scroll" }, grid);
 }
 
 /* ---- vista SEMANA (grelha horária com 7 dias) ---- */
@@ -543,7 +803,7 @@ function agEndMin(ev) {
   return agStartMin(ev) + (ev.duracao_minutos || 60);
 }
 const agTop = (min) => Math.max(0, min) / (agGrelha.intervalo_min || 30) * AG_FAIXA;
-const agH = (dur) => Math.max((dur / (agGrelha.intervalo_min || 30)) * AG_FAIXA, AG_FAIXA * 0.6);
+const agH = (dur) => Math.max((dur / (agGrelha.intervalo_min || 30)) * AG_FAIXA, 44); // altura mínima p/ caber título+serviço+estado sem cortar
 
 // Reparte eventos sobrepostos do mesmo dia por colunas (regra do legado).
 function agDispor(evs) {
@@ -577,19 +837,33 @@ function agEventCard(p, todayCol) {
   const left = (100 / p.total) * p.coluna + 3;
   const txt = `${ev.hora_hhmm || "—"} · ${ev.nome || ev.primeiro_nome || "Cliente"}`;
   const sub = [ev.servico, fmtMin(ev.duracao_minutos || 0)].filter(Boolean).join(" · ");
-  return h("button", { class: `ag-ev st-${op} st-${estadoKey}` + (todayCol ? " on-today" : ""),
+  // Reagendar por drag & drop exige uma marcação ainda ativa e não concluída
+  // — a mesma regra da API de /reagendar. A duração nunca é enviada aqui:
+  // o drop só muda dia/hora, o backend mantém a duração existente.
+  const podeArrastar = !["cancelled", "no_show"].includes(estadoKey) && op !== "done" && estadoKey !== "completed";
+  const el = h("button", { class: `ag-ev st-${op} st-${estadoKey}` + (todayCol ? " on-today" : ""),
     style: `top:${top.toFixed(1)}px;height:${altura.toFixed(1)}px;left:${left.toFixed(2)}%;width:${larg.toFixed(2)}%`,
-    title: `${txt} · ${sub}`, onclick: () => openAppointment(ev.id),
+    title: `${txt} · ${sub}`, draggable: podeArrastar || undefined, onclick: () => openAppointment(ev.id),
     "aria-label": `${sub} às ${ev.hora_hhmm || "—"}` },
     h("span", { class: "ag-ev-t" }, txt),
     h("span", { class: "ag-ev-s" }, sub),
     statusBadge(ev.estado, op));
+  if (podeArrastar) {
+    el.addEventListener("dragstart", (e) => {
+      _dragEv = { id: ev.id, dia: ev.dia, hora: ev.hora_hhmm };
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", String(ev.id));
+      el.classList.add("dragging");
+    });
+    el.addEventListener("dragend", () => { el.classList.remove("dragging"); _dragEv = null; });
+  }
+  return el;
 }
 
 function renderSemana(eventos) {
   const seg = mondayOf(agendaDia);
   const bandas = agBands();
-  const hojeYmd = new Date().toISOString().slice(0, 10);
+  const hojeYmd = ymdOf(new Date());
   const agoraMin = new Date().getHours() * 60 + new Date().getMinutes();
   const dentro = (min) => min >= agGrelha.hora_inicio * 60 && min <= agGrelha.hora_fim * 60;
 
@@ -604,10 +878,7 @@ function renderSemana(eventos) {
     const eHoje = chave === hojeYmd;
     const doDia = eventos.filter((e) => e.dia === chave);
     const body = h("div", { class: "ag-col" + (eHoje ? " is-today" : ""), "data-dia": chave });
-    for (let i = 0; i < bandas; i++) {
-      const min = agGrelha.hora_inicio * 60 + i * (agGrelha.intervalo_min || 30);
-      body.append(h("div", { class: "ag-faixa" + (min % 60 === 0 ? " hora-cheia" : "") }));
-    }
+    for (let i = 0; i < bandas; i++) body.append(makeFaixa(i, chave));
     agDispor(doDia).forEach((p) => body.append(agEventCard(p, eHoje)));
     // Linha "Agora": só na coluna de hoje, e só quando hoje está na semana e dentro do horário.
     if (eHoje && dentro(agoraMin)) {
@@ -808,7 +1079,7 @@ async function viewFaturas(mount) {
   mount.append(wrap);
 }
 function invoiceBadge(status, due) {
-  if (status === "issued" && due && due < new Date().toISOString().slice(0, 10))
+  if (status === "issued" && due && due < ymdOf(new Date()))
     return h("span", { class: "badge badge--danger" }, "Vencida");
   const map = { draft: ["", "Rascunho"], issued: ["badge--info", "Emitida"], paid: ["badge--success", "Paga"], cancelled: ["", "Anulada"] };
   const [c, l] = map[status] || ["", status];
@@ -932,8 +1203,34 @@ function parseHash() {
 window.addEventListener("hashchange", () => Router.render(parseHash()));
 
 /* ---------- boot ---------- */
+function initNovoMenu() {
+  const wrap = $("#novo-wrap"), btn = $("#novo-btn"), menu = $("#novo-menu");
+  const closeMenu = () => { menu.hidden = true; btn.setAttribute("aria-expanded", "false"); };
+  const items = [
+    { label: "Nova marcação", icon: "calendar", run: () => openCreateAppointment() },
+    { label: "Novo cliente", icon: "users", soon: "Funcionalidade pendente de endpoint backend" },
+    { label: "Bloquear horário", icon: "clock", soon: "Backend só suporta bloqueio do dia inteiro — em breve" },
+    { label: "Criar fatura", icon: "receipt", soon: "Fatura tem de estar ligada a uma marcação concluída — em breve" },
+  ];
+  items.forEach((it) => {
+    const el = h("button", { class: "novo-item", role: "menuitem", disabled: !!it.soon, title: it.soon || "",
+      onclick: it.run ? () => { closeMenu(); it.run(); } : null },
+      icon(it.icon), h("span", {}, it.label), it.soon ? h("span", { class: "novo-soon" }, "Em breve") : null);
+    menu.append(el);
+  });
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const open = menu.hidden;
+    menu.hidden = !open;
+    btn.setAttribute("aria-expanded", String(open));
+  });
+  document.addEventListener("click", (e) => { if (!wrap.contains(e.target)) closeMenu(); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeMenu(); });
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   Drawer.init();
+  initNovoMenu();
   $("#menu-btn").addEventListener("click", () => { $("#sidebar").classList.toggle("open"); $("#scrim").classList.toggle("open"); });
   $("#scrim").addEventListener("click", () => { $("#sidebar").classList.remove("open"); });
   const THEME_KEY = "db_theme";

@@ -296,6 +296,31 @@ button, a, [role="button"], .tl-row, .tab {
 .icon-btn:active { transform: scale(.95); }
 .icon-btn svg { width: 16px; height: 16px; }
 
+/* ---------- topbar "+ Novo" popover ---------- */
+.novo-wrap { position: relative; }
+.novo-menu {
+  position: absolute; right: 0; top: calc(100% + 8px);
+  width: max(230px, 100%);
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-md); box-shadow: var(--shadow-lg);
+  padding: 6px; z-index: 50;
+}
+.novo-item {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 9px 10px; border-radius: var(--radius-sm); border: none; background: transparent;
+  color: var(--text); font: inherit; font-size: var(--fs-base); font-weight: 500; text-align: left;
+}
+.novo-item:hover:not([disabled]) { background: var(--surface-2); }
+.novo-item[disabled] { color: var(--text-3); cursor: not-allowed; }
+.novo-item svg { width: 16px; height: 16px; flex: none; color: var(--text-2); }
+.novo-item .novo-soon {
+  margin-left: auto; font-size: 9.5px; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--text-3); background: var(--surface-3); padding: 2px 7px; border-radius: 999px; white-space: nowrap;
+}
+@media (max-width: 560px) {
+  .novo-menu { width: max(240px, 60vw); }
+}
+
 /* ---------- card ---------- */
 .card {
   background: var(--surface);
@@ -463,6 +488,24 @@ button, a, [role="button"], .tl-row, .tab {
 .seg button.is-active { background: var(--surface); color: var(--text); box-shadow: var(--shadow-xs); }
 .seg button:not(.is-active):hover { color: var(--text); }
 
+/* filtros compactos (Todas/Confirmadas/…) — scroll horizontal INTERNO só, nunca a página */
+.ag-filtros {
+  display: flex; gap: 6px; overflow-x: auto; padding: 2px 2px 6px;
+  margin-bottom: 4px; scrollbar-width: none;
+}
+.ag-filtros::-webkit-scrollbar { display: none; }
+.chip {
+  flex: none; padding: 6px 13px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--surface); color: var(--text-2);
+  font-size: 12px; font-weight: 650; white-space: nowrap;
+  transition: background .12s ease, color .12s ease, border-color .12s ease;
+}
+.chip:hover:not(.is-active) { background: var(--surface-2); color: var(--text); }
+.chip.is-active { background: var(--text); border-color: var(--text); color: var(--surface); }
+
+/* pesquisa rápida — client-side, sem pedidos por tecla */
+.ag-search { max-width: 360px; margin: 4px 0 16px; }
+
 /* container de scroll INTERNO da semana — a página nunca transborda */
 .ag-week-scroll { overflow-x: auto; overscroll-behavior-x: contain; padding-bottom: 4px; }
 .ag-grid {
@@ -471,6 +514,8 @@ button, a, [role="button"], .tl-row, .tab {
   border: 1px solid var(--border); border-radius: var(--radius-lg);
   background: var(--surface); box-shadow: var(--shadow-sm); overflow: hidden;
 }
+.ag-grid--dia { min-width: 0; }
+.ag-bd.ag-bd--dia { display: grid; grid-template-columns: 50px 1fr; }
 .ag-hd { display: grid; grid-template-columns: 50px repeat(7, 1fr); border-bottom: 1px solid var(--border); }
 .ag-hd-corner { border-right: 1px solid var(--border); background: var(--surface-2); }
 .ag-hd-dia {
@@ -503,9 +548,13 @@ button, a, [role="button"], .tl-row, .tab {
 .ag-faixa {
   height: var(--ag-faixa, 34px); box-sizing: border-box;
   border-bottom: 1px dashed var(--border);
+  cursor: pointer;
+  transition: background .1s ease;
 }
 .ag-col.is-today .ag-faixa { border-bottom-color: color-mix(in srgb, var(--brand) 16%, var(--border)); }
 .ag-faixa.hora-cheia { border-bottom-style: solid; border-bottom-color: var(--border); }
+.ag-faixa:hover { background: var(--surface-2); }
+.ag-faixa.drop-target { background: color-mix(in srgb, var(--brand) 16%, var(--surface-2)); }
 
 /* cartão de marcação — absoluto dentro da coluna, altura ∝ duração */
 .ag-ev {
@@ -522,16 +571,19 @@ button, a, [role="button"], .tl-row, .tab {
   transition: filter .12s ease, box-shadow .12s ease;
 }
 .ag-ev:hover { filter: brightness(.97); box-shadow: var(--shadow-sm); }
+.ag-ev[draggable="true"] { cursor: grab; }
+.ag-ev[draggable="true"]:active { cursor: grabbing; }
+.ag-ev.dragging { opacity: .35; }
 .ag-ev .ag-ev-t {
-  font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0;
 }
 .ag-ev .ag-ev-s {
-  color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 10px;
+  color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 10px; flex-shrink: 0;
 }
 .ag-ev .badge {
   margin-top: auto; padding: 1px 6px; font-size: 9px;
   align-self: flex-start; max-width: 100%;
-  overflow: hidden; text-overflow: ellipsis;
+  overflow: hidden; text-overflow: ellipsis; flex-shrink: 0;
 }
 /* cor de borda = STATUS/CONTEXTO (tokens V2), nunca cor aleatória de serviço */
 .ag-ev.st-done, .ag-ev.st-completed { border-left-color: var(--success); }
@@ -611,7 +663,7 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 
 .dl dt { color: var(--text-3); }
 .dl dd { margin: 0; text-align: right; }
 
-input.inp, select.inp {
+input.inp, select.inp, textarea.inp {
   width: 100%; padding: 0 var(--space-3);
   min-height: var(--control-h);
   border-radius: var(--radius-sm); border: 1px solid var(--border-strong);
@@ -619,7 +671,8 @@ input.inp, select.inp {
   font: inherit; font-size: var(--fs-base);
   transition: border-color .15s ease, box-shadow .15s ease;
 }
-input.inp:focus, select.inp:focus {
+textarea.inp { padding: var(--space-2) var(--space-3); }
+input.inp:focus, select.inp:focus, textarea.inp:focus {
   outline: none; border-color: var(--brand);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 15%, transparent);
 }
@@ -714,6 +767,9 @@ input.inp:focus, select.inp:focus {
   .tab { min-height: 44px; padding: 10px 14px; }
   .drawer-foot { padding: 16px 20px; gap: 10px; }
   .drawer-foot .btn { min-height: 44px; }
+  .chip { min-height: 38px; padding: 8px 14px; }
+  .ag-search { max-width: 100%; }
+  input.inp, select.inp, textarea.inp { min-height: 44px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
