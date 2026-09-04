@@ -48,6 +48,11 @@ from scheduling import availability as av_mod
 
 app = Flask(__name__)
 
+# Painel operacional novo (SaaS shell) — servido de templates/ + static/ pelo
+# blueprint dashboard/, montado em /app. /painel e /dashboard antigos mantêm-se.
+from dashboard import bp as _dashboard_bp   # noqa: E402
+app.register_blueprint(_dashboard_bp)
+
 # --- Aliases retro-compatíveis: o resto do ficheiro (e os testes) continuam a
 # usar estes nomes; a verdade única vive em `config`. ----------------------
 TOKEN = config.WHATSAPP_TOKEN
@@ -955,7 +960,10 @@ def evento_calendario(agendamento, pedido=None):
         "nome": agendamento.get("nome"),
         "primeiro_nome": primeiro_nome(agendamento.get("nome")) or "",
         "telefone": agendamento.get("telefone"),
+        "customer_id": agendamento.get("customer_id"),
+        "op_status": agendamento.get("op_status") or "scheduled",
         "servico": agendamento.get("servico"),
+        "servico_id": agendamento.get("servico_id"),
         "extra": agendamento.get("extra"),
         "data": agendamento.get("data"),
         "hora": agendamento.get("hora"),
@@ -2227,6 +2235,34 @@ def requer_autenticacao(func):
 @requer_autenticacao
 def api_agendamentos():
     return jsonify(listar_agendamentos()), 200
+
+
+@app.route("/api/agendamentos/<int:id_agendamento>", methods=["GET"])
+@requer_autenticacao
+def api_agendamento_detalhe(id_agendamento):
+    """Detalhe completo de uma marcação — usado pelo drawer do painel."""
+    ag = obter_agendamento(id_agendamento)
+    if not ag or ag.get("tenant_id", 1) != _TENANT:
+        return jsonify(erro="Marcação não encontrada."), 404
+    corpo = dict(ag)
+    corpo["total_centimos"] = total_centimos_agendamento(ag)
+    corpo["preco_por_confirmar"] = preco_por_confirmar_agendamento(ag)
+    corpo["historico"] = historico_agendamento(id_agendamento)
+    if ag.get("customer_id"):
+        cust = bd.obter_customer(ag["customer_id"])
+        if cust:
+            corpo["cliente_resumo"] = {
+                "id": cust["id"], "name": cust["name"],
+                "visits_count": cust["visits_count"], "spend_cents": cust["spend_cents"],
+                "no_show_count": cust["no_show_count"], "last_visit": cust["last_visit"],
+            }
+    with obter_bd() as c:
+        fr = c.execute("SELECT id, status, invoice_number, total_cents FROM invoices "
+                       "WHERE appointment_id = ? AND status <> 'cancelled' LIMIT 1",
+                       (id_agendamento,)).fetchone()
+    corpo["fatura"] = (dict(zip(("id", "status", "invoice_number", "total_cents"), fr))
+                       if fr else None)
+    return jsonify(corpo), 200
 
 
 @app.route("/api/calendario", methods=["GET"])
