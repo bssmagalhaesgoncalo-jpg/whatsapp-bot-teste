@@ -427,23 +427,91 @@ function metric(val, label, accent) {
 }
 
 /* ===================================================================
-   VIEW: AGENDA  (dia, navegável)
+   VIEW: AGENDA  (dia · semana, navegável)
+   A vista semanal reutiliza as REGRAS da grelha semanal legada:
+   semana começa à segunda-feira, grelha horária vertical com bandas de
+   intervalo_min, posicionamento top = (minuto-inicio)*(px/intervalo),
+   altura proporcional à duração, repartição de sobrepostos em colunas
+   e linha "Agora" só na coluna de hoje. Renderizado no design system
+   V2 (tokens, badges, drawer partilhado). Uma única chamada a
+   /api/calendario?inicio=&fim= cobre a semana — sem endpoint novo.
    =================================================================== */
-let agendaDia = new Date().toISOString().slice(0, 10);
+let agendaVista = "dia";                                 // "dia" | "semana"
+let agendaDia = new Date().toISOString().slice(0, 10);   // âncora (YYYY-MM-DD)
+let agGrelha = { hora_inicio: 8, hora_fim: 19, intervalo_min: 30 };  // vem do servidor
+
+const DAY_SHORT = ["seg", "ter", "qua", "qui", "sex", "sáb", "dom"];
+function ymdOf(d) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
+function dateOf(s) {
+  if (s instanceof Date) return new Date(s);
+  return new Date(String(s).trim() + "T00:00:00");
+}
+function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
+// A semana começa sempre à SEGUNDA-feira (mesma regra do legado).
+function mondayOf(anchor) {
+  const d = dateOf(anchor);
+  const off = (d.getDay() + 6) % 7;   // segunda = 0 … domingo = 6
+  return addDays(d, -off);
+}
+function weekDays(anchor) { const mon = mondayOf(anchor); return Array.from({ length: 7 }, (_, i) => addDays(mon, i)); }
+
 async function viewAgenda(mount) {
   setTitle("Agenda");
-  const nav = h("div", { style: "display:flex;gap:8px;align-items:center;margin-bottom:16px" },
-    h("button", { class: "btn btn--sm", onclick: () => shiftDia(-1) }, "‹"),
-    h("button", { class: "btn btn--sm", onclick: () => { agendaDia = new Date().toISOString().slice(0, 10); Router.reload(); } }, "Hoje"),
-    h("button", { class: "btn btn--sm", onclick: () => shiftDia(1) }, "›"),
-    h("strong", { style: "margin-left:6px" }, new Date(agendaDia + "T00:00:00").toLocaleDateString("pt-PT", { weekday: "long", day: "numeric", month: "long" })));
+  const isWeek = agendaVista === "semana";
+  const anchor = isWeek ? ymdOf(mondayOf(agendaDia)) : agendaDia;
+  const fim = isWeek ? ymdOf(addDays(dateOf(anchor), 6)) : anchor;
+
+  const nav = h("div", { class: "ag-toolbar" },
+    h("div", { class: "ag-nav" },
+      h("button", { class: "btn btn--sm", "aria-label": "Anterior", onclick: () => shiftAgenda(-1) }, "‹"),
+      h("button", { class: "btn btn--sm", onclick: () => { agendaDia = new Date().toISOString().slice(0, 10); Router.reload(); } }, "Hoje"),
+      h("button", { class: "btn btn--sm", "aria-label": "Seguinte", onclick: () => shiftAgenda(1) }, "›")),
+    h("div", { class: "seg", role: "tablist", "aria-label": "Vista da agenda" },
+      h("button", { class: (isWeek ? "" : "is-active"), role: "tab", "aria-selected": String(!isWeek), onclick: () => setAgendaVista("dia") }, "Dia"),
+      h("button", { class: (isWeek ? "is-active" : ""), role: "tab", "aria-selected": String(isWeek), onclick: () => setAgendaVista("semana") }, "Semana")),
+    h("strong", { class: "ag-range tnum" }, agRangeLabel()));
   mount.append(nav, skeletonCard());
+
   let d;
-  try { d = await api(`/api/calendario?inicio=${agendaDia}&fim=${agendaDia}`); }
+  try { d = await api(`/api/calendario?inicio=${anchor}&fim=${fim}`); }
   catch (e) { toast(e.message, "err"); return; }
   mount.lastChild.remove();
-  const evs = (d.eventos || []).filter((e) => e.dia === agendaDia).sort((a, b) => (a.hora_hhmm || "").localeCompare(b.hora_hhmm || ""));
-  if (!evs.length) { mount.append(h("div", { class: "card card--pad" }, emptyState("Nada agendado neste dia."))); return; }
+  if (d.grelha) agGrelha = { hora_inicio: d.grelha.hora_inicio ?? 8, hora_fim: d.grelha.hora_fim ?? 19, intervalo_min: d.grelha.intervalo_min ?? 30 };
+
+  if (isWeek) {
+    const evs = (d.eventos || []).filter((e) => e.dia >= anchor && e.dia <= fim);
+    mount.append(renderSemana(evs));
+  } else {
+    const evs = (d.eventos || []).filter((e) => e.dia === anchor).sort((a, b) => (a.hora_hhmm || "").localeCompare(b.hora_hhmm || ""));
+    mount.append(renderDiaLista(evs));
+  }
+}
+
+function setAgendaVista(v) {
+  if (agendaVista === v) return;
+  agendaVista = v;
+  Router.reload();
+}
+function shiftAgenda(n) {
+  const step = agendaVista === "semana" ? 7 : 1;
+  const d = dateOf(agendaDia); d.setDate(d.getDate() + step * n);
+  agendaDia = ymdOf(d);
+  Router.reload();
+}
+
+function agRangeLabel() {
+  if (agendaVista === "dia") {
+    return dateOf(agendaDia).toLocaleDateString("pt-PT", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+  }
+  const seg = mondayOf(agendaDia), dom = addDays(seg, 6);
+  const iniPt = seg.toLocaleDateString("pt-PT", { day: "numeric", month: "long" });
+  const fimPt = dom.toLocaleDateString("pt-PT", { day: "numeric", month: "long", year: "numeric" });
+  return iniPt + " — " + fimPt;
+}
+
+/* ---- vista DIA (lista por faixa horária — comportamento atual) ---- */
+function renderDiaLista(evs) {
+  if (!evs.length) return h("div", { class: "card card--pad" }, emptyState("Nada agendado neste dia."));
   const tl = h("div", { class: "card", style: "padding:6px 10px" });
   evs.forEach((e) => {
     const op = e.op_status || "scheduled";
@@ -454,11 +522,115 @@ async function viewAgenda(mount) {
         h("div", { class: "tl-svc" }, `${e.servico || ""} · ${e.preco_por_confirmar ? "a confirmar" : chf(e.total_centimos)}`)),
       statusBadge(e.estado, op)));
   });
-  mount.append(tl);
+  return tl;
 }
-function shiftDia(n) {
-  const d = new Date(agendaDia + "T00:00:00"); d.setDate(d.getDate() + n);
-  agendaDia = d.toISOString().slice(0, 10); Router.reload();
+
+/* ---- vista SEMANA (grelha horária com 7 dias) ---- */
+const AG_FAIXA = 34;   // altura (px) de uma banda de intervalo
+function agBands() {
+  const { hora_inicio, hora_fim, intervalo_min } = agGrelha;
+  return Math.max(1, Math.round(((hora_fim - hora_inicio) * 60) / (intervalo_min || 30)));
+}
+function agStartMin(ev) {
+  const [hh, mm] = (ev.hora_hhmm || "00:00").split(":").map(Number);
+  return (hh * 60 + mm) - agGrelha.hora_inicio * 60;
+}
+function agEndMin(ev) {
+  if (ev.fim) {
+    const [hh, mm] = String(ev.fim).split("T")[1].slice(0, 5).split(":").map(Number);
+    return (hh * 60 + mm) - agGrelha.hora_inicio * 60;
+  }
+  return agStartMin(ev) + (ev.duracao_minutos || 60);
+}
+const agTop = (min) => Math.max(0, min) / (agGrelha.intervalo_min || 30) * AG_FAIXA;
+const agH = (dur) => Math.max((dur / (agGrelha.intervalo_min || 30)) * AG_FAIXA, AG_FAIXA * 0.6);
+
+// Reparte eventos sobrepostos do mesmo dia por colunas (regra do legado).
+function agDispor(evs) {
+  const ordenados = evs.slice().sort((a, b) => agStartMin(a) - agStartMin(b));
+  const colunas = [], postos = [];
+  let grupo = [], grupoFim = -1;
+  const fechar = () => {
+    const total = Math.max(1, colunas.length);
+    grupo.forEach((p) => { p.total = total; });
+    grupo = []; colunas.length = 0; grupoFim = -1;
+  };
+  ordenados.forEach((ev) => {
+    const ini = agStartMin(ev);
+    const fim = Math.max(ini + 15, agEndMin(ev));
+    if (grupo.length && ini >= grupoFim) fechar();
+    let col = colunas.findIndex((f) => f <= ini);
+    if (col === -1) { colunas.push(fim); col = colunas.length - 1; } else { colunas[col] = fim; }
+    const p = { ev, ini, fim, coluna: col, total: 1 };
+    postos.push(p); grupo.push(p); grupoFim = Math.max(grupoFim, fim);
+  });
+  if (grupo.length) fechar();
+  return postos;
+}
+
+function agEventCard(p, todayCol) {
+  const ev = p.ev;
+  const op = ev.op_status || "scheduled";
+  const estadoKey = (ev.estado_chave || ev.estado || "").toLowerCase();
+  const top = agTop(p.ini), altura = agH(p.fim - p.ini);
+  const larg = (100 / p.total) - 0.6;
+  const left = (100 / p.total) * p.coluna + 3;
+  const txt = `${ev.hora_hhmm || "—"} · ${ev.nome || ev.primeiro_nome || "Cliente"}`;
+  const sub = [ev.servico, fmtMin(ev.duracao_minutos || 0)].filter(Boolean).join(" · ");
+  return h("button", { class: `ag-ev st-${op} st-${estadoKey}` + (todayCol ? " on-today" : ""),
+    style: `top:${top.toFixed(1)}px;height:${altura.toFixed(1)}px;left:${left.toFixed(2)}%;width:${larg.toFixed(2)}%`,
+    title: `${txt} · ${sub}`, onclick: () => openAppointment(ev.id),
+    "aria-label": `${sub} às ${ev.hora_hhmm || "—"}` },
+    h("span", { class: "ag-ev-t" }, txt),
+    h("span", { class: "ag-ev-s" }, sub),
+    statusBadge(ev.estado, op));
+}
+
+function renderSemana(eventos) {
+  const seg = mondayOf(agendaDia);
+  const bandas = agBands();
+  const hojeYmd = new Date().toISOString().slice(0, 10);
+  const agoraMin = new Date().getHours() * 60 + new Date().getMinutes();
+  const dentro = (min) => min >= agGrelha.hora_inicio * 60 && min <= agGrelha.hora_fim * 60;
+
+  const horas = h("div", { class: "ag-hcol" });
+  for (let i = 0; i < bandas; i++) {
+    const min = agGrelha.hora_inicio * 60 + i * (agGrelha.intervalo_min || 30);
+    horas.append(h("div", { class: "ag-hora" }, (min % 60 === 0 ? String(Math.floor(min / 60)).padStart(2, "0") + ":00" : "")));
+  }
+
+  const cols = weekDays(seg).map((dia) => {
+    const chave = ymdOf(dia);
+    const eHoje = chave === hojeYmd;
+    const doDia = eventos.filter((e) => e.dia === chave);
+    const body = h("div", { class: "ag-col" + (eHoje ? " is-today" : ""), "data-dia": chave });
+    for (let i = 0; i < bandas; i++) {
+      const min = agGrelha.hora_inicio * 60 + i * (agGrelha.intervalo_min || 30);
+      body.append(h("div", { class: "ag-faixa" + (min % 60 === 0 ? " hora-cheia" : "") }));
+    }
+    agDispor(doDia).forEach((p) => body.append(agEventCard(p, eHoje)));
+    // Linha "Agora": só na coluna de hoje, e só quando hoje está na semana e dentro do horário.
+    if (eHoje && dentro(agoraMin)) {
+      const agoraTxt = String(new Date().getHours()).padStart(2, "0") + ":" + String(new Date().getMinutes()).padStart(2, "0");
+      body.append(h("div", { class: "ag-now", style: `top:${agTop(agoraMin).toFixed(1)}px`, "aria-hidden": "true" },
+        h("span", {}, "Agora · " + agoraTxt)));
+    }
+    return { chave, eHoje, body };
+  });
+
+  const headerRow = h("div", { class: "ag-hd" },
+    h("div", { class: "ag-hd-corner" }),
+    cols.map(({ chave, eHoje }) =>
+      h("div", { class: "ag-hd-dia" + (eHoje ? " is-today" : ""), "data-dia": chave },
+        h("span", { class: "ag-hd-wd" }, DAY_SHORT[chave.split("-")[0] && (new Date(chave + "T00:00:00").getDay() + 6) % 7]),
+        h("span", { class: "ag-hd-dt tnum" }, chave.slice(8, 10) + "/" + chave.slice(5, 7)),
+        eHoje ? h("span", { class: "ag-hd-hoje" }, "hoje") : null)));
+
+  const bodyRow = h("div", { class: "ag-bd" }, horas, cols.map((c) => c.body));
+  const grid = h("div", { class: "ag-grid" }, headerRow, bodyRow);
+  if (!eventos.length) grid.append(h("div", { class: "empty", style: "padding:14px" }, "Sem marcações nesta semana."));
+
+  return h("div", { class: "ag-week-scroll" }, grid);
 }
 
 /* ===================================================================

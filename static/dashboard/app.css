@@ -386,6 +386,127 @@ button, a, [role="button"], .tl-row, .tab {
 .tl-name { font-weight: 600; font-size: 13.5px; }
 .tl-svc { color: var(--text-3); font-size: 12px; }
 
+/* ---------- agenda : toolbar + vista semanal ---------- */
+.ag-toolbar {
+  display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.ag-nav { display: flex; gap: 6px; }
+.ag-range { margin-left: 2px; font-weight: 600; color: var(--text-2); font-size: 13px; }
+/* seletor Dia / Semana — segmented control premium */
+.seg {
+  display: inline-flex; overflow: hidden;
+  background: var(--surface); border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm); padding: 2px;
+}
+.seg button {
+  border: 0; background: transparent; color: var(--text-3);
+  font-weight: 600; font-size: 12.5px;
+  min-height: 32px; padding: 5px 16px;
+  border-radius: calc(var(--radius-sm) - 2px);
+  transition: background .15s ease, color .15s ease;
+}
+.seg button.is-active { background: var(--brand); color: var(--brand-ink); }
+.seg button:not(.is-active):hover { background: var(--surface-2); color: var(--text); }
+
+/* container de scroll INTERNO da semana — a página nunca transborda */
+.ag-week-scroll { overflow-x: auto; overscroll-behavior-x: contain; padding-bottom: 4px; }
+.ag-grid {
+  display: grid; grid-template-columns: 1fr;
+  min-width: 760px;                 /* dias nunca esmagados abaixo do legível */
+  border: 1px solid var(--border); border-radius: var(--radius-lg);
+  background: var(--surface); box-shadow: var(--shadow-sm); overflow: hidden;
+}
+.ag-hd { display: grid; grid-template-columns: 50px repeat(7, 1fr); border-bottom: 1px solid var(--border); }
+.ag-hd-corner { border-right: 1px solid var(--border); background: var(--surface-2); }
+.ag-hd-dia {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 1px; padding: 8px 4px; border-right: 1px solid var(--border);
+  background: var(--surface-2); color: var(--text-2);
+}
+.ag-hd-dia:last-child { border-right: none; }
+.ag-hd-wd { font-size: 11px; font-weight: 650; text-transform: uppercase; letter-spacing: .05em; }
+.ag-hd-dt { font-size: 13px; font-weight: 700; }
+.ag-hd-hoje {
+  font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--brand); background: var(--brand-weak);
+  border-radius: 999px; padding: 1px 7px; margin-top: 2px;
+}
+/* dia de hoje: destaque DISCRETO (nunca amarelo, nunca grita) */
+.ag-hd-dia.is-today { background: var(--brand-weak); color: var(--text); }
+.ag-hd-dia.is-today .ag-hd-wd { color: var(--brand); }
+.ag-bd { display: grid; grid-template-columns: 50px repeat(7, 1fr); }
+.ag-hcol { border-right: 1px solid var(--border); background: var(--surface-2); }
+.ag-hora {
+  height: var(--ag-faixa, 34px); box-sizing: border-box;
+  font-size: 10.5px; color: var(--text-3); text-align: right;
+  padding-right: 7px; border-bottom: 1px solid var(--border); line-height: 18px;
+  font-variant-numeric: tabular-nums;
+}
+.ag-col { position: relative; border-right: 1px solid var(--border); background: var(--surface); }
+.ag-col:last-child { border-right: none; }
+.ag-col.is-today { background: color-mix(in srgb, var(--brand-weak) 45%, var(--surface)); }
+.ag-faixa {
+  height: var(--ag-faixa, 34px); box-sizing: border-box;
+  border-bottom: 1px dashed var(--border);
+}
+.ag-col.is-today .ag-faixa { border-bottom-color: color-mix(in srgb, var(--brand) 16%, var(--border)); }
+.ag-faixa.hora-cheia { border-bottom-style: solid; border-bottom-color: var(--border); }
+
+/* cartão de marcação — absoluto dentro da coluna, altura ∝ duração */
+.ag-ev {
+  position: absolute; display: flex; flex-direction: column;
+  justify-content: flex-start; gap: 1px;
+  box-sizing: border-box; padding: 3px 5px 2px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  border-left: 3px solid var(--text-3);
+  background: var(--surface);
+  overflow: hidden; text-align: left;
+  font: inherit; font-size: 11px; line-height: 1.22;
+  color: var(--text);
+  transition: filter .12s ease, box-shadow .12s ease;
+}
+.ag-ev:hover { filter: brightness(.97); box-shadow: var(--shadow-sm); }
+.ag-ev .ag-ev-t {
+  font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ag-ev .ag-ev-s {
+  color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 10px;
+}
+.ag-ev .badge {
+  margin-top: auto; padding: 1px 6px; font-size: 9px;
+  align-self: flex-start; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis;
+}
+/* cor de borda = STATUS/CONTEXTO (tokens V2), nunca cor aleatória de serviço */
+.ag-ev.st-done, .ag-ev.st-completed { border-left-color: var(--success); }
+.ag-ev.st-in_progress { border-left-color: var(--warning); }
+.ag-ev.st-arrived { border-left-color: var(--info); }
+.ag-ev.st-pending { border-left-color: var(--warning); }
+.ag-ev.st-cancelled, .ag-ev.st-no_show { border-left-color: var(--danger); opacity: .72; }
+.ag-ev.st-cancelled .ag-ev-t, .ag-ev.st-no_show .ag-ev-t { text-decoration: line-through; color: var(--text-3); }
+
+/* linha "Agora" — só na coluna do dia atual */
+.ag-now {
+  position: absolute; left: 0; right: 0; height: 0;
+  border-top: 1.5px solid var(--brand); z-index: 6; pointer-events: none;
+}
+.ag-now span {
+  position: absolute; left: 4px; top: -9px;
+  padding: 1px 7px; border-radius: 999px;
+  font-size: 9.5px; font-weight: 700; letter-spacing: .2px; white-space: nowrap;
+  background: var(--brand); color: var(--brand-ink);
+  box-shadow: var(--shadow-sm);
+}
+
+/* telemóvel: manter os dias legíveis; apenas o container semanal scrolla */
+@media (max-width: 560px) {
+  .seg button { min-height: 40px; padding: 6px 18px; }
+  .ag-toolbar { gap: 8px; }
+  .ag-week-scroll { margin: 0 -14px; padding: 0 14px 6px; } /* respiro até à margem do .view */
+}
+
 /* ---------- table ---------- */
 .tbl-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); box-shadow: var(--shadow-sm); }
 table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 560px; }
