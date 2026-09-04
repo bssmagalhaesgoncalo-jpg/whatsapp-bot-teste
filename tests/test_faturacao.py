@@ -202,3 +202,157 @@ def test_api_definicoes_faturacao(cliente_http, base_dados):
 def test_api_fatura_sem_auth(cliente_http, base_dados):
     r = cliente_http.get("/api/faturas")
     assert r.status_code == 401
+
+
+def test_api_patch_rascunho_e_anular(cliente_http, base_dados):
+    a = _marca("41790000723", "limpeza_pele", "09:00")
+    inv = cliente_http.post(f"/api/agendamentos/{a}/fatura", headers=_AUTH).get_json()
+    r = cliente_http.patch(f"/api/faturas/{inv['id']}",
+                           json={"discount_cents": 500, "notes": "obrigada"}, headers=_AUTH)
+    assert r.status_code == 200
+    corpo = r.get_json()
+    assert corpo["discount_cents"] == 500 and corpo["total_cents"] == 7500
+    assert corpo["notes"] == "obrigada"
+    r = cliente_http.post(f"/api/faturas/{inv['id']}/anular", headers=_AUTH)
+    assert r.status_code == 200 and r.get_json()["status"] == "cancelled"
+
+
+def test_api_accao_invalida_devolve_400(cliente_http, base_dados):
+    a = _marca("41790000724", "limpeza_pele", "09:00")
+    inv = cliente_http.post(f"/api/agendamentos/{a}/fatura", headers=_AUTH).get_json()
+    r = cliente_http.post(f"/api/faturas/{inv['id']}/reabrir", headers=_AUTH)
+    assert r.status_code == 400
+
+
+def test_api_fatura_desconhecida_404(cliente_http, base_dados):
+    assert cliente_http.get("/api/faturas/999999", headers=_AUTH).status_code == 404
+
+
+# ---- core: caminhos de erro, edição de linhas, filtros -----------------------
+def test_gerar_fatura_marcacao_inexistente(base_dados):
+    with pytest.raises(bi.FaturaNaoEncontrada):
+        bi.gerar_fatura_de_marcacao(999999)
+
+
+def test_obter_fatura_desconhecida_devolve_none(base_dados):
+    assert bi.obter_fatura(123456) is None
+
+
+def test_atualizar_rascunho_substitui_linhas_com_quantidades(base_dados):
+    a = _marca("41790000730", "limpeza_pele", "09:00")
+    inv = bi.gerar_fatura_de_marcacao(a)
+    inv = bi.atualizar_rascunho(inv["id"], {"lines": [
+        {"description": "Limpeza", "quantity": 2, "unit_price_cents": 8000},
+        {"description": "Produto", "quantity": 3, "unit_price_cents": 1500},
+    ]})
+    assert [l["line_total_cents"] for l in inv["lines"]] == [16000, 4500]
+    assert inv["subtotal_cents"] == 20500 and inv["total_cents"] == 20500
+
+
+def test_atualizar_rascunho_recusa_linha_negativa(base_dados):
+    a = _marca("41790000731", "limpeza_pele", "09:00")
+    inv = bi.gerar_fatura_de_marcacao(a)
+    with pytest.raises(bi.ErroFaturacao):
+        bi.atualizar_rascunho(inv["id"], {"lines": [
+            {"description": "X", "quantity": 1, "unit_price_cents": -10}]})
+
+
+def test_atualizar_rascunho_desconto_nao_passa_o_subtotal(base_dados):
+    a = _marca("41790000732", "limpeza_pele", "09:00")
+    inv = bi.gerar_fatura_de_marcacao(a)
+    inv = bi.atualizar_rascunho(inv["id"], {"discount_cents": 999999})
+    assert inv["discount_cents"] == 8000 and inv["total_cents"] == 0
+
+
+def test_atualizar_rascunho_so_em_draft(base_dados):
+    a = _marca("41790000733", "limpeza_pele", "09:00")
+    inv = bi.emitir_fatura(bi.gerar_fatura_de_marcacao(a)["id"])
+    with pytest.raises(bi.TransicaoInvalida):
+        bi.atualizar_rascunho(inv["id"], {"discount_cents": 100})
+
+
+def test_atualizar_rascunho_fatura_inexistente(base_dados):
+    with pytest.raises(bi.FaturaNaoEncontrada):
+        bi.atualizar_rascunho(999999, {"notes": "x"})
+
+
+def test_emitir_fatura_inexistente(base_dados):
+    with pytest.raises(bi.FaturaNaoEncontrada):
+        bi.emitir_fatura(999999)
+
+
+def test_marcar_paga_exige_fatura_emitida(base_dados):
+    a = _marca("41790000734", "limpeza_pele", "09:00")
+    inv = bi.gerar_fatura_de_marcacao(a)
+    with pytest.raises(bi.TransicaoInvalida):
+        bi.marcar_paga(inv["id"])
+
+
+def test_marcar_paga_e_anular_sao_idempotentes(base_dados):
+    a = _marca("41790000735", "limpeza_pele", "09:00")
+    inv = bi.emitir_fatura(bi.gerar_fatura_de_marcacao(a)["id"])
+    p1 = bi.marcar_paga(inv["id"])
+    p2 = bi.marcar_paga(inv["id"])
+    assert p1["paid_at"] == p2["paid_at"] and p2["status"] == "paid"
+
+    b = _marca("41790000736", "limpeza_pele", "10:30")
+    inv_b = bi.gerar_fatura_de_marcacao(b)
+    c1 = bi.anular_fatura(inv_b["id"])
+    c2 = bi.anular_fatura(inv_b["id"])
+    assert c1["cancelled_at"] == c2["cancelled_at"] and c2["status"] == "cancelled"
+
+
+def test_anular_fatura_emitida(base_dados):
+    a = _marca("41790000737", "limpeza_pele", "09:00")
+    inv = bi.emitir_fatura(bi.gerar_fatura_de_marcacao(a)["id"])
+    assert bi.anular_fatura(inv["id"])["status"] == "cancelled"
+
+
+def test_due_date_usa_prazo_de_pagamento(base_dados):
+    from datetime import date, timedelta
+    bi.guardar_definicoes_faturacao({"payment_terms_days": 14})
+    a = _marca("41790000738", "limpeza_pele", "09:00")
+    inv = bi.emitir_fatura(bi.gerar_fatura_de_marcacao(a)["id"])
+    esperado = (date.fromisoformat(inv["issue_date"]) + timedelta(days=14)).isoformat()
+    assert inv["due_date"] == esperado
+
+
+def test_business_address_snapshot_congelado(base_dados):
+    a = _marca("41790000739", "limpeza_pele", "09:00")
+    inv = bi.gerar_fatura_de_marcacao(a)
+    assert inv["business_address_snapshot"] == "Rua de Teste 1, Visp"
+    bi.guardar_definicoes_faturacao({"address": "Nova Morada 9"})
+    assert bi.obter_fatura(inv["id"])["business_address_snapshot"] == "Rua de Teste 1, Visp"
+
+
+def test_listar_faturas_filtra_por_estado(base_dados):
+    ids = [_marca("41790000740", "limpeza_pele", h) for h in ("09:00", "10:30", "12:00")]
+    invs = [bi.gerar_fatura_de_marcacao(a) for a in ids]
+    bi.emitir_fatura(invs[0]["id"])
+    bi.emitir_fatura(invs[1]["id"])
+    assert len(bi.listar_faturas(status="draft")) == 1
+    assert len(bi.listar_faturas(status="issued")) == 2
+    assert len(bi.listar_faturas(status="all")) == 3
+    assert len(bi.listar_faturas()) == 3
+
+
+def test_faturas_do_cliente_ignora_anuladas(base_dados):
+    a = _marca("41790000741", "limpeza_pele", "09:00", "Rita Kern")
+    cid = bot.obter_agendamento(a)["customer_id"]
+    inv = bi.gerar_fatura_de_marcacao(a)
+    assert len(bi.faturas_do_cliente(cid)) == 1
+    bi.anular_fatura(inv["id"])
+    assert bi.faturas_do_cliente(cid) == []
+
+
+def test_guardar_definicoes_recusa_numero_invalido(base_dados):
+    with pytest.raises(bi.ErroFaturacao):
+        bi.guardar_definicoes_faturacao({"vat_rate_bps": "oito"})
+
+
+def test_guardar_definicoes_so_toca_campos_permitidos(base_dados):
+    cfg = bi.guardar_definicoes_faturacao({"iban": "CH93 0076", "tenant_id": 99,
+                                           "vat_rate_bps": -5})
+    assert cfg["iban"] == "CH93 0076"
+    assert cfg["vat_rate_bps"] == 0            # negativo -> 0
+    assert cfg["currency"] == "CHF"            # intacto
