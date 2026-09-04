@@ -346,21 +346,30 @@ button, a, [role="button"], .tl-row, .tab {
 .cockpit {
   position: relative;
   border-radius: var(--radius-xl);
-  padding: 24px 26px;
+  padding: var(--space-6) var(--space-7);
   background: var(--surface);
   border: 1px solid var(--border);
-  border-left: 4px solid var(--k-color);
+  border-left: 3px solid var(--k-color);
   box-shadow: var(--shadow-md);
   --k-color: var(--text-3);
-  transition: box-shadow .2s ease;
+  transition: box-shadow .2s ease, background .2s ease;
 }
 .cockpit:hover { box-shadow: var(--shadow-lg); }
-.cockpit.k-in_progress { --k-color: var(--success); }
+.cockpit.k-in_progress {
+  --k-color: var(--success);
+  background: color-mix(in srgb, var(--success) 5%, var(--surface));
+}
 .cockpit.k-next        { --k-color: var(--brand); }
 .cockpit.k-idle        { --k-color: var(--text-3); }
-.cockpit .k-badge { color: var(--k-color); }
+.cockpit .k-badge {
+  color: var(--k-color);
+  background: color-mix(in srgb, var(--k-color) 14%, var(--surface));
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  font-weight: 700;
+}
 .cockpit h2 {
-  font-size: 26px; font-weight: 700;
+  font-size: var(--fs-2xl); font-weight: 700;
   letter-spacing: -.03em;
   margin: 12px 0 3px;
   line-height: 1.15;
@@ -396,7 +405,11 @@ button, a, [role="button"], .tl-row, .tab {
 }
 .att:last-child { border-bottom: none; }
 .att:hover { background: var(--surface-2); }
-.att.sev-agora { border-left-color: var(--danger); }
+.att.sev-agora {
+  border-left-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 4%, var(--surface));
+}
+.att.sev-agora:hover { background: color-mix(in srgb, var(--danger) 8%, var(--surface)); }
 .att.sev-hoje  { border-left-color: var(--warning); }
 .att.sev-info  { border-left-color: var(--info); }
 .att .a-body { flex: 1; min-width: 0; }
