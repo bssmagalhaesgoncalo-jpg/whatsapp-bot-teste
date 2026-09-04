@@ -724,9 +724,16 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#scrim").addEventListener("click", () => { $("#sidebar").classList.remove("open"); });
   const THEME_KEY = "db_theme";
   const prefersDark = () => window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
-  const applyTheme = (t) => { document.documentElement.dataset.theme = t; };
+  const themeBtn = $("#theme-btn");
+  const themeBtnIcon = $("#theme-btn-icon");
+  const applyTheme = (t) => {
+    document.documentElement.dataset.theme = t;
+    themeBtnIcon.setAttribute("href", t === "dark" ? "#i-sun" : "#i-moon");
+    themeBtn.setAttribute("aria-label", t === "dark" ? "Ativar modo claro" : "Ativar modo escuro");
+  };
+  applyTheme(prefersDark() ? "dark" : "light");
   try { const saved = localStorage.getItem(THEME_KEY); if (saved) applyTheme(saved); } catch (e) {}
-  $("#theme-btn").addEventListener("click", () => {
+  themeBtn.addEventListener("click", () => {
     const cur = document.documentElement.dataset.theme || (prefersDark() ? "dark" : "light");
     const next = cur === "light" ? "dark" : "light";
     applyTheme(next);
