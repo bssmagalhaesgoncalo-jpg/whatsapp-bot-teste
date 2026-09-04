@@ -947,6 +947,7 @@ document.addEventListener("DOMContentLoaded", () => {
   };
   applyTheme(prefersDark() ? "dark" : "light");
   try { const saved = localStorage.getItem(THEME_KEY); if (saved) applyTheme(saved); } catch (e) {}
+  requestAnimationFrame(() => document.body.classList.add("theme-ready"));
   themeBtn.addEventListener("click", () => {
     const cur = document.documentElement.dataset.theme || (prefersDark() ? "dark" : "light");
     const next = cur === "light" ? "dark" : "light";
