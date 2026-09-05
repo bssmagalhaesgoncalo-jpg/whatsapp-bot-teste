@@ -87,9 +87,10 @@ const initials = (name) =>
 
 const OP_LABEL = { scheduled: "Agendada", arrived: "Chegou", in_progress: "Em curso", done: "Concluída" };
 const EST_LABEL = { confirmed: "Confirmada", pending: "Pendente", cancelled: "Cancelada", completed: "Concluída", no_show: "Não compareceu" };
-function statusBadge(estado, op) {
+function statusBadge(estado, op, bloqueiaHorario) {
   const e = (estado || "").toLowerCase();
-  if (e === "cancelled") return h("span", { class: "badge badge--danger" }, "Cancelada");
+  if (e === "cancelled")
+    return h("span", { class: "badge badge--danger" }, bloqueiaHorario ? "Cancelada · horário bloqueado" : "Cancelada");
   if (e === "no_show") return h("span", { class: "badge badge--danger" }, EST_LABEL.no_show);
   if (op === "done" || e === "completed") return h("span", { class: "badge badge--success" }, "Concluída");
   if (op === "in_progress") return h("span", { class: "badge badge--warning" }, "Em curso");
@@ -163,7 +164,7 @@ function renderAppointment(ag) {
       h("div", {},
         h("div", { style: "font-weight:600;font-size:15px" }, ag.nome || "Cliente"),
         h("div", { style: "color:var(--text-3);font-size:12.5px" }, ag.telefone || ""))),
-    statusBadge(ag.estado, op),
+    statusBadge(ag.estado, op, ag.bloqueia_horario),
     h("dl", { class: "dl", style: "margin:16px 0" },
       h("dt", {}, "Serviço"), h("dd", {}, ag.servico || "—"),
       h("dt", {}, "Data"), h("dd", {}, ag.data || "—"),
@@ -203,6 +204,20 @@ function renderAppointment(ag) {
     foot.append(h("button", { class: "btn btn--danger", onclick: () => cancelarPrompt(ag) }, "Cancelar"));
   } else if (op === "done" && !ag.fatura) {
     foot.append(h("button", { class: "btn btn--primary", onclick: () => act(() => gerarFatura(ag)) }, icon("receipt"), "Gerar fatura"));
+  } else if (est === "cancelled") {
+    // Uma cancelada nunca reabre (não há "Chegou"/"Iniciar"/"Concluir"
+    // aqui): "Remarcar" e "Marcar novamente" criam sempre uma marcação
+    // NOVA (POST /api/agendamentos) — a cancelada em si fica intacta.
+    foot.append(h("button", { class: "btn btn--primary",
+      onclick: () => openCreateAppointment({ nome: ag.nome, telefone: ag.telefone, servico_id: ag.servico_id }) },
+      icon("calendar"), "Remarcar"));
+    foot.append(h("button", { class: "btn",
+      onclick: () => openCreateAppointment({ nome: ag.nome, telefone: ag.telefone }) },
+      "Marcar novamente"));
+    if (ag.customer_id) {
+      foot.append(h("button", { class: "btn", onclick: () => openCliente(ag.customer_id, "whatsapp") }, icon("sparkles"), "WhatsApp"));
+      foot.append(h("button", { class: "btn", onclick: () => openCliente(ag.customer_id) }, "Abrir cliente"));
+    }
   }
 
   Drawer.open(h("div", { style: "display:flex;flex-direction:column;height:100%" }, head, body, foot));
@@ -625,9 +640,17 @@ const AG_FILTROS = [
   ["no_show", "Não compareceu"],
 ];
 function matchFiltroAg(e, filtro) {
-  if (filtro === "all") return true;
+  const estado = (e.estado_chave || "").toLowerCase();
+  if (filtro === "all") {
+    // Cancelada que já libertou o horário é ruído na Agenda operacional —
+    // só entra em "Todas" quando ainda BLOQUEIA o horário (continua a
+    // ocupar o slot, por isso continua a precisar de ser vista). A que
+    // libertou só aparece com o filtro "Canceladas" ligado, ou no
+    // histórico do cliente.
+    return estado !== "cancelled" || !!e.bloqueia_horario;
+  }
   if (filtro === "in_progress") return (e.op_status || "") === "in_progress";
-  return (e.estado_chave || "").toLowerCase() === filtro;
+  return estado === filtro;
 }
 function matchBuscaAg(e, q) {
   if (!q) return true;
@@ -765,6 +788,7 @@ function renderDiaGrid(evs, anchor) {
   const bandas = agBands();
   const hojeYmd = ymdOf(new Date());
   const eHoje = anchor === hojeYmd;
+  const ePassado = anchor < hojeYmd;
   const agoraMin = new Date().getHours() * 60 + new Date().getMinutes();
   const dentro = (min) => min >= agGrelha.hora_inicio * 60 && min <= agGrelha.hora_fim * 60;
 
@@ -773,7 +797,10 @@ function renderDiaGrid(evs, anchor) {
     const min = agGrelha.hora_inicio * 60 + i * (agGrelha.intervalo_min || 30);
     horas.append(h("div", { class: "ag-hora" }, (min % 60 === 0 ? String(Math.floor(min / 60)).padStart(2, "0") + ":00" : "")));
   }
-  const body = h("div", { class: "ag-col" + (eHoje ? " is-today" : ""), "data-dia": anchor });
+  // is-past: cabeçalho/coluna ligeiramente mais apagados — só distingue o
+  // DIA, nunca as marcações em si (o histórico continua legível). O futuro
+  // fica no estilo base (neutro), já claramente distinto do passado.
+  const body = h("div", { class: "ag-col" + (eHoje ? " is-today" : ePassado ? " is-past" : ""), "data-dia": anchor });
   for (let i = 0; i < bandas; i++) body.append(makeFaixa(i, anchor));
   agDispor(evs).forEach((p) => body.append(agEventCard(p, eHoje)));
   if (eHoje && dentro(agoraMin)) {
@@ -849,7 +876,7 @@ function agEventCard(p, todayCol) {
     "aria-label": `${sub} às ${ev.hora_hhmm || "—"}` },
     h("span", { class: "ag-ev-t" }, txt),
     h("span", { class: "ag-ev-s" }, sub),
-    statusBadge(ev.estado, op));
+    statusBadge(ev.estado, op, ev.bloqueia_horario));
   if (podeArrastar) {
     el.addEventListener("dragstart", (e) => {
       _dragEv = { id: ev.id, dia: ev.dia, hora: ev.hora_hhmm };
@@ -878,8 +905,12 @@ function renderSemana(eventos) {
   const cols = weekDays(seg).map((dia) => {
     const chave = ymdOf(dia);
     const eHoje = chave === hojeYmd;
+    const ePassado = chave < hojeYmd;
     const doDia = eventos.filter((e) => e.dia === chave);
-    const body = h("div", { class: "ag-col" + (eHoje ? " is-today" : ""), "data-dia": chave });
+    // is-past: cabeçalho/coluna ligeiramente mais apagados — só distingue o
+    // DIA, nunca as marcações em si (o histórico continua legível). O
+    // futuro fica no estilo base (neutro), já claramente distinto do passado.
+    const body = h("div", { class: "ag-col" + (eHoje ? " is-today" : ePassado ? " is-past" : ""), "data-dia": chave });
     for (let i = 0; i < bandas; i++) body.append(makeFaixa(i, chave));
     agDispor(doDia).forEach((p) => body.append(agEventCard(p, eHoje)));
     // Linha "Agora": só na coluna de hoje, e só quando hoje está na semana e dentro do horário.
@@ -888,13 +919,13 @@ function renderSemana(eventos) {
       body.append(h("div", { class: "ag-now", style: `top:${agTop(agoraMin).toFixed(1)}px`, "aria-hidden": "true" },
         h("span", {}, "Agora · " + agoraTxt)));
     }
-    return { chave, eHoje, body };
+    return { chave, eHoje, ePassado, body };
   });
 
   const headerRow = h("div", { class: "ag-hd" },
     h("div", { class: "ag-hd-corner" }),
-    cols.map(({ chave, eHoje }) =>
-      h("div", { class: "ag-hd-dia" + (eHoje ? " is-today" : ""), "data-dia": chave },
+    cols.map(({ chave, eHoje, ePassado }) =>
+      h("div", { class: "ag-hd-dia" + (eHoje ? " is-today" : ePassado ? " is-past" : ""), "data-dia": chave },
         h("span", { class: "ag-hd-wd" }, DAY_SHORT[chave.split("-")[0] && (new Date(chave + "T00:00:00").getDay() + 6) % 7]),
         h("span", { class: "ag-hd-dt tnum" }, chave.slice(8, 10) + "/" + chave.slice(5, 7)),
         eHoje ? h("span", { class: "ag-hd-hoje" }, "hoje") : null)));
@@ -1103,7 +1134,7 @@ function clientQuickActions(c, proxima, composerNode) {
   return foot;
 }
 
-async function openCliente(id) {
+async function openCliente(id, foco) {
   Drawer.open(h("div", { class: "drawer-body" }, h("div", { class: "skel", style: "height:140px" })));
   let d;
   try { d = await api(`/api/clientes/${id}`); }
@@ -1113,6 +1144,7 @@ async function openCliente(id) {
   const proxima = proximaMarcacaoDoCliente(historico);
   const refresh = () => openCliente(id);
   const composerNode = clientComposer(c, proxima);
+  if (foco === "whatsapp") composerNode.style.display = "";
 
   const head = h("div", { class: "drawer-head" },
     h("span", { class: "avatar", style: "width:38px;height:38px;font-size:14px" }, initials(c.name)),
@@ -1172,6 +1204,10 @@ async function openCliente(id) {
 
   Drawer.open(h("div", { style: "display:flex;flex-direction:column;height:100%" },
     head, body, clientQuickActions(c, proxima, composerNode)));
+  if (foco === "whatsapp") {
+    composerNode.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    $("textarea.inp", composerNode).focus();
+  }
 }
 
 /* ===================================================================

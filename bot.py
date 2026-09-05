@@ -2393,6 +2393,10 @@ def api_agendamento_detalhe(id_agendamento):
     corpo["total_centimos"] = total_centimos_agendamento(ag)
     corpo["preco_por_confirmar"] = preco_por_confirmar_agendamento(ag)
     corpo["historico"] = historico_agendamento(id_agendamento)
+    # Valor RESOLVIDO (nunca a coluna crua) — mesma semântica de
+    # evento_calendario(): diz se o registo ainda ocupa o horário, incluindo
+    # dados legados sem a coluna corretamente preenchida.
+    corpo["bloqueia_horario"] = agendamento_bloqueia_horario(ag)
     if ag.get("customer_id"):
         cust = bd.obter_customer(ag["customer_id"])
         if cust:
@@ -3223,6 +3227,15 @@ def _demo_seed_hoje(rng, servicos, ids_ag, ids_cust):
             dur = servico["duracao_min"]
             if papel == "scheduled":
                 candidatos = av_mod.slots(servico["id"], hoje_iso)
+                if not candidatos:
+                    # Perto do fecho, a antecedência mínima real
+                    # (booking_policy.min_notice_min) já não deixa nada
+                    # livre hoje — mas o objetivo do seed (4-6 marcações de
+                    # HOJE, sempre, seja a que horas correr) não depende
+                    # dessa política pensada para o cliente real: um horário
+                    # mais tarde hoje ainda serve para o cockpit de demo.
+                    todas = _demo_horas_dentro_do_horario(hoje_iso, dur)
+                    candidatos = [h for h in todas if _minutos(h) >= agora_min] or todas
             else:
                 todas = _demo_horas_dentro_do_horario(hoje_iso, dur)
                 if papel == "completed":

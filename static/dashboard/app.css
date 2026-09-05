@@ -534,6 +534,11 @@ button, a, [role="button"], .tl-row, .tab {
 /* dia de hoje: destaque DISCRETO (nunca amarelo, nunca grita) */
 .ag-hd-dia.is-today { background: var(--brand-weak); color: var(--text); }
 .ag-hd-dia.is-today .ag-hd-wd { color: var(--brand); }
+/* dia PASSADO: cabeçalho ligeiramente mais escuro/apagado que o normal —
+   só o dia, nunca as marcações lá dentro (o histórico continua legível).
+   O FUTURO fica no estilo base acima (neutro), já claramente distinto. */
+.ag-hd-dia.is-past { background: color-mix(in srgb, var(--surface-3) 55%, var(--surface-2)); color: var(--text-3); }
+.ag-hd-dia.is-past .ag-hd-wd { color: var(--text-3); }
 .ag-bd { display: grid; grid-template-columns: 50px repeat(7, 1fr); }
 .ag-hcol { border-right: 1px solid var(--border); background: var(--surface-2); }
 .ag-hora {
@@ -545,6 +550,9 @@ button, a, [role="button"], .tl-row, .tab {
 .ag-col { position: relative; border-right: 1px solid var(--border); background: var(--surface); }
 .ag-col:last-child { border-right: none; }
 .ag-col.is-today { background: color-mix(in srgb, var(--brand-weak) 45%, var(--surface)); }
+/* dia PASSADO: coluna ligeiramente mais escura/apagada que o normal — as
+   marcações (.ag-ev) não são tocadas, mantêm-se com o estilo normal. */
+.ag-col.is-past { background: color-mix(in srgb, var(--surface-2) 55%, var(--surface)); }
 .ag-faixa {
   height: var(--ag-faixa, 34px); box-sizing: border-box;
   border-bottom: 1px dashed var(--border);

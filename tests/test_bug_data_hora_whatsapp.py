@@ -9,16 +9,34 @@ receber_mensagem()."""
 import hashlib
 import hmac
 import json
+from datetime import timedelta
 
 import pytest
 
 import bot
+import tempo
 from conftest import data_pt
 
 CLIENTE = "41791234567"
-D1 = "2026-09-04"   # sem vagas
-D2 = "2026-09-05"   # com vagas
-D3 = "2026-09-06"   # também sem vagas (cenário: duas seguidas sem vagas)
+
+
+def _dia_util_futuro(dias_a_partir_de_hoje):
+    """Um dia bem lá à frente (nunca "hoje") e que não é domingo (fechado por
+    omissão) — D2 precisa de ter vagas REAIS, sem mock, em qualquer hora do
+    dia em que a suite corra. Um literal fixo ("2026-09-05") partia-se assim
+    que o relógio real alcançava essa data: nesse dia a antecedência mínima
+    (booking_policy.min_notice_min) passa a excluir os horários já
+    consumidos, e "hoje" deixa de ter vagas às tantas da tarde."""
+    d = tempo.hoje_zurique() + timedelta(days=dias_a_partir_de_hoje)
+    while d.weekday() == 6:   # domingo — sem horário de funcionamento
+        d += timedelta(days=1)
+    return d
+
+
+_D2_DATA = _dia_util_futuro(10)
+D1 = (_D2_DATA - timedelta(days=1)).isoformat()   # sem vagas (forçado por mock)
+D2 = _D2_DATA.isoformat()                          # com vagas (real, sem mock)
+D3 = (_D2_DATA + timedelta(days=1)).isoformat()    # também sem vagas (forçado por mock)
 
 
 @pytest.fixture()
