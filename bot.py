@@ -44,6 +44,7 @@ from parsing import data_iso_de_texto, hora_hhmm_de_texto, duracao_para_minutos
 from messaging import whatsapp as _wa
 from core import events as eventos
 from notifications import business as notif_negocio
+from notifications import followup as notif_followup
 from scheduling import business_hours as bh_mod
 from scheduling import availability as av_mod
 
@@ -263,6 +264,8 @@ TEXTOS = {
                    "en": "Step {n} of 3 — Which day?"},
     "data_seccao": {"pt": "Datas disponíveis", "de": "Verfügbare Termine", "en": "Available dates"},
     "data_botao": {"pt": "Escolher dia", "de": "Tag wählen", "en": "Choose day"},
+    "data_hoje": {"pt": "Hoje", "de": "Heute", "en": "Today"},
+    "data_amanha": {"pt": "Amanhã", "de": "Morgen", "en": "Tomorrow"},
 
     "hora_corpo": {"pt": "Passo {n} de 3 — A que horas?",
                    "de": "Schritt {n} von 3 — Um wie viel Uhr?",
@@ -364,6 +367,23 @@ TEXTOS = {
     "cancelado_cliente": {"pt": "✓ A sua marcação foi cancelada.",
                            "de": "✓ Ihre Buchung wurde storniert.",
                            "en": "✓ Your booking has been cancelled."},
+    # Ecrã de CONFIRMAÇÃO antes de cancelar — nunca se cancela ao primeiro
+    # toque (ver mostrar_confirmar_cancelamento).
+    "cancelar_confirmar_corpo": {
+        "pt": "Cancelar esta marcação?\n\n{servico}\n📅 {data} · {hora}",
+        "de": "Diese Buchung stornieren?\n\n{servico}\n📅 {data} · {hora}",
+        "en": "Cancel this booking?\n\n{servico}\n📅 {data} · {hora}"},
+    "botao_sim_cancelar": {"pt": "Sim, cancelar", "de": "Ja, stornieren", "en": "Yes, cancel"},
+    "cancelado_e_agora": {
+        "pt": "Se quiser, posso ajudar a marcar outro horário.",
+        "de": "Wenn Sie möchten, helfe ich gerne bei einem neuen Termin.",
+        "en": "If you'd like, I can help you book another time."},
+
+    # --- Follow-up / reativação (ver notifications/followup.py) ------------
+    "followup_agora_nao_resposta": {
+        "pt": "Sem problema. Estou por aqui quando quiser marcar.",
+        "de": "Kein Problem. Ich bin da, wenn Sie einen Termin buchen möchten.",
+        "en": "No problem. I'm here whenever you'd like to book."},
 
     # --- Falar com a equipa ------------------------------------------------
     "humano_cliente": {"pt": "Já avisei a Daniela — em breve responde-lhe por aqui.",
@@ -500,6 +520,20 @@ DIAS_SEMANA = {
     "en": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
 }
 
+# Nomes por extenso / abreviados de mês — só para o RÓTULO da lista de datas
+# (passo_data). O texto GRAVADO em sessao["data"] nunca usa isto: continua a
+# vir de _data_display, no formato canónico dd.mm.yyyy (abrev).
+NOMES_DIAS_LONGOS = {
+    "pt": ["Segunda-feira", "Terça-feira", "Quarta-feira", "Quinta-feira", "Sexta-feira", "Sábado", "Domingo"],
+    "de": ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"],
+    "en": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"],
+}
+NOMES_MESES_ABREV = {
+    "pt": ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"],
+    "de": ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"],
+    "en": ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"],
+}
+
 MENU_PRINCIPAL = [
     {"id": "mp_marcar",
      "titulo": {"pt": "Marcar tratamento", "de": "Termin buchen", "en": "Book a treatment"},
@@ -624,7 +658,9 @@ CAMPOS_AGENDAMENTO = ["id", "telefone", "nome", "categoria", "servico", "extra",
                       "servico_id", "data_iso", "hora_hhmm", "duracao_min", "preco_cents",
                       # tenant + CRM (migrações 8-9) + estado operacional (migração 11)
                       "tenant_id", "customer_id",
-                      "op_status", "arrived_at", "started_at", "completed_at"]
+                      "op_status", "arrived_at", "started_at", "completed_at",
+                      # follow-up / reativação (migração 17, ver notifications/followup.py)
+                      "follow_up_status", "follow_up_sent_at"]
 SQL_COLUNAS_AGENDAMENTO = ", ".join(CAMPOS_AGENDAMENTO)
 
 
@@ -1443,11 +1479,37 @@ def _data_display(data_iso, idioma):
     return f"{d.strftime('%d.%m.%Y')} ({abrev})"
 
 
+ID_PREFIXO_DATA = "data_"
+
+
+def _data_label_curta(data_iso, idioma, hoje):
+    """'2026-09-07' -> "Hoje" / "Amanhã" / "Segunda-feira, 7 set" — rótulo
+    curto e legível para a LINHA da lista (nunca gravado; ver _data_display
+    para o texto canónico que fica em sessao["data"])."""
+    d = date.fromisoformat(data_iso)
+    delta = (d - hoje).days
+    if delta == 0:
+        return t("data_hoje", idioma)
+    if delta == 1:
+        return t("data_amanha", idioma)
+    dia_semana = NOMES_DIAS_LONGOS.get(idioma, NOMES_DIAS_LONGOS["pt"])[d.weekday()]
+    mes = NOMES_MESES_ABREV.get(idioma, NOMES_MESES_ABREV["pt"])[d.month - 1]
+    if idioma == "de":
+        return f"{dia_semana}, {d.day}. {mes}"
+    return f"{dia_semana}, {d.day} {mes}"
+
+
 def dias_para_marcacao(sessao, idioma, n=7):
-    """Próximos dias ABERTOS (business_hours + exceções + política), já em
-    texto de apresentação. Substitui proximos_dias()."""
-    return [_data_display(d, idioma)
-            for d in bh_mod.proximos_dias_abertos(n, tenant_id=(sessao or {}).get("tenant_id", 1))]
+    """Próximos dias ABERTOS (business_hours + exceções + política), com
+    rótulos relativos (Hoje/Amanhã) para uma leitura mais rápida. Cada opção
+    tem um id "data_<iso>" (ver ID_PREFIXO_DATA) — é esse id, e não o título,
+    que o passo seguinte usa para saber a data exata escolhida; o texto
+    GRAVADO em sessao["data"] continua a ser sempre o formato canónico de
+    _data_display, nunca o rótulo relativo."""
+    hoje = tempo.hoje_zurique()
+    dias_iso = bh_mod.proximos_dias_abertos(n, tenant_id=(sessao or {}).get("tenant_id", 1))
+    return [{"id": f"{ID_PREFIXO_DATA}{d}", "titulo": _data_label_curta(d, idioma, hoje)}
+            for d in dias_iso]
 
 
 def passo_data(de, idioma, passo_n=2, sessao=None):
@@ -2209,10 +2271,26 @@ def mostrar_gestao_marcacao(de, idioma, id_agendamento=None):
               duracao=duracao_disp, preco=preco_formatado(ag.get("preco"), idioma))
     enviar_botoes(de, corpo, [
         {"id": f"reagendar_{ag['id']}", "titulo": t("botao_reagendar", idioma)},
-        {"id": f"cancelar_ag_{ag['id']}", "titulo": t("botao_cancelar_marcacao", idioma)},
+        {"id": f"cancelar_confirmar_{ag['id']}", "titulo": t("botao_cancelar_marcacao", idioma)},
         {"id": "mp_marcar", "titulo": t("botao_nova_marcacao", idioma)},
     ], idioma, rodape=t("rodape_padrao", idioma), com_voltar=True,
         titulo_seccao=t("gerir_seccao", idioma))
+
+
+def mostrar_confirmar_cancelamento(de, idioma, id_agendamento):
+    """Ecrã de confirmação — nunca se cancela ao primeiro toque. "Voltar"
+    reaproveita mostrar_gestao_marcacao (mesmo ecrã de onde se veio)."""
+    ag = obter_agendamento(id_agendamento)
+    if (not ag or ag["telefone"] != de
+            or chave_estado(ag["estado"]) not in estados.GERIVEIS_PELO_CLIENTE):
+        enviar_texto(de, t("carrinho_marcacao_nao_encontrada", idioma))
+        return
+    servico_disp = nome_servico_traduzido(ag["servico"], idioma)
+    corpo = t("cancelar_confirmar_corpo", idioma, servico=servico_disp, data=ag["data"], hora=ag["hora"])
+    enviar_botoes(de, corpo, [
+        {"id": f"cancelar_sim_{ag['id']}", "titulo": t("botao_sim_cancelar", idioma)},
+        {"id": f"gerir_ag_{ag['id']}", "titulo": t("botao_voltar", idioma)},
+    ], idioma)
 
 
 def mostrar_mais_acoes(de, idioma, sessao):
@@ -6163,6 +6241,23 @@ def receber_mensagem():
                 mostrar_detalhe_servico(de, idioma, id_botao[len("svcdet_"):], sessao)
                 return jsonify(status="ok"), 200
 
+            # --- Entrada de uma futura mensagem de FOLLOW-UP -----------------
+            # (ver notifications/followup.py — hoje nada envia isto sozinho,
+            # mas o webhook já sabe responder aos dois botões que essa
+            # mensagem teria). "Marcar novamente" reaproveita o MESMO fluxo
+            # de marcação normal — nunca um segundo fluxo.
+            if id_botao.startswith("followup_marcar_"):
+                escolher_servico(de, idioma, sessao, id_botao[len("followup_marcar_"):])
+                return jsonify(status="ok"), 200
+
+            if id_botao.startswith("followup_depois_"):
+                try:
+                    notif_followup.marcar_follow_up_recusado(int(id_botao[len("followup_depois_"):]))
+                except (ValueError, LookupError):
+                    pass
+                enviar_texto(de, t("followup_agora_nao_resposta", idioma))
+                return jsonify(status="ok"), 200
+
             if id_botao == "confirmar":
                 # Sessão obsoleta (marcação já feita / processo cancelado): sem
                 # dados essenciais não há nada para gravar — volta ao menu.
@@ -6293,11 +6388,36 @@ def receber_mensagem():
                 passo_data(de, idioma, sessao=sessao)
                 return jsonify(status="ok"), 200
 
-            if id_botao.startswith("cancelar_ag_"):
+            # Ecrã de confirmação — nunca se cancela ao primeiro toque
+            # (ver mostrar_gestao_marcacao / mostrar_confirmar_cancelamento).
+            if id_botao.startswith("cancelar_confirmar_"):
+                id_ag = int(id_botao.split("_")[-1])
+                mostrar_confirmar_cancelamento(de, idioma, id_ag)
+                return jsonify(status="ok"), 200
+
+            # "Sim, cancelar" no ecrã de confirmação — só aqui se cancela mesmo.
+            if id_botao.startswith("cancelar_sim_"):
                 id_ag = int(id_botao.split("_")[-1])
                 # A decisão "libertar ou manter o horário" é do NEGÓCIO: aqui
                 # aplica-se em silêncio a configuração guardada no painel.
                 # A notificação ao negócio é o evento booking.cancelled.
+                try:
+                    marcar_agendamento_cancelado(id_ag, exigir_confirmado=False)
+                except LookupError:
+                    pass
+                enviar_texto(de, t("cancelado_cliente", idioma))
+                enviar_botoes(de, t("cancelado_e_agora", idioma), [
+                    {"id": ACAO_NOVA_MARCACAO, "titulo": t("botao_nova_marcacao", idioma)},
+                    {"id": ACAO_MENU, "titulo": t("botao_menu_principal", idioma)},
+                ], idioma)
+                return jsonify(status="ok"), 200
+
+            # LEGADO: cancelamento imediato, sem confirmação — nunca removido
+            # (uma mensagem antiga na conversa do cliente pode ainda ter este
+            # botão); só deixou de se criar botões novos com este id (ver
+            # mostrar_gestao_marcacao, que agora manda "cancelar_confirmar_").
+            if id_botao.startswith("cancelar_ag_"):
+                id_ag = int(id_botao.split("_")[-1])
                 try:
                     marcar_agendamento_cancelado(id_ag, exigir_confirmado=False)
                 except LookupError:
@@ -6389,14 +6509,33 @@ def receber_mensagem():
             if sessao.get("fluxo") in ("beauty", "reagendar") and sessao.get("servico_id"):
                 titulo_escolhido = msg["interactive"]["list_reply"]["title"]
                 if "data" not in sessao:
-                    # Validação defensiva: esta lista só devolve datas: um
-                    # payload que não pareça data nunca pode ficar guardado
-                    # como se fosse — evita um estado inconsistente propagar-se
-                    # até à confirmação (ver passo_hora / passo_data).
-                    if not data_iso_de_texto(titulo_escolhido):
+                    # A lista de datas (dias_para_marcacao) manda o id
+                    # "data_<iso>" — com rótulos como "Hoje"/"Amanhã" o
+                    # TÍTULO já não tem necessariamente uma data por extenso.
+                    # O id é a fonte de verdade; o texto gravado em
+                    # sessao["data"] continua sempre o formato canónico
+                    # (_data_display), nunca o rótulo relativo mostrado.
+                    # Mantém-se o parsing do título como reserva, para
+                    # qualquer id antigo/externo que ainda mande a data no
+                    # próprio título (compatibilidade).
+                    if id_escolhido.startswith(ID_PREFIXO_DATA):
+                        data_iso = id_escolhido[len(ID_PREFIXO_DATA):]
+                        try:
+                            date.fromisoformat(data_iso)
+                        except ValueError:
+                            nao_entendi_com_opcoes(de, idioma, sessao)
+                            return jsonify(status="ok"), 200
+                        sessao["data"] = _data_display(data_iso, idioma)
+                    elif data_iso_de_texto(titulo_escolhido):
+                        sessao["data"] = titulo_escolhido
+                    else:
+                        # Validação defensiva: esta lista só devolve datas: um
+                        # payload que não pareça data nunca pode ficar
+                        # guardado como se fosse — evita um estado
+                        # inconsistente propagar-se até à confirmação (ver
+                        # passo_hora / passo_data).
                         nao_entendi_com_opcoes(de, idioma, sessao)
                         return jsonify(status="ok"), 200
-                    sessao["data"] = titulo_escolhido
                     guardar_sessao(de, sessao)
                     passo_hora(de, idioma, sessao=sessao)
                     return jsonify(status="ok"), 200

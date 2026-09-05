@@ -640,6 +640,34 @@ def _m16_faturacao(conn):
             "VALUES (1, ?, ?, ?)", (nome, morada, _agora()))
 
 
+def _m17_follow_up(conn):
+    """Andaime (schema-only) para o FOLLOW-UP/reativação automático por
+    WhatsApp — ex.: "há 21 dias fez X, quer marcar outra vez?".
+
+    Este é apenas o passo 1 (dados): NÃO existe aqui nenhum envio automático
+    nem worker periódico — ver notifications/followup.py, que documenta o
+    que falta (um cron/scheduler) para a próxima fase.
+
+    - servicos.rebook_days (já existe, migração 12) É o "de quantos em
+      quantos dias sugerir outra vez"; não se duplica a coluna, só se
+      acrescenta o que faltava:
+    - servicos.follow_up_enabled: por omissão desligado — cada serviço opta
+      por ativar, nada é enviado por defeito.
+    - servicos.follow_up_template_{pt,de,en}: texto específico por serviço;
+      quando vazio, notifications.followup usa um texto genérico.
+    - agendamentos.follow_up_status / follow_up_sent_at: idempotência — no
+      máximo UM follow-up automático por marcação concluída.
+    - customers.follow_up_opt_out: distinto de `blocked` (que é para abuso);
+      este é o cliente ter dito "não, obrigada" a receber estas mensagens."""
+    _add_coluna_se_falta(conn, "servicos", "follow_up_enabled", "INTEGER NOT NULL DEFAULT 0")
+    _add_coluna_se_falta(conn, "servicos", "follow_up_template_pt", "TEXT")
+    _add_coluna_se_falta(conn, "servicos", "follow_up_template_de", "TEXT")
+    _add_coluna_se_falta(conn, "servicos", "follow_up_template_en", "TEXT")
+    _add_coluna_se_falta(conn, "agendamentos", "follow_up_status", "TEXT")
+    _add_coluna_se_falta(conn, "agendamentos", "follow_up_sent_at", "TEXT")
+    _add_coluna_se_falta(conn, "customers", "follow_up_opt_out", "INTEGER NOT NULL DEFAULT 0")
+
+
 MIGRACOES = [
     (1, "baseline", _m1_baseline),
     (2, "colunas_legadas", _m2_colunas_legadas),
@@ -657,6 +685,7 @@ MIGRACOES = [
     (14, "recalcular_customers", _m14_recalcular_customers),
     (15, "identidade_por_tenant", _m15_identidade_por_tenant),
     (16, "faturacao", _m16_faturacao),
+    (17, "follow_up", _m17_follow_up),
 ]
 
 
@@ -712,18 +741,21 @@ def resetar_estado_migracao_para_testes():
 # ---------------------------------------------------------------------------
 _CAMPOS_SERVICO = ("id", "nome_pt", "nome_de", "nome_en", "duracao_min",
                    "preco_cents", "ativo", "cor", "ordem",
-                   "buffer_before_min", "buffer_after_min", "rebook_days")
+                   "buffer_before_min", "buffer_after_min", "rebook_days",
+                   "follow_up_enabled", "follow_up_template_pt",
+                   "follow_up_template_de", "follow_up_template_en")
 
 
 def _linha_servico(row) -> dict:
     d = dict(zip(_CAMPOS_SERVICO, row))
     d["ativo"] = bool(d["ativo"])
+    d["follow_up_enabled"] = bool(d["follow_up_enabled"])
     return d
 
 
 def listar_servicos(incluir_inativos: bool = False, conn=None) -> list[dict]:
     def _ler(c):
-        sql = ("SELECT id, nome_pt, nome_de, nome_en, duracao_min, preco_cents, ativo, cor, ordem, buffer_before_min, buffer_after_min, rebook_days "
+        sql = ("SELECT id, nome_pt, nome_de, nome_en, duracao_min, preco_cents, ativo, cor, ordem, buffer_before_min, buffer_after_min, rebook_days, follow_up_enabled, follow_up_template_pt, follow_up_template_de, follow_up_template_en "
                "FROM servicos")
         if not incluir_inativos:
             sql += " WHERE ativo = 1"
@@ -742,7 +774,7 @@ def obter_servico(servico_id: str, conn=None) -> dict | None:
 
     def _ler(c):
         r = c.execute(
-            "SELECT id, nome_pt, nome_de, nome_en, duracao_min, preco_cents, ativo, cor, ordem, buffer_before_min, buffer_after_min, rebook_days "
+            "SELECT id, nome_pt, nome_de, nome_en, duracao_min, preco_cents, ativo, cor, ordem, buffer_before_min, buffer_after_min, rebook_days, follow_up_enabled, follow_up_template_pt, follow_up_template_de, follow_up_template_en "
             "FROM servicos WHERE id = ?", (servico_id,)).fetchone()
         return _linha_servico(r) if r else None
 
@@ -760,7 +792,7 @@ def servico_por_nome_pt(nome_pt: str, conn=None) -> dict | None:
 
     def _ler(c):
         r = c.execute(
-            "SELECT id, nome_pt, nome_de, nome_en, duracao_min, preco_cents, ativo, cor, ordem, buffer_before_min, buffer_after_min, rebook_days "
+            "SELECT id, nome_pt, nome_de, nome_en, duracao_min, preco_cents, ativo, cor, ordem, buffer_before_min, buffer_after_min, rebook_days, follow_up_enabled, follow_up_template_pt, follow_up_template_de, follow_up_template_en "
             "FROM servicos WHERE nome_pt = ?", (nome_pt.strip(),)).fetchone()
         return _linha_servico(r) if r else None
 
