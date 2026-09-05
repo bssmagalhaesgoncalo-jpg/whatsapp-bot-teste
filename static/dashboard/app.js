@@ -214,10 +214,13 @@ function renderAppointment(ag) {
     foot.append(h("button", { class: "btn",
       onclick: () => openCreateAppointment({ nome: ag.nome, telefone: ag.telefone }) },
       "Marcar novamente"));
-    if (ag.customer_id) {
-      foot.append(h("button", { class: "btn", onclick: () => openCliente(ag.customer_id, "whatsapp") }, icon("sparkles"), "WhatsApp"));
-      foot.append(h("button", { class: "btn", onclick: () => openCliente(ag.customer_id) }, "Abrir cliente"));
-    }
+  }
+
+  // WhatsApp / Abrir cliente: sempre disponíveis (qualquer estado), para não
+  // obrigar a Daniela a ir à página Clientes só para escrever a um cliente.
+  if (ag.customer_id) {
+    foot.append(h("button", { class: "btn", onclick: () => openCliente(ag.customer_id, "whatsapp") }, icon("sparkles"), "WhatsApp"));
+    foot.append(h("button", { class: "btn", onclick: () => openCliente(ag.customer_id) }, "Abrir cliente"));
   }
 
   Drawer.open(h("div", { style: "display:flex;flex-direction:column;height:100%" }, head, body, foot));
@@ -1038,9 +1041,13 @@ function clientComposer(c, proxima) {
   const textarea = h("textarea", { class: "inp", rows: 3, style: "resize:vertical",
     placeholder: "Escrever mensagem…" });
   const semProxima = !proxima;
+  // Só faz sentido pedir confirmação enquanto a marcação está "pending" —
+  // uma vez confirmed (ou cancelled/completed/no_show, que nem chegam a
+  // "proxima") não se deve voltar a pedir confirmação.
+  const semPendente = semProxima || (proxima.estado || "").toLowerCase() !== "pending";
   const preencher = (txt) => { textarea.value = txt; textarea.focus(); };
   const rapidas = h("div", { style: "display:flex;gap:8px;flex-wrap:wrap;margin:10px 0" },
-    h("button", { class: "btn btn--sm", disabled: semProxima,
+    h("button", { class: "btn btn--sm", disabled: semPendente,
       onclick: () => preencher(`Confirmo a sua marcação: ${proxima.servico}, ${fmtDataPt(proxima.data_iso)} às ${proxima.hora_hhmm || proxima.hora}. ✨`) },
       "Confirmar horário"),
     h("button", { class: "btn btn--sm", disabled: semProxima,
