@@ -205,52 +205,51 @@ BOTOES_IDIOMA = [
 
 TEXTOS = {
     # --- Menu principal / saudação ---------------------------------------
-    "saudacao_novo": {"pt": "👋 Olá! Bem-vindo à *{oficina}*.",
-                       "de": "👋 Hallo! Willkommen bei *{oficina}*.",
-                       "en": "👋 Hello! Welcome to *{oficina}*."},
-    "saudacao_volta": {"pt": "👋 Olá, {nome}! Bem-vindo de volta à *{oficina}*.",
-                        "de": "👋 Hallo, {nome}! Willkommen zurück bei *{oficina}*.",
-                        "en": "👋 Hello, {nome}! Welcome back to *{oficina}*."},
-    "menu_corpo": {"pt": "Posso ajudá-lo em menos de 1 minuto. O que deseja fazer?",
-                   "de": "Ich kann Ihnen in weniger als 1 Minute helfen. Was möchten Sie tun?",
-                   "en": "I can help you in under 1 minute. What would you like to do?"},
+    "saudacao_novo": {"pt": "Olá! Bem-vindo à *{oficina}* ✨",
+                       "de": "Hallo! Willkommen bei *{oficina}* ✨",
+                       "en": "Hello! Welcome to *{oficina}* ✨"},
+    "saudacao_volta": {"pt": "Olá, {nome}.",
+                        "de": "Hallo, {nome}.",
+                        "en": "Hello, {nome}."},
+    "menu_corpo": {"pt": "Como posso ajudar?",
+                   "de": "Wie kann ich helfen?",
+                   "en": "How can I help?"},
     "menu_titulo_lista": {"pt": "Menu principal", "de": "Hauptmenü", "en": "Main menu"},
-    "menu_botao": {"pt": "👉 Escolher opção", "de": "👉 Option wählen", "en": "👉 Choose option"},
+    "menu_botao": {"pt": "Ver opções", "de": "Optionen ansehen", "en": "View options"},
 
 
     # --- Marcação Daniela Beauty: escolha do serviço (passo 1 de 3) --------
-    "servico_corpo": {"pt": "Passo 1 de 3 — Que serviço deseja marcar?",
-                       "de": "Schritt 1 von 3 — Welche Behandlung möchten Sie buchen?",
-                       "en": "Step 1 of 3 — Which treatment would you like to book?"},
-    "servico_seccao": {"pt": "Serviços", "de": "Behandlungen", "en": "Treatments"},
-    "servico_botao": {"pt": "✨ Escolher serviço", "de": "✨ Behandlung wählen",
-                       "en": "✨ Choose treatment"},
+    "servico_corpo": {"pt": "Que tratamento gostaria de marcar?",
+                       "de": "Welche Behandlung möchten Sie buchen?",
+                       "en": "Which treatment would you like to book?"},
+    "servico_seccao": {"pt": "Tratamentos", "de": "Behandlungen", "en": "Treatments"},
+    "servico_botao": {"pt": "Escolher", "de": "Wählen", "en": "Choose"},
     "servico_sem_ativos": {
-        "pt": "De momento não há serviços disponíveis para marcação online. "
-              "Toque em \"Falar com a equipa\".",
+        "pt": "De momento não há tratamentos disponíveis para marcação online. "
+              "Toque em \"Falar com Daniela\".",
         "de": "Zurzeit sind keine Behandlungen online buchbar. "
-              "Tippen Sie auf \"Mit dem Team sprechen\".",
+              "Tippen Sie auf \"Mit Daniela sprechen\".",
         "en": "There are currently no treatments available to book online. "
-              "Tap \"Talk to the team\"."},
+              "Tap \"Talk to Daniela\"."},
     # Preço por definir: NUNCA "CHF 0". Mostrado no serviço, no resumo e no total.
     "preco_a_confirmar": {"pt": "Preço a confirmar", "de": "Preis auf Anfrage",
                            "en": "Price on request"},
     "resumo_total_a_confirmar": {
-        "pt": "💰 Total: a confirmar pela equipa",
-        "de": "💰 Gesamtbetrag: wird vom Team bestätigt",
-        "en": "💰 Total: to be confirmed by the team"},
+        "pt": "Total: a confirmar por Daniela",
+        "de": "Gesamtbetrag: wird von Daniela bestätigt",
+        "en": "Total: to be confirmed by Daniela"},
     "confirmado_preco_a_confirmar": {
-        "pt": "ℹ️ O preço deste serviço é confirmado pela equipa antes da marcação.",
-        "de": "ℹ️ Der Preis dieser Behandlung wird vom Team vor dem Termin bestätigt.",
-        "en": "ℹ️ The price for this treatment is confirmed by the team before your appointment."},
+        "pt": "O preço deste tratamento é confirmado por Daniela antes da marcação.",
+        "de": "Der Preis dieser Behandlung wird von Daniela vor dem Termin bestätigt.",
+        "en": "The price for this treatment is confirmed by Daniela before your appointment."},
 
     # --- Rodapé / linhas auxiliares de lista -------------------------------
     "rodape_padrao": {"pt": "Escreva VOLTAR, CANCELAR ou MENU",
                        "de": "Schreiben Sie VOLTAR, CANCELAR oder MENU",
                        "en": "Type VOLTAR, CANCELAR or MENU"},
-    "voltar_titulo": {"pt": "⬅️ Voltar", "de": "⬅️ Zurück", "en": "⬅️ Back"},
+    "voltar_titulo": {"pt": "Voltar", "de": "Zurück", "en": "Back"},
     "voltar_desc": {"pt": "Passo anterior", "de": "Vorheriger Schritt", "en": "Previous step"},
-    "cancelar_titulo": {"pt": "❌ Cancelar processo", "de": "❌ Vorgang abbrechen", "en": "❌ Cancel process"},
+    "cancelar_titulo": {"pt": "Cancelar processo", "de": "Vorgang abbrechen", "en": "Cancel process"},
     "cancelar_desc": {"pt": "Terminar sem marcar", "de": "Ohne Buchung beenden", "en": "End without booking"},
 
 
@@ -259,54 +258,54 @@ TEXTOS = {
 
 
     # --- Data / hora --------------------------------------------------------
-    "data_corpo": {"pt": "Passo {n} de 3 — Para que dia gostaria de marcar?",
-                   "de": "Schritt {n} von 3 — Für welchen Tag möchten Sie buchen?",
-                   "en": "Step {n} of 3 — Which day would you like to book?"},
+    "data_corpo": {"pt": "Passo {n} de 3 — Para que dia?",
+                   "de": "Schritt {n} von 3 — An welchem Tag?",
+                   "en": "Step {n} of 3 — Which day?"},
     "data_seccao": {"pt": "Datas disponíveis", "de": "Verfügbare Termine", "en": "Available dates"},
-    "data_botao": {"pt": "📅 Escolher dia", "de": "📅 Tag wählen", "en": "📅 Choose day"},
+    "data_botao": {"pt": "Escolher dia", "de": "Tag wählen", "en": "Choose day"},
 
-    "hora_corpo": {"pt": "Passo {n} de 3 — A que horas lhe convém?",
-                   "de": "Schritt {n} von 3 — Um wie viel Uhr passt es Ihnen?",
-                   "en": "Step {n} of 3 — What time suits you?"},
+    "hora_corpo": {"pt": "Passo {n} de 3 — A que horas?",
+                   "de": "Schritt {n} von 3 — Um wie viel Uhr?",
+                   "en": "Step {n} of 3 — What time?"},
     "hora_seccao": {"pt": "Horários disponíveis", "de": "Verfügbare Uhrzeiten", "en": "Available times"},
-    "hora_botao": {"pt": "⏰ Escolher hora", "de": "⏰ Uhrzeit wählen", "en": "⏰ Choose time"},
+    "hora_botao": {"pt": "Escolher hora", "de": "Uhrzeit wählen", "en": "Choose time"},
     # A lista de horas mostra só o que está MESMO livre. Quando nada sobra
     # nesse dia, o cliente volta a escolher a data — nunca fica sem saída.
     "hora_sem_vagas": {
-        "pt": "😕 Nesse dia já não temos horários livres. Escolha outro dia, por favor.",
-        "de": "😕 An diesem Tag haben wir keine freien Uhrzeiten mehr. Bitte wählen Sie einen anderen Tag.",
-        "en": "😕 There are no free time slots left on that day. Please choose another day."},
+        "pt": "Esse dia já não tem horários livres. Escolha outro dia, por favor.",
+        "de": "An diesem Tag gibt es keine freien Uhrzeiten mehr. Bitte wählen Sie einen anderen Tag.",
+        "en": "There are no free time slots left on that day. Please choose another day."},
     "hora_entretanto_ocupada": {
-        "pt": "😕 Esse horário foi ocupado entretanto. Escolha outro, por favor.",
-        "de": "😕 Diese Uhrzeit wurde inzwischen belegt. Bitte wählen Sie eine andere.",
-        "en": "😕 That time slot has just been taken. Please choose another one."},
+        "pt": "Esse horário foi ocupado entretanto. Escolha outro, por favor.",
+        "de": "Diese Uhrzeit wurde inzwischen belegt. Bitte wählen Sie eine andere.",
+        "en": "That time slot has just been taken. Please choose another one."},
 
     # --- Resumo / confirmação -----------------------------------------------
-    "resumo_titulo": {"pt": "📋 *Confirme a sua marcação*", "de": "📋 *Bestätigen Sie Ihre Buchung*",
-                       "en": "📋 *Confirm your booking*"},
-    "resumo_data": {"pt": "📅 Data: {data}", "de": "📅 Datum: {data}", "en": "📅 Date: {data}"},
-    "resumo_hora": {"pt": "🕒 Hora: {hora}", "de": "🕒 Uhrzeit: {hora}", "en": "🕒 Time: {hora}"},
-    "resumo_duracao": {"pt": "⏱️ Duração estimada: {duracao}", "de": "⏱️ Geschätzte Dauer: {duracao}",
-                        "en": "⏱️ Estimated duration: {duracao}"},
-    "resumo_discriminacao": {"pt": "📊 Discriminação:", "de": "📊 Aufschlüsselung:", "en": "📊 Breakdown:"},
-    "resumo_total": {"pt": "💰 Total: {total}", "de": "💰 Gesamtbetrag: {total}", "en": "💰 Total: {total}"},
+    "resumo_titulo": {"pt": "*Confirme a sua marcação*", "de": "*Bestätigen Sie Ihre Buchung*",
+                       "en": "*Confirm your booking*"},
+    "resumo_data": {"pt": "📅 {data}", "de": "📅 {data}", "en": "📅 {data}"},
+    "resumo_hora": {"pt": "🕐 {hora}", "de": "🕐 {hora}", "en": "🕐 {hora}"},
+    "resumo_duracao": {"pt": "Duração estimada: {duracao}", "de": "Geschätzte Dauer: {duracao}",
+                        "en": "Estimated duration: {duracao}"},
+    "resumo_discriminacao": {"pt": "Discriminação:", "de": "Aufschlüsselung:", "en": "Breakdown:"},
+    "resumo_total": {"pt": "Total: {total}", "de": "Gesamtbetrag: {total}", "en": "Total: {total}"},
     "resumo_pergunta": {"pt": "Está tudo correto?", "de": "Ist alles korrekt?", "en": "Is everything correct?"},
-    "botao_confirmar": {"pt": "✅ Confirmar", "de": "✅ Bestätigen", "en": "✅ Confirm"},
-    "botao_alterar": {"pt": "✏️ Alterar", "de": "✏️ Ändern", "en": "✏️ Change"},
-    "botao_cancelar": {"pt": "❌ Cancelar", "de": "❌ Abbrechen", "en": "❌ Cancel"},
+    "botao_confirmar": {"pt": "Confirmar", "de": "Bestätigen", "en": "Confirm"},
+    "botao_alterar": {"pt": "Alterar", "de": "Ändern", "en": "Change"},
+    "botao_cancelar": {"pt": "Cancelar", "de": "Abbrechen", "en": "Cancel"},
 
     "obrigado_nome": {"pt": "Obrigado, {nome}!", "de": "Danke, {nome}!", "en": "Thank you, {nome}!"},
     "obrigado": {"pt": "Obrigado!", "de": "Danke!", "en": "Thank you!"},
-    "confirmado_titulo": {"pt": "🎉 {saudacao} A sua marcação está confirmada!",
-                           "de": "🎉 {saudacao} Ihre Buchung ist bestätigt!",
-                           "en": "🎉 {saudacao} Your booking is confirmed!"},
+    "confirmado_titulo": {"pt": "✓ {saudacao} A sua marcação está confirmada.",
+                           "de": "✓ {saudacao} Ihre Buchung ist bestätigt.",
+                           "en": "✓ {saudacao} Your booking is confirmed."},
     "confirmado_data_hora": {"pt": "📅 {data} às {hora}", "de": "📅 {data} um {hora}", "en": "📅 {data} at {hora}"},
-    "confirmado_duracao": {"pt": "⏱️ Duração: aproximadamente {duracao}",
-                            "de": "⏱️ Dauer: ungefähr {duracao}",
-                            "en": "⏱️ Duration: approximately {duracao}"},
-    "confirmado_instrucao": {"pt": "Por favor, chegue cerca de 5 minutos antes da sua marcação.",
-                              "de": "Bitte kommen Sie etwa 5 Minuten vor Ihrem Termin an.",
-                              "en": "Please arrive about 5 minutes before your appointment."},
+    "confirmado_duracao": {"pt": "Duração: aproximadamente {duracao}",
+                            "de": "Dauer: ungefähr {duracao}",
+                            "en": "Duration: approximately {duracao}"},
+    "confirmado_instrucao": {"pt": "Chegue cerca de 5 minutos antes, por favor.",
+                              "de": "Bitte kommen Sie etwa 5 Minuten vorher an.",
+                              "en": "Please arrive about 5 minutes early."},
     # (o antigo "confirmado_rodape", que mandava escrever MENU/GERIR, foi
     # removido — essas ações são agora os botões enviados logo a seguir à
     # confirmação: "🗓️ Gerir marcação" e "🏠 Menu principal".)
@@ -317,9 +316,9 @@ TEXTOS = {
 
 
     # --- Notificação interna sobre um pedido: reação do cliente (recusa) ----
-    "botao_menu_principal": {"pt": "🏠 Menu principal", "de": "🏠 Hauptmenü", "en": "🏠 Main menu"},
+    "botao_menu_principal": {"pt": "Menu principal", "de": "Hauptmenü", "en": "Main menu"},
 
-    "rapido_linha_lista": {"pt": "⚡ Pedido rápido", "de": "⚡ Schnellanfrage", "en": "⚡ Quick request"},
+    "rapido_linha_lista": {"pt": "Pedido rápido", "de": "Schnellanfrage", "en": "Quick request"},
 
 
 
@@ -334,12 +333,12 @@ TEXTOS = {
     "gerir_sem_marcacao": {"pt": "Não encontrei nenhuma marcação ativa associada a este número.",
                             "de": "Ich habe keine aktive Buchung zu dieser Nummer gefunden.",
                             "en": "I couldn't find any active booking for this number."},
-    "gerir_corpo": {"pt": "🗓️ A sua marcação #{id}:\n\n🔧 {servico}\n📅 {data} às {hora}\n⏱️ Duração: {duracao}\n💰 {preco}\n\nO que deseja fazer?",
-                    "de": "🗓️ Ihre Buchung #{id}:\n\n🔧 {servico}\n📅 {data} um {hora}\n⏱️ Dauer: {duracao}\n💰 {preco}\n\nWas möchten Sie tun?",
-                    "en": "🗓️ Your booking #{id}:\n\n🔧 {servico}\n📅 {data} at {hora}\n⏱️ Duration: {duracao}\n💰 {preco}\n\nWhat would you like to do?"},
-    "botao_reagendar": {"pt": "✏️ Reagendar", "de": "✏️ Verschieben", "en": "✏️ Reschedule"},
-    "botao_cancelar_marcacao": {"pt": "❌ Cancelar", "de": "❌ Stornieren", "en": "❌ Cancel"},
-    "botao_nova_marcacao": {"pt": "📅 Nova marcação", "de": "📅 Neue Buchung", "en": "📅 New booking"},
+    "gerir_corpo": {"pt": "*Marcação #{id}*\n\n{servico}\n📅 {data} · 🕐 {hora}\nDuração: {duracao}\n{preco}\n\nO que deseja fazer?",
+                    "de": "*Buchung #{id}*\n\n{servico}\n📅 {data} · 🕐 {hora}\nDauer: {duracao}\n{preco}\n\nWas möchten Sie tun?",
+                    "en": "*Booking #{id}*\n\n{servico}\n📅 {data} · 🕐 {hora}\nDuration: {duracao}\n{preco}\n\nWhat would you like to do?"},
+    "botao_reagendar": {"pt": "Reagendar", "de": "Verschieben", "en": "Reschedule"},
+    "botao_cancelar_marcacao": {"pt": "Cancelar", "de": "Stornieren", "en": "Cancel"},
+    "botao_nova_marcacao": {"pt": "Nova marcação", "de": "Neue Buchung", "en": "New booking"},
     "reagendar_aviso": {
         "pt": "Sem problema. Vamos escolher a nova data e hora — a sua marcação atual "
               "mantém-se até confirmar a nova.",
@@ -348,33 +347,33 @@ TEXTOS = {
         "en": "No problem. Let's pick the new date and time — your current appointment stays "
               "until you confirm the new one."},
     "reagendar_ocupado": {
-        "pt": "😕 Esse horário foi entretanto ocupado. Escolha outro, por favor — a sua "
+        "pt": "Esse horário foi entretanto ocupado. Escolha outro, por favor — a sua "
               "marcação atual continua igual.",
-        "de": "😕 Diese Uhrzeit ist inzwischen belegt. Bitte wählen Sie eine andere — Ihr "
+        "de": "Diese Uhrzeit ist inzwischen belegt. Bitte wählen Sie eine andere — Ihr "
               "aktueller Termin bleibt unverändert.",
-        "en": "😕 That time was just taken. Please pick another — your current appointment is "
+        "en": "That time was just taken. Please pick another — your current appointment is "
               "unchanged."},
     "reagendar_confirmado": {
-        "pt": "✅ Marcação #{id} reagendada para {data} às {hora}.",
-        "de": "✅ Buchung #{id} verschoben auf {data} um {hora}.",
-        "en": "✅ Booking #{id} rescheduled to {data} at {hora}."},
+        "pt": "✓ Marcação #{id} reagendada para {data} às {hora}.",
+        "de": "✓ Buchung #{id} verschoben auf {data} um {hora}.",
+        "en": "✓ Booking #{id} rescheduled to {data} at {hora}."},
     "reagendar_ja_nao_valida": {
         "pt": "Esta marcação já não pode ser reagendada. Escreva MENU para começar de novo.",
         "de": "Diese Buchung kann nicht mehr verschoben werden. Schreiben Sie MENU, um neu zu beginnen.",
         "en": "This booking can no longer be rescheduled. Type MENU to start again."},
-    "cancelado_cliente": {"pt": "✅ A sua marcação foi cancelada.",
-                           "de": "✅ Ihre Buchung wurde storniert.",
-                           "en": "✅ Your booking has been cancelled."},
+    "cancelado_cliente": {"pt": "✓ A sua marcação foi cancelada.",
+                           "de": "✓ Ihre Buchung wurde storniert.",
+                           "en": "✓ Your booking has been cancelled."},
 
     # --- Falar com a equipa ------------------------------------------------
-    "humano_cliente": {"pt": "💬 Vou avisar já a nossa equipa — em breve alguém entra em contacto consigo por aqui.",
-                        "de": "💬 Ich informiere unser Team sofort — jemand wird sich in Kürze hier bei Ihnen melden.",
-                        "en": "💬 I'll let our team know right away — someone will get in touch with you here shortly."},
+    "humano_cliente": {"pt": "Já avisei a Daniela — em breve responde-lhe por aqui.",
+                        "de": "Ich habe Daniela informiert — sie meldet sich in Kürze hier bei Ihnen.",
+                        "en": "I've let Daniela know — she'll reply here shortly."},
 
     # --- Ajuda / erros / comandos ------------------------------------------
-    "ajuda_header": {"pt": "🆘 *Comandos disponíveis, a qualquer momento:*",
-                      "de": "🆘 *Jederzeit verfügbare Befehle:*",
-                      "en": "🆘 *Commands available at any time:*"},
+    "ajuda_header": {"pt": "*Comandos disponíveis, a qualquer momento:*",
+                      "de": "*Jederzeit verfügbare Befehle:*",
+                      "en": "*Commands available at any time:*"},
     "ajuda_menu": {"pt": "• MENU — voltar ao menu principal", "de": "• MENU — zurück zum Hauptmenü",
                    "en": "• MENU — return to the main menu"},
     "ajuda_voltar": {"pt": "• VOLTAR — passo anterior", "de": "• VOLTAR — vorheriger Schritt",
@@ -391,30 +390,30 @@ TEXTOS = {
                       "de": "• IDIOMA / SPRACHE / LANGUAGE — Sprache ändern",
                       "en": "• IDIOMA / SPRACHE / LANGUAGE — change language"},
 
-    "carrinho_botao_ver": {"pt": "🛒 Carrinho", "de": "🛒 Warenkorb", "en": "🛒 Cart"},
+    "carrinho_botao_ver": {"pt": "Carrinho", "de": "Warenkorb", "en": "Cart"},
 
-    "nao_entendi": {"pt": "Desculpe, não consegui perceber 😅\n\nEscolha uma das opções abaixo.",
-                     "de": "Entschuldigung, das habe ich nicht verstanden 😅\n\nWählen Sie eine der Optionen unten.",
-                     "en": "Sorry, I didn't understand that 😅\n\nPlease choose one of the options below."},
-    "processo_cancelado": {"pt": "❌ Processo cancelado.",
-                            "de": "❌ Vorgang abgebrochen.",
-                            "en": "❌ Process cancelled."},
+    "nao_entendi": {"pt": "Desculpe, não percebi.\n\nEscolha uma das opções abaixo.",
+                     "de": "Entschuldigung, das habe ich nicht verstanden.\n\nWählen Sie eine der Optionen unten.",
+                     "en": "Sorry, I didn't understand that.\n\nPlease choose one of the options below."},
+    "processo_cancelado": {"pt": "Processo cancelado.",
+                            "de": "Vorgang abgebrochen.",
+                            "en": "Process cancelled."},
 
     "retomar_pergunta": {"pt": "Encontrámos uma marcação que ainda não terminou.\nDeseja continuar ou começar novamente?",
                           "de": "Wir haben eine noch nicht abgeschlossene Buchung gefunden.\nMöchten Sie fortfahren oder neu beginnen?",
                           "en": "We found a booking that wasn't finished.\nWould you like to continue or start again?"},
-    "botao_continuar": {"pt": "▶️ Continuar", "de": "▶️ Fortfahren", "en": "▶️ Continue"},
-    "botao_recomecar": {"pt": "🔄 Recomeçar", "de": "🔄 Neu beginnen", "en": "🔄 Start again"},
+    "botao_continuar": {"pt": "Continuar", "de": "Fortfahren", "en": "Continue"},
+    "botao_recomecar": {"pt": "Recomeçar", "de": "Neu beginnen", "en": "Start again"},
 
     "preco_a_combinar": {"pt": "a combinar", "de": "auf Anfrage", "en": "on request"},
 
     # --- Ações universais / seguimento sem obrigar a escrever comandos -------
     "e_agora_pergunta": {"pt": "O que deseja fazer a seguir?", "de": "Was möchten Sie als Nächstes tun?",
                           "en": "What would you like to do next?"},
-    "botao_falar_equipa": {"pt": "💬 Falar com a equipa", "de": "💬 Mit dem Team sprechen",
-                            "en": "💬 Talk to the team"},
-    "botao_gerir_marcacao": {"pt": "🗓️ Gerir marcação", "de": "🗓️ Termin verwalten", "en": "🗓️ Manage booking"},
-    "botao_mais_acoes": {"pt": "⚙️ Mais ações", "de": "⚙️ Weitere Aktionen", "en": "⚙️ More actions"},
+    "botao_falar_equipa": {"pt": "Falar com Daniela", "de": "Mit Daniela sprechen",
+                            "en": "Talk to Daniela"},
+    "botao_gerir_marcacao": {"pt": "Gerir marcação", "de": "Termin verwalten", "en": "Manage booking"},
+    "botao_mais_acoes": {"pt": "Mais ações", "de": "Weitere Aktionen", "en": "More actions"},
     "mais_acoes_pergunta": {"pt": "O que deseja fazer?", "de": "Was möchten Sie tun?", "en": "What would you like to do?"},
     "mais_acoes_seccao": {"pt": "Mais ações", "de": "Weitere Aktionen", "en": "More actions"},
     "nao_entendi_opcoes": {"pt": "Vamos tentar de outra forma. O que deseja fazer?",
@@ -429,10 +428,10 @@ TEXTOS = {
                                           "de": "Diese bestätigte Buchung wurde nicht gefunden.",
                                           "en": "I couldn't find that confirmed booking."},
 
-    "botao_voltar": {"pt": "⬅️ Voltar", "de": "⬅️ Zurück", "en": "⬅️ Back"},
-    "pag_mais_opcoes": {"pt": "➡️ Mais opções", "de": "➡️ Weitere Optionen", "en": "➡️ More options"},
-    "pag_opcoes_anteriores": {"pt": "⬅️ Opções anteriores", "de": "⬅️ Vorherige Optionen",
-                               "en": "⬅️ Previous options"},
+    "botao_voltar": {"pt": "Voltar", "de": "Zurück", "en": "Back"},
+    "pag_mais_opcoes": {"pt": "Mais opções", "de": "Weitere Optionen", "en": "More options"},
+    "pag_opcoes_anteriores": {"pt": "Opções anteriores", "de": "Vorherige Optionen",
+                               "en": "Previous options"},
     "pag_desc_mais": {"pt": "Ver as opções seguintes", "de": "Nächste Optionen ansehen",
                        "en": "See the next options"},
     "pag_desc_anteriores": {"pt": "Ver as opções anteriores", "de": "Vorherige Optionen ansehen",
@@ -454,12 +453,25 @@ TEXTOS = {
 
     # --- Marcação cancelada pela equipa: aviso ao cliente --------------------
     "marcacao_cancelada_equipa_cliente": {
-        "pt": "❌ A sua marcação #{id} foi cancelada. Lamentamos o incómodo — estamos à disposição "
+        "pt": "A sua marcação #{id} foi cancelada. Lamentamos o incómodo — estamos à disposição "
               "para marcar uma nova data quando quiser.",
-        "de": "❌ Ihre Buchung #{id} wurde storniert. Wir bedauern die Unannehmlichkeiten — gerne "
+        "de": "Ihre Buchung #{id} wurde storniert. Wir bedauern die Unannehmlichkeiten — gerne "
               "vereinbaren wir jederzeit einen neuen Termin.",
-        "en": "❌ Your booking #{id} has been cancelled. We're sorry for the inconvenience — we're "
+        "en": "Your booking #{id} has been cancelled. We're sorry for the inconvenience — we're "
               "happy to arrange a new date whenever you'd like."},
+
+    # --- Catálogo de serviços & preços (mp_servicos) -------------------------
+    "servicos_titulo": {"pt": "*Serviços & preços*", "de": "*Leistungen & Preise*", "en": "*Services & prices*"},
+    "servicos_corpo": {"pt": "O nosso catálogo completo:",
+                        "de": "Unser vollständiges Angebot:",
+                        "en": "Our full catalogue:"},
+    "servicos_seccao": {"pt": "Tratamentos", "de": "Behandlungen", "en": "Treatments"},
+    "servicos_botao": {"pt": "Ver serviço", "de": "Behandlung ansehen", "en": "View treatment"},
+    "servico_detalhe_corpo": {"pt": "*{servico}*\n{duracao} · {preco}",
+                               "de": "*{servico}*\n{duracao} · {preco}",
+                               "en": "*{servico}*\n{duracao} · {preco}"},
+    "botao_marcar_este": {"pt": "Marcar agora", "de": "Jetzt buchen",
+                           "en": "Book now"},
 }
 
 
@@ -490,21 +502,21 @@ DIAS_SEMANA = {
 
 MENU_PRINCIPAL = [
     {"id": "mp_marcar",
-     "titulo": {"pt": "📅 Marcar um serviço", "de": "📅 Termin buchen", "en": "📅 Book a service"},
+     "titulo": {"pt": "Marcar tratamento", "de": "Termin buchen", "en": "Book a treatment"},
      "descricao": {"pt": "Escolher serviço, data e hora", "de": "Service, Datum und Uhrzeit wählen",
                    "en": "Choose service, date and time"}},
     {"id": "mp_gerir",
-     "titulo": {"pt": "🗓️ Gerir a minha marcação", "de": "🗓️ Meinen Termin verwalten", "en": "🗓️ Manage my booking"},
+     "titulo": {"pt": "Minhas marcações", "de": "Meine Termine", "en": "My bookings"},
      "descricao": {"pt": "Ver, reagendar ou cancelar", "de": "Ansehen, verschieben oder stornieren",
                    "en": "View, reschedule or cancel"}},
+    {"id": "mp_servicos",
+     "titulo": {"pt": "Serviços & preços", "de": "Leistungen & Preise", "en": "Services & prices"},
+     "descricao": {"pt": "Ver o catálogo completo", "de": "Das ganze Angebot ansehen",
+                   "en": "Browse the full catalogue"}},
     {"id": "mp_humano",
-     "titulo": {"pt": "💬 Falar com a equipa", "de": "💬 Mit dem Team sprechen", "en": "💬 Talk to the team"},
-     "descricao": {"pt": "Um humano responde-lhe em breve", "de": "Ein Mitarbeiter meldet sich in Kürze",
-                   "en": "A team member will reply shortly"}},
-    {"id": "mp_idioma",
-     "titulo": {"pt": "🌐 Alterar idioma", "de": "🌐 Sprache ändern", "en": "🌐 Change language"},
-     "descricao": {"pt": "Português, Deutsch, English", "de": "Português, Deutsch, English",
-                   "en": "Português, Deutsch, English"}},
+     "titulo": {"pt": "Falar com Daniela", "de": "Mit Daniela sprechen", "en": "Talk to Daniela"},
+     "descricao": {"pt": "Uma resposta pessoal em breve", "de": "Eine persönliche Antwort in Kürze",
+                   "en": "A personal reply shortly"}},
 ]
 
 # ---------------------------------------------------------------------------
@@ -1348,6 +1360,41 @@ def opcoes_servicos_lista(idioma):
             "descricao": f"{preco} · {dur}",
         })
     return opcoes
+
+
+def mostrar_catalogo_servicos(de, idioma, sessao=None):
+    """Entrada "Serviços & preços" do menu principal — navegação de leitura,
+    sem tocar na sessão de marcação. Tocar numa linha mostra o detalhe
+    (mostrar_detalhe_servico), nunca inicia logo uma marcação."""
+    opcoes = []
+    for s in bd.listar_servicos():
+        cents = s.get("preco_cents")
+        preco = t("preco_a_confirmar", idioma) if cents is None else catalogo.formatar_cents(cents, idioma)
+        dur = catalogo.duracao_label(s.get("duracao_min"), idioma)
+        opcoes.append({
+            "id": f"svcdet_{s['id']}",
+            "titulo": catalogo.nome(s, idioma),
+            "descricao": f"{preco} · {dur}",
+        })
+    enviar_lista(de, t("servicos_corpo", idioma), t("servicos_seccao", idioma), opcoes, idioma,
+                 botao=t("servicos_botao", idioma), com_voltar=True, rodape=t("rodape_padrao", idioma))
+
+
+def mostrar_detalhe_servico(de, idioma, servico_id, sessao):
+    """Detalhe de um serviço tocado a partir do catálogo — só entra no fluxo
+    de marcação real (escolher_servico) se o cliente tocar "Marcar este
+    tratamento"."""
+    s = bd.obter_servico(servico_id)
+    if not s:
+        nao_entendi_com_opcoes(de, idioma, sessao)
+        return
+    cents = s.get("preco_cents")
+    preco = t("preco_a_confirmar", idioma) if cents is None else catalogo.formatar_cents(cents, idioma)
+    dur = catalogo.duracao_label(s.get("duracao_min"), idioma)
+    corpo = t("servico_detalhe_corpo", idioma, servico=catalogo.nome(s, idioma), duracao=dur, preco=preco)
+    enviar_botoes(de, corpo, [
+        {"id": f"svc_{s['id']}", "titulo": t("botao_marcar_este", idioma)},
+    ], idioma, com_voltar=True)
 
 
 def iniciar_escolha_servico(de, idioma, sessao):
@@ -2850,14 +2897,55 @@ def api_cliente(customer_id):
     # histórico de marcações
     with obter_bd() as c:
         marc = c.execute(
-            "SELECT id, servico, data, hora, data_iso, hora_hhmm, estado, preco_cents, op_status "
+            "SELECT id, servico, servico_id, data, hora, data_iso, hora_hhmm, estado, preco_cents, op_status "
             "FROM agendamentos WHERE customer_id = ? ORDER BY COALESCE(data_iso,'') DESC, id DESC",
             (customer_id,)).fetchall()
-    historico = [dict(zip(("id", "servico", "data", "hora", "data_iso", "hora_hhmm",
+    historico = [dict(zip(("id", "servico", "servico_id", "data", "hora", "data_iso", "hora_hhmm",
                            "estado", "preco_cents", "op_status"), m)) for m in marc]
     from billing import engine as _bi
     faturas = _bi.faturas_do_cliente(customer_id, _TENANT)
-    return jsonify(cliente=cust, historico=historico, faturas=faturas), 200
+    eventos_cliente = bd.eventos_da_entidade("customer", customer_id, _TENANT)
+    return jsonify(cliente=cust, historico=historico, faturas=faturas, eventos=eventos_cliente), 200
+
+
+_MENSAGEM_MAX_CHARS = 1000
+
+
+@app.route("/api/clientes/<int:customer_id>/mensagem", methods=["POST"])
+@requer_autenticacao
+def api_cliente_mensagem(customer_id):
+    """Composer do Client Manager: envia UMA mensagem de texto livre a este
+    cliente. O telefone vem SEMPRE do registo do cliente, nunca do corpo do
+    pedido. Clientes DEMO nunca chegam à Meta (bloqueado em
+    messaging/whatsapp.py:enviar) — a mensagem é registada na mesma, para o
+    fluxo ser testável em QA."""
+    cust = bd.obter_customer(customer_id)
+    if not cust or cust["tenant_id"] != _TENANT:
+        return jsonify(erro="Cliente não encontrado."), 404
+
+    d = request.get_json(silent=True) or {}
+    texto = (d.get("texto") or "").strip()
+    if not texto:
+        return jsonify(erro="Escreva uma mensagem antes de enviar."), 400
+    if len(texto) > _MENSAGEM_MAX_CHARS:
+        return jsonify(erro=f"Mensagem demasiado longa (máx. {_MENSAGEM_MAX_CHARS} caracteres)."), 400
+
+    telefone = cust["phone"]
+    demo = telefone.startswith(DEMO_TELEFONE_PREFIXO)
+
+    if not demo and not dentro_da_janela_24h(telefone):
+        return jsonify(
+            erro="Fora da janela de 24h de atendimento do WhatsApp — não é possível enviar uma "
+                 "mensagem livre agora. É necessário um template aprovado pela Meta.",
+        ), 409
+
+    enviar_texto(telefone, texto)
+
+    with obter_bd() as conn:
+        bd.registar_evento(conn, "message.manual_sent", "customer", customer_id,
+                            {"texto": texto[:200]})
+
+    return jsonify(ok=True, demo=demo), 200
 
 
 # --- Faturação --------------------------------------------------------------
@@ -2964,7 +3052,7 @@ def api_definicoes_faturacao():
 # real do painel) enviar uma notificação WhatsApp sobre um cliente ou
 # marcação de demonstração.
 # ---------------------------------------------------------------------------
-DEMO_TELEFONE_PREFIXO = "4179998"
+DEMO_TELEFONE_PREFIXO = config.DEMO_PHONE_PREFIX
 
 DEMO_NOMES = [
     "Ana Müller", "Marta Silva", "Sofia Costa", "Laura Ferreira", "Julia Brunner",
@@ -5882,10 +5970,23 @@ def receber_mensagem():
                 iniciar_escolha_servico(de, idioma, sessao)
                 return jsonify(status="ok"), 200
 
+            if id_botao == "mp_servicos":  # menu principal: "Serviços & preços" (leitura, sem tocar na sessão)
+                mostrar_catalogo_servicos(de, idioma, sessao)
+                return jsonify(status="ok"), 200
+
             # Escolha de um serviço Daniela Beauty (svc_<id>) — pode chegar como
             # botão OU como linha de lista; tratada nos dois sítios.
             if id_botao.startswith("svc_"):
                 escolher_servico(de, idioma, sessao, id_botao[len("svc_"):])
+                return jsonify(status="ok"), 200
+
+            # Detalhe de um serviço tocado no catálogo "Serviços & preços"
+            # (svcdet_<id>) — nunca inicia a marcação sozinho. Prefixo distinto
+            # de "cat_" de propósito: "cat_" já é reservado pelos IDs legados
+            # do Spotless (_PREFIXOS_LEGADOS acima) e um id de serviço real
+            # como "limpeza_pele" colidiria com "cat_limpeza".
+            if id_botao.startswith("svcdet_"):
+                mostrar_detalhe_servico(de, idioma, id_botao[len("svcdet_"):], sessao)
                 return jsonify(status="ok"), 200
 
             if id_botao == "confirmar":

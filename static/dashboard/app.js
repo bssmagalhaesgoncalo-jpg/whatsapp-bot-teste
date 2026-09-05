@@ -279,8 +279,10 @@ async function openCreateAppointment(prefill = {}) {
 
   const f = (label, node) => h("div", { class: "field" }, h("label", {}, label), node);
   const dlId = "dl-clientes-nova";
-  const iNome = h("input", { class: "inp", placeholder: "Nome do cliente", list: dlId, autocomplete: "off" });
-  const iTelefone = h("input", { class: "inp", placeholder: "+41 79 000 00 00", type: "tel" });
+  const iNome = h("input", { class: "inp", placeholder: "Nome do cliente", list: dlId, autocomplete: "off",
+    value: prefill.nome || "" });
+  const iTelefone = h("input", { class: "inp", placeholder: "+41 79 000 00 00", type: "tel",
+    value: prefill.telefone || "" });
   const datalist = h("datalist", { id: dlId }, clientes.map((c) => h("option", { value: c.name })));
   iNome.addEventListener("input", () => {
     const match = clientes.find((c) => (c.name || "").toLowerCase() === iNome.value.trim().toLowerCase());
@@ -941,38 +943,235 @@ async function viewClientes(mount) {
   });
 }
 
+/* ---------- Client Manager: helpers ---------- */
+function fmtDataHoraPt(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (isNaN(d)) return "—";
+  return d.toLocaleDateString("pt-PT", { day: "2-digit", month: "short" }) + " · " +
+    d.toLocaleTimeString("pt-PT", { hour: "2-digit", minute: "2-digit" });
+}
+
+function clientTagsRow(c) {
+  const tags = [];
+  if (c.vip) tags.push(h("span", { class: "badge badge--brand" }, "VIP"));
+  const visitas = c.visits_count ?? 0;
+  if (visitas === 0) tags.push(h("span", { class: "badge" }, "Nova cliente"));
+  else if (visitas >= 2) tags.push(h("span", { class: "badge badge--info" }, "Recorrente"));
+  (c.tags || []).forEach((t) => tags.push(h("span", { class: "badge" }, t)));
+  return tags.length ? h("div", { style: "display:flex;gap:6px;flex-wrap:wrap;margin-top:6px" }, tags) : null;
+}
+
+// Marcação ativa mais próxima (hoje ou futuro, não cancelada/faltou) — usada
+// para gating das ações rápidas e para pré-preencher o composer.
+function proximaMarcacaoDoCliente(historico) {
+  const hoje = ymdOf(new Date());
+  const ativas = (historico || []).filter((m) =>
+    m.data_iso && m.data_iso >= hoje && m.op_status !== "done" &&
+    !["cancelled", "no_show"].includes((m.estado || "").toLowerCase()));
+  ativas.sort((a, b) => (a.data_iso + (a.hora_hhmm || "")).localeCompare(b.data_iso + (b.hora_hhmm || "")));
+  return ativas[0] || null;
+}
+
+const EVENT_LABEL = { "customer.created": "Cliente registado", "message.manual_sent": "Mensagem enviada" };
+
+// Timeline compacta: junta o histórico de marcações (já persistido) com os
+// eventos da outbox sobre este cliente (registo/mensagens) — nunca inventa
+// um transcript de conversa, só o que já está guardado.
+function timelineDoCliente(historico, eventos) {
+  const itens = [];
+  (historico || []).forEach((m) => itens.push({
+    chave: (m.data_iso || "0000-00-00") + "T" + (m.hora_hhmm || "00:00"),
+    node: h("div", { class: "tl-row", style: "grid-template-columns:70px 1fr auto", onclick: () => openAppointment(m.id) },
+      h("span", { class: "tl-time" }, fmtDataPt(m.data_iso)),
+      h("div", {}, h("div", { class: "tl-name" }, m.servico), h("div", { class: "tl-svc" }, m.hora || "")),
+      statusBadge(m.estado, m.op_status)),
+  }));
+  (eventos || []).forEach((e) => {
+    const label = EVENT_LABEL[e.type];
+    if (!label) return;
+    const desc = e.type === "message.manual_sent" ? ((e.payload && e.payload.texto) || "") : "";
+    itens.push({
+      chave: e.created_at || "0000-00-00",
+      node: h("div", { class: "tl-row", style: "grid-template-columns:70px 1fr auto" },
+        h("span", { class: "tl-time" }, fmtDataHoraPt(e.created_at)),
+        h("div", {}, h("div", { class: "tl-name" }, label), desc ? h("div", { class: "tl-svc" }, desc.slice(0, 60)) : null),
+        icon(e.type === "message.manual_sent" ? "sparkles" : "users")),
+    });
+  });
+  itens.sort((a, b) => b.chave.localeCompare(a.chave));
+  return itens.map((i) => i.node);
+}
+
+function clientComposer(c, proxima) {
+  const textarea = h("textarea", { class: "inp", rows: 3, style: "resize:vertical",
+    placeholder: "Escrever mensagem…" });
+  const semProxima = !proxima;
+  const preencher = (txt) => { textarea.value = txt; textarea.focus(); };
+  const rapidas = h("div", { style: "display:flex;gap:8px;flex-wrap:wrap;margin:10px 0" },
+    h("button", { class: "btn btn--sm", disabled: semProxima,
+      onclick: () => preencher(`Confirmo a sua marcação: ${proxima.servico}, ${fmtDataPt(proxima.data_iso)} às ${proxima.hora_hhmm || proxima.hora}. ✨`) },
+      "Confirmar horário"),
+    h("button", { class: "btn btn--sm", disabled: semProxima,
+      onclick: () => preencher(`Só a lembrar a sua marcação: ${proxima.servico}, ${fmtDataPt(proxima.data_iso)} às ${proxima.hora_hhmm || proxima.hora}. 📅`) },
+      "Relembrar marcação"),
+    h("button", { class: "btn btn--sm",
+      onclick: () => preencher("Vamos atrasar-nos alguns minutos — obrigada pela paciência!") },
+      "Avisar atraso"),
+    h("button", { class: "btn btn--sm", onclick: () => preencher("") }, "Escrever outra"));
+  const btnEnviar = h("button", { class: "btn btn--primary btn--sm" }, "Enviar mensagem");
+  btnEnviar.addEventListener("click", async () => {
+    const texto = textarea.value.trim();
+    if (!texto) { toast("Escreva uma mensagem antes de enviar.", "err"); return; }
+    btnEnviar.disabled = true;
+    try {
+      const r = await jpost(`/api/clientes/${c.id}/mensagem`, { texto });
+      if (r.demo) toast("Cliente demo — mensagem registada, envio real ao WhatsApp desativado.");
+      else toast("Mensagem enviada.");
+      textarea.value = "";
+    } catch (e) { toast(e.message, "err"); }
+    finally { btnEnviar.disabled = false; }
+  });
+  return h("div", { class: "card card--pad", style: "margin-top:8px;display:none" },
+    h("div", { class: "eyebrow", style: "margin:0 0 8px" }, "WhatsApp"),
+    textarea, rapidas, btnEnviar);
+}
+
+function clientNotesSection(c, refresh) {
+  const view = h("div", { style: "white-space:pre-wrap;color:var(--text-2);font-size:13px" },
+    c.notes_internal || "Sem notas.");
+  const btnEditar = h("button", { class: "btn btn--sm" }, "Editar");
+  const head = h("div", { style: "display:flex;justify-content:space-between;align-items:center;margin-bottom:8px" },
+    h("div", { class: "eyebrow", style: "margin:0" }, "Notas internas"), btnEditar);
+  const box = h("div", { class: "card card--pad", style: "margin-top:8px" }, head, view);
+  btnEditar.addEventListener("click", () => {
+    const textarea = h("textarea", { class: "inp", rows: 4, style: "resize:vertical" }, c.notes_internal || "");
+    const btnGuardar = h("button", { class: "btn btn--primary btn--sm" }, "Guardar");
+    const btnCancelar = h("button", { class: "btn btn--sm" }, "Cancelar");
+    view.replaceWith(h("div", {}, textarea, h("div", { style: "display:flex;gap:8px;margin-top:8px" }, btnGuardar, btnCancelar)));
+    head.replaceChildren(h("div", { class: "eyebrow", style: "margin:0" }, "Notas internas"));
+    btnGuardar.addEventListener("click", async () => {
+      btnGuardar.disabled = true;
+      try {
+        await jpatch(`/api/clientes/${c.id}`, { notes_internal: textarea.value.trim() });
+        toast("Notas guardadas.");
+        refresh();
+      } catch (e) { toast(e.message, "err"); btnGuardar.disabled = false; }
+    });
+    btnCancelar.addEventListener("click", () => refresh());
+  });
+  return box;
+}
+
+async function reagendarClientePrompt(ag, id) {
+  const novaData = prompt(`Nova data para ${ag.servico} (AAAA-MM-DD):`, ag.data_iso || "");
+  if (!novaData) return;
+  const novaHora = prompt("Nova hora (HH:MM):", ag.hora_hhmm || "");
+  if (!novaHora) return;
+  try {
+    await jpost(`/api/agendamentos/${ag.id}/reagendar`, { data: novaData, hora: novaHora });
+    toast("Marcação reagendada.");
+    invalidateClientesCache();
+    Drawer.close();
+    Router.reload();
+  } catch (e) { toast(e.message, "err"); }
+}
+
+function clientQuickActions(c, proxima, composerNode) {
+  const foot = h("div", { class: "drawer-foot" });
+  const act = async (fn) => { try { await fn(); invalidateClientesCache(); Drawer.close(); Router.reload(); } catch (e) { handleActionError(e); } };
+
+  foot.append(h("button", { class: "btn", onclick: () => {
+    const visivel = composerNode.style.display !== "none";
+    composerNode.style.display = visivel ? "none" : "";
+    if (!visivel) { composerNode.scrollIntoView({ behavior: "smooth", block: "nearest" }); $("textarea.inp", composerNode).focus(); }
+  } }, icon("sparkles"), "WhatsApp"));
+  foot.append(h("button", { class: "btn", onclick: () => openCreateAppointment({ nome: c.name, telefone: c.phone }) }, icon("calendar"), "Nova marcação"));
+
+  if (proxima) {
+    const op = proxima.op_status || "scheduled";
+    foot.append(h("button", { class: "btn", onclick: () => reagendarClientePrompt(proxima, c.id) }, icon("clock"), "Reagendar"));
+    foot.append(h("button", { class: "btn btn--danger",
+      onclick: () => act(() => jpost(`/api/agendamentos/${proxima.id}/cancelar`, {})) }, icon("x"), "Cancelar"));
+    if (op === "scheduled")
+      foot.append(h("button", { class: "btn btn--primary", onclick: () => act(() => opTransition(proxima.id, "arrived")) }, icon("user-check"), "Chegou"));
+    if (op === "arrived")
+      foot.append(h("button", { class: "btn btn--primary", onclick: () => act(() => opTransition(proxima.id, "in_progress")) }, icon("play"), "Iniciar"));
+    if (op === "in_progress" || op === "arrived")
+      foot.append(h("button", { class: "btn btn--primary", onclick: () => act(() => jpost(`/api/agendamentos/${proxima.id}/estado`, { estado: "completed", confirmar: true })) }, icon("check"), "Concluir"));
+  }
+  return foot;
+}
+
 async function openCliente(id) {
   Drawer.open(h("div", { class: "drawer-body" }, h("div", { class: "skel", style: "height:140px" })));
   let d;
   try { d = await api(`/api/clientes/${id}`); }
   catch (e) { toast(e.message, "err"); Drawer.close(); return; }
   const c = d.cliente;
+  const historico = d.historico || [];
+  const proxima = proximaMarcacaoDoCliente(historico);
+  const refresh = () => openCliente(id);
+  const composerNode = clientComposer(c, proxima);
+
+  const head = h("div", { class: "drawer-head" },
+    h("span", { class: "avatar", style: "width:38px;height:38px;font-size:14px" }, initials(c.name)),
+    h("div", {},
+      h("h3", { style: "margin:0" }, c.name || "Cliente"),
+      h("div", { style: "color:var(--text-3);font-size:12.5px" }, c.phone || "")),
+    h("span", { style: "flex:1" }),
+    h("button", { class: "icon-btn", onclick: () => Drawer.close(), "aria-label": "Fechar" }, icon("x")));
+
+  const body = h("div", { class: "drawer-body" },
+    clientTagsRow(c),
+    h("div", { class: "metrics", style: "margin-top:14px" },
+      metric(c.visits_count ?? 0, "Visitas"),
+      metric(chf(c.spend_cents), "Gasto total"),
+      metric(c.last_visit ? fmtDataPt(c.last_visit) : "—", "Última visita"),
+      metric(c.next_visit ? fmtDataPt(c.next_visit) : "—", "Próxima")),
+
+    proxima ? h("div", { class: "att sev-info", style: "margin-top:14px" },
+      icon("calendar"),
+      h("div", { class: "a-body" },
+        h("div", { class: "a-title" }, proxima.servico),
+        h("div", { class: "a-desc" }, `${fmtDataPt(proxima.data_iso)} · ${proxima.hora_hhmm || proxima.hora} · ${OP_LABEL[proxima.op_status || "scheduled"]}`)),
+      h("button", { class: "btn btn--sm", onclick: () => openAppointment(proxima.id) }, "Abrir")) : null,
+
+    historico[0] && historico[0].servico_id ? h("button", {
+      class: "btn btn--sm", style: "margin-top:12px",
+      onclick: () => openCreateAppointment({ nome: c.name, telefone: c.phone, servico_id: historico[0].servico_id }),
+    }, "Repetir último serviço") : null,
+
+    composerNode,
+    clientNotesSection(c, refresh),
+
+    h("div", { class: "eyebrow" }, "Faturas"),
+    (d.faturas && d.faturas.length)
+      ? h("div", {}, d.faturas.map((f) => h("div", { class: "att sev-info" },
+        icon("receipt"),
+        h("div", { class: "a-body" },
+          h("div", { class: "a-title" }, f.invoice_number || "Rascunho"),
+          h("div", { class: "a-desc" }, `${fmtDataPt(f.issue_date || (f.created_at || "").slice(0, 10))} · ${chf(f.total_cents)} · ${EST_LABEL[f.status] || f.status}`)))))
+      : h("div", { class: "empty", style: "padding:16px" }, "Sem faturas."),
+
+    h("div", { class: "eyebrow" }, "Histórico"));
+
+  const timelineTodas = timelineDoCliente(historico, d.eventos);
+  const timelineEl = h("div", { class: "timeline" }, timelineTodas.slice(0, 5));
+  body.append(timelineEl);
+  if (timelineTodas.length > 5) {
+    const btnVerTudo = h("button", { class: "btn btn--sm", style: "margin-top:10px" }, "Ver histórico completo");
+    btnVerTudo.addEventListener("click", () => {
+      timelineEl.innerHTML = "";
+      timelineEl.append(...timelineTodas);
+      btnVerTudo.remove();
+    });
+    body.append(btnVerTudo);
+  }
+  if (!timelineTodas.length) body.append(h("div", { class: "empty", style: "padding:16px" }, "Sem atividade registada."));
+
   Drawer.open(h("div", { style: "display:flex;flex-direction:column;height:100%" },
-    h("div", { class: "drawer-head" }, icon("users"), h("h3", {}, c.name || "Cliente"),
-      h("span", { style: "flex:1" }), h("button", { class: "icon-btn", onclick: () => Drawer.close() }, icon("x"))),
-    h("div", { class: "drawer-body" },
-      h("div", { class: "eyebrow", style: "margin-top:0" }, "Resumo"),
-      h("dl", { class: "dl" },
-        h("dt", {}, "Telefone"), h("dd", {}, c.phone || "—"),
-        h("dt", {}, "Visitas"), h("dd", { class: "tnum" }, String(c.visits_count ?? 0)),
-        h("dt", {}, "Gasto total"), h("dd", { class: "tnum" }, chf(c.spend_cents)),
-        h("dt", {}, "Última visita"), h("dd", {}, c.last_visit ? fmtDataPt(c.last_visit) : "—"),
-        h("dt", {}, "Próxima"), h("dd", {}, c.next_visit ? fmtDataPt(c.next_visit) : "—"),
-        c.no_show_count ? h("dt", {}, "Faltas") : null,
-        c.no_show_count ? h("dd", { style: "color:var(--danger)" }, String(c.no_show_count)) : null),
-      h("div", { class: "eyebrow" }, "Faturas"),
-      (d.faturas && d.faturas.length)
-        ? h("div", {}, d.faturas.map((f) => h("div", { class: "att sev-info" },
-          icon("receipt"),
-          h("div", { class: "a-body" },
-            h("div", { class: "a-title" }, f.invoice_number || "Rascunho"),
-            h("div", { class: "a-desc" }, `${fmtDataPt(f.issue_date || (f.created_at || "").slice(0, 10))} · ${chf(f.total_cents)} · ${EST_LABEL[f.status] || f.status}`)))))
-        : h("div", { class: "empty", style: "padding:16px" }, "Sem faturas."),
-      h("div", { class: "eyebrow" }, "Histórico"),
-      h("div", { class: "timeline" }, (d.historico || []).slice(0, 20).map((m) => h("div", { class: "tl-row", style: "grid-template-columns:70px 1fr auto", onclick: () => openAppointment(m.id) },
-        h("span", { class: "tl-time" }, fmtDataPt(m.data_iso)),
-        h("div", {}, h("div", { class: "tl-name" }, m.servico), h("div", { class: "tl-svc" }, m.hora || "")),
-        statusBadge(m.estado, m.op_status)))))));
+    head, body, clientQuickActions(c, proxima, composerNode)));
 }
 
 /* ===================================================================

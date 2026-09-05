@@ -67,6 +67,13 @@ ENABLE_DEMO_SEED = (_limpo("ENABLE_DEMO_SEED") or "false").lower() in (
     "1", "true", "yes", "sim", "on",
 )
 
+# Prefixo dos números de telefone DEMO (seed do dashboard). Usado em dois
+# sítios: aqui para identificar clientes demo em geral, e em
+# `messaging/whatsapp.py:enviar()` para bloquear qualquer envio real à Meta
+# para esse prefixo — nunca deve enviar-se uma mensagem WhatsApp real a um
+# cliente demo, mesmo por engano.
+DEMO_PHONE_PREFIX = "4179998"
+
 
 def graph_url() -> str | None:
     if not PHONE_NUMBER_ID:

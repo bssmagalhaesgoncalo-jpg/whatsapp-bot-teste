@@ -17,9 +17,33 @@ import config
 log = logging.getLogger("whatsapp")
 
 
+class _RespostaDemo:
+    """Devolvida em vez de uma `requests.Response` real quando o destinatário
+    é um número DEMO — nunca se chama `requests.post` para este prefixo."""
+    status_code = 200
+    text = '{"demo": true}'
+
+    def json(self):
+        return {"demo": True}
+
+
+def _e_telefone_demo(destinatario) -> bool:
+    return bool(destinatario) and str(destinatario).startswith(config.DEMO_PHONE_PREFIX)
+
+
 def enviar(payload: dict):
     """Faz POST do payload à Graph API. Devolve a Response, ou None se o
-    WhatsApp não estiver configurado."""
+    WhatsApp não estiver configurado.
+
+    Ponto ÚNICO de saída: todo o envio (texto, listas, botões) passa por
+    aqui, incluindo o composer do Client Manager. Um destinatário DEMO
+    (`config.DEMO_PHONE_PREFIX`) NUNCA chega a `requests.post` — devolve-se
+    uma resposta sintética de sucesso, para o resto do código continuar a
+    funcionar normalmente em QA sem qualquer risco de enviar uma mensagem
+    real a um número de teste."""
+    if _e_telefone_demo(payload.get("to")):
+        log.info("Destinatário demo — envio real ignorado (nunca chama a Meta)")
+        return _RespostaDemo()
     url = config.graph_url()
     token = config.WHATSAPP_TOKEN
     if not url or not token:

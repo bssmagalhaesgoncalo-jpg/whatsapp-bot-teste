@@ -967,6 +967,28 @@ def marcar_evento_processado(evento_id: int):
         c.execute("UPDATE events SET processed_at = ? WHERE id = ?", (iso_utc(), evento_id))
 
 
+def eventos_da_entidade(entity_type: str, entity_id: int, tenant_id: int = 1,
+                         limite: int = 20) -> list[dict]:
+    """Eventos da outbox sobre uma entidade concreta (ex.: um customer), mais
+    recente primeiro — usado pelo Client Manager para o timeline. Reutiliza a
+    tabela `events` já existente, sem esquema novo."""
+    import json as _j
+    with ligacao() as c:
+        rows = c.execute(
+            "SELECT id, type, entity_type, entity_id, payload, created_at FROM events "
+            "WHERE tenant_id = ? AND entity_type = ? AND entity_id = ? "
+            "ORDER BY id DESC LIMIT ?", (tenant_id, entity_type, entity_id, limite)).fetchall()
+    out = []
+    for r in rows:
+        d = dict(zip(("id", "type", "entity_type", "entity_id", "payload", "created_at"), r))
+        try:
+            d["payload"] = _j.loads(d["payload"] or "{}")
+        except (ValueError, TypeError):
+            d["payload"] = {}
+        out.append(d)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Idempotência do webhook — máquina de estados por wamid
 #   claimed   -> reclamado por um webhook, a processar
