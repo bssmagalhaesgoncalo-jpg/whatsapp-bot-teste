@@ -28,6 +28,7 @@ negócio (PROVIDER_WHATSAPP) são sempre em português. No alemão usa-se sempre
 import re
 import json
 import hmac
+import random
 import hashlib
 import logging
 from functools import wraps
@@ -64,6 +65,7 @@ MEDIA_DIR = config.MEDIA_DIR
 DASHBOARD_USER = config.DASHBOARD_USER
 DASHBOARD_PASSWORD = config.DASHBOARD_PASSWORD
 PUBLIC_BASE_URL = config.PUBLIC_BASE_URL
+ENABLE_DEMO_SEED = config.ENABLE_DEMO_SEED
 
 BUSINESS_NAME = config.BUSINESS_NAME
 BUSINESS_ADDRESS = config.BUSINESS_ADDRESS
@@ -2944,6 +2946,272 @@ def api_definicoes_faturacao():
             return jsonify(erro=str(e)), 400
         return jsonify(cfg), 200
     return jsonify(bi.definicoes_faturacao(_TENANT)), 200
+
+
+# ---------------------------------------------------------------------------
+# Dev: seed de dados DEMO (TEMPORÁRIO) — enche o dashboard V3 no Render Free,
+# que não tem Shell para correr scripts. Protegido por ENABLE_DEMO_SEED
+# (falha sempre fechado, 404) + a MESMA autenticação HTTP Basic do painel.
+# Todos os dados são identificáveis pelo prefixo telefónico
+# DEMO_TELEFONE_PREFIXO — o DELETE só apaga esse prefixo, nunca clientes ou
+# marcações reais. Reutiliza sempre guardar_agendamento /
+# atualizar_estado_agendamento / cancelar_agendamento / transicao_operacional
+# — o MESMO motor de domínio do painel/WhatsApp — para os dados demo terem
+# exatamente a forma de dados reais (conflitos, CRM recalculado, catálogo
+# real). NUNCA chama disparar_automacoes(): os eventos de outbox gerados por
+# essas chamadas são marcados como processados diretamente (ver
+# `_neutralizar_eventos_demo`), para nenhum drain() futuro (webhook ou ação
+# real do painel) enviar uma notificação WhatsApp sobre um cliente ou
+# marcação de demonstração.
+# ---------------------------------------------------------------------------
+DEMO_TELEFONE_PREFIXO = "4179998"
+
+DEMO_NOMES = [
+    "Ana Müller", "Marta Silva", "Sofia Costa", "Laura Ferreira", "Julia Brunner",
+    "Carolina Santos", "Beatriz Lopes", "Sara Almeida", "Inês Martins", "Leonor Costa",
+    "Joana Pereira", "Mariana Rocha", "Clara Meier", "Nina Keller",
+]
+
+
+def _demo_telefone(indice_cliente):
+    return f"{DEMO_TELEFONE_PREFIXO}{indice_cliente:04d}"
+
+
+def _demo_ja_semeado():
+    with obter_bd() as conn:
+        linha = conn.execute(
+            "SELECT COUNT(*) FROM agendamentos WHERE telefone LIKE ?",
+            (f"{DEMO_TELEFONE_PREFIXO}%",)).fetchone()
+    return int(linha[0]) if linha else 0
+
+
+def _neutralizar_eventos_demo(agendamento_ids, customer_ids):
+    """Marca como PROCESSADOS (sem correr handlers) os eventos das entidades
+    demo indicadas — nunca chama eventos.drain()/disparar_automacoes(). É
+    isto, e só isto, que garante que nenhum handler (que envia WhatsApp)
+    chega a correr para os eventos gerados pelo seed."""
+    agora = tempo.iso_utc()
+    with obter_bd() as conn:
+        if agendamento_ids:
+            marcas = ", ".join("?" for _ in agendamento_ids)
+            conn.execute(
+                "UPDATE events SET processed_at = ? WHERE processed_at IS NULL "
+                f"AND entity_type = 'appointment' AND entity_id IN ({marcas})",
+                (agora, *agendamento_ids))
+        if customer_ids:
+            marcas = ", ".join("?" for _ in customer_ids)
+            conn.execute(
+                "UPDATE events SET processed_at = ? WHERE processed_at IS NULL "
+                f"AND entity_type = 'customer' AND entity_id IN ({marcas})",
+                (agora, *customer_ids))
+
+
+def _demo_criar_marcacao(indice_cliente, servico, data_iso, hora):
+    """Cria uma marcação demo com o MESMO motor de guardar_agendamento().
+    Devolve (id_agendamento, customer_id)."""
+    telefone = _demo_telefone(indice_cliente)
+    nome = DEMO_NOMES[indice_cliente % len(DEMO_NOMES)]
+    sessao = {
+        "nome": nome,
+        "servico": servico["nome_pt"],
+        "servico_id": servico["id"],
+        "data": _data_display(data_iso, "pt"),
+        "hora": hora,
+        "duracao": catalogo.duracao_label(servico["duracao_min"]),
+        "duracao_min": servico["duracao_min"],
+        "preco_cents": servico["preco_cents"],
+        "extra": None,
+        "carrinho": [],
+        "tenant_id": _TENANT,
+    }
+    id_ag = guardar_agendamento(telefone, sessao)
+    ag = obter_agendamento(id_ag)
+    return id_ag, (ag or {}).get("customer_id")
+
+
+def _demo_tentar_criar(rng, indice_cliente, servico, data_iso, candidatos):
+    """Tenta criar a marcação em cada candidato (ordem baralhada), saltando
+    os que entretanto ficaram ocupados por outra marcação demo do mesmo dia.
+    Devolve (id_agendamento, customer_id) ou (None, None) se nenhum resultou."""
+    ordem = list(candidatos)
+    rng.shuffle(ordem)
+    for hora in ordem:
+        try:
+            return _demo_criar_marcacao(indice_cliente, servico, data_iso, hora)
+        except HorarioOcupado:
+            continue
+    return None, None
+
+
+def _demo_avancar_para(id_agendamento, op_status_alvo):
+    """Avança passo a passo scheduled -> arrived -> in_progress -> done,
+    exatamente como a equipa faria no painel (nunca salta com forcar=True) —
+    'em curso' vem SEMPRE de op_status, nunca de inferência pelo relógio."""
+    from operations import engine as op_engine
+    for passo in ("arrived", "in_progress", "done"):
+        op_engine.transicao_operacional(id_agendamento, passo, _TENANT)
+        if passo == op_status_alvo:
+            return
+
+
+def _demo_seed_periodo(rng, servicos, dias_offset, ids_ag, ids_cust, historico):
+    """Semeia 2-4 marcações por dia ABERTO nos `dias_offset` indicados
+    (offsets em dias face a hoje). `historico=True` fecha cada marcação
+    (completed maioritariamente, algum no_show, algum cancelled) — usado no
+    passado. No futuro fica confirmed/scheduled (o omisso de
+    guardar_agendamento)."""
+    hoje = tempo.hoje_zurique()
+    for offset in dias_offset:
+        data_iso = (hoje + timedelta(days=offset)).isoformat()
+        if not bh_mod.dia_aberto(data_iso):
+            continue
+        for _ in range(rng.randint(2, 4)):
+            servico = rng.choice(servicos)
+            livres = av_mod.slots(servico["id"], data_iso)
+            if not livres:
+                continue
+            indice_cliente = rng.randrange(len(DEMO_NOMES))
+            id_ag, cust_id = _demo_tentar_criar(rng, indice_cliente, servico, data_iso, livres)
+            if id_ag is None:
+                continue
+            ids_ag.append(id_ag)
+            if cust_id:
+                ids_cust.add(cust_id)
+            if historico:
+                sorte = rng.random()
+                if sorte < 0.75:
+                    atualizar_estado_agendamento(id_ag, "completed")
+                elif sorte < 0.90:
+                    atualizar_estado_agendamento(id_ag, "no_show")
+                else:
+                    cancelar_agendamento(id_ag, libertar=True, avisar_cliente=False)
+
+
+def _demo_horas_dentro_do_horario(data_iso, duracao_min, passo=30):
+    """Horas de início (HH:MM) possíveis dentro do horário de funcionamento
+    do dia, SEM olhar a ocupação nem à hora atual — usado só para hoje, onde
+    é preciso escolher horas do PASSADO (completed/arrived/in_progress) que
+    scheduling.availability.slots() nunca devolve (só devolve futuro)."""
+    candidatas = []
+    for (abre, fecha) in bh_mod.janelas_do_dia(data_iso):
+        t = abre
+        while t + duracao_min <= fecha:
+            candidatas.append(f"{t // 60:02d}:{t % 60:02d}")
+            t += passo
+    return candidatas
+
+
+def _demo_seed_hoje(rng, servicos, ids_ag, ids_cust):
+    """4-6 marcações de hoje com variedade no cockpit: completed, arrived,
+    in_progress e as restantes scheduled. 'Em curso' vem SEMPRE de
+    op_status=in_progress (transicao_operacional) — nunca inferido pelo
+    relógio."""
+    hoje_iso = tempo.hoje_zurique().isoformat()
+    if not bh_mod.dia_aberto(hoje_iso):
+        return
+    agora = tempo.agora_zurique()
+    agora_min = agora.hour * 60 + agora.minute
+    n_hoje = rng.randint(4, 6)
+    papeis = (["completed", "arrived", "in_progress"] + ["scheduled"] * (n_hoje - 3))[:n_hoje]
+
+    def _minutos(hhmm):
+        h, m = hhmm.split(":")
+        return int(h) * 60 + int(m)
+
+    for papel in papeis:
+        # Tenta cada serviço (ordem baralhada) até um encaixar: os já criados
+        # hoje podem ter ocupado a única janela livre de um serviço mais
+        # longo (ex.: Pestanas, 120min) — passar a outro serviço em vez de
+        # desistir logo é o que garante as 4-6 marcações de hoje do objetivo.
+        id_ag = cust_id = None
+        candidatos_por_servico = list(servicos)
+        rng.shuffle(candidatos_por_servico)
+        for servico in candidatos_por_servico:
+            dur = servico["duracao_min"]
+            if papel == "scheduled":
+                candidatos = av_mod.slots(servico["id"], hoje_iso)
+            else:
+                todas = _demo_horas_dentro_do_horario(hoje_iso, dur)
+                if papel == "completed":
+                    candidatos = [h for h in todas if _minutos(h) + dur <= agora_min - 15]
+                elif papel == "arrived":
+                    candidatos = [h for h in todas if _minutos(h) <= agora_min]
+                else:  # in_progress
+                    candidatos = [h for h in todas if _minutos(h) <= agora_min < _minutos(h) + dur]
+                if not candidatos:
+                    candidatos = todas
+            if not candidatos:
+                continue
+            indice_cliente = rng.randrange(len(DEMO_NOMES))
+            id_ag, cust_id = _demo_tentar_criar(rng, indice_cliente, servico, hoje_iso, candidatos)
+            if id_ag is not None:
+                break
+        if id_ag is None:
+            continue
+        ids_ag.append(id_ag)
+        if cust_id:
+            ids_cust.add(cust_id)
+        if papel == "completed":
+            _demo_avancar_para(id_ag, "done")
+        elif papel == "arrived":
+            _demo_avancar_para(id_ag, "arrived")
+        elif papel == "in_progress":
+            _demo_avancar_para(id_ag, "in_progress")
+        # "scheduled": fica tal como guardar_agendamento a criou.
+
+
+def _semear_dados_demo():
+    rng = random.Random("dashboard-demo-seed-v1")
+    servicos = bd.listar_servicos()
+    ids_ag, ids_cust = [], set()
+    _demo_seed_periodo(rng, servicos, range(-14, 0), ids_ag, ids_cust, historico=True)
+    _demo_seed_hoje(rng, servicos, ids_ag, ids_cust)
+    _demo_seed_periodo(rng, servicos, range(1, 22), ids_ag, ids_cust, historico=False)
+    _neutralizar_eventos_demo(ids_ag, ids_cust)
+    return ids_ag, ids_cust
+
+
+@app.route("/api/dev/seed-dashboard", methods=["POST", "DELETE"])
+@requer_autenticacao
+def api_dev_seed_dashboard():
+    """Seed DEMO temporário do dashboard V3 — só existe com ENABLE_DEMO_SEED=1
+    no ambiente (falha sempre fechado com 404, mesmo autenticado). Todos os
+    dados são identificáveis pelo prefixo telefónico DEMO_TELEFONE_PREFIXO.
+    Nunca envia WhatsApp: ver `_neutralizar_eventos_demo`."""
+    if not ENABLE_DEMO_SEED:
+        return jsonify(erro="not found"), 404
+
+    if request.method == "DELETE":
+        with obter_bd() as conn:
+            conn.execute(
+                "DELETE FROM events WHERE entity_type = 'appointment' AND entity_id IN "
+                "(SELECT id FROM agendamentos WHERE telefone LIKE ?)",
+                (f"{DEMO_TELEFONE_PREFIXO}%",))
+            conn.execute(
+                "DELETE FROM events WHERE entity_type = 'customer' AND entity_id IN "
+                "(SELECT id FROM customers WHERE phone LIKE ?)",
+                (f"{DEMO_TELEFONE_PREFIXO}%",))
+            cur = conn.execute("DELETE FROM agendamentos WHERE telefone LIKE ?",
+                              (f"{DEMO_TELEFONE_PREFIXO}%",))
+            apagados_ag = cur.rowcount
+            cur = conn.execute("DELETE FROM customers WHERE phone LIKE ?",
+                              (f"{DEMO_TELEFONE_PREFIXO}%",))
+            apagados_cust = cur.rowcount
+        return jsonify(ok=True, deleted_appointments=apagados_ag,
+                       deleted_customers=apagados_cust), 200
+
+    ja = _demo_ja_semeado()
+    if ja:
+        return jsonify(ok=True, already_seeded=True, appointments=ja), 200
+
+    ids_ag, ids_cust = _semear_dados_demo()
+    hoje_iso = tempo.hoje_zurique().isoformat()
+    with obter_bd() as conn:
+        hoje_count = conn.execute(
+            "SELECT COUNT(*) FROM agendamentos WHERE telefone LIKE ? AND data_iso = ?",
+            (f"{DEMO_TELEFONE_PREFIXO}%", hoje_iso)).fetchone()[0]
+    return jsonify(ok=True, created=len(ids_ag), customers=len(ids_cust),
+                   today=hoje_count), 201
 
 
 @app.route("/painel", methods=["GET"])

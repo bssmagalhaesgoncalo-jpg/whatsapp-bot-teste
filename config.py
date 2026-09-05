@@ -60,6 +60,13 @@ BOOKING_REQUIRES_APPROVAL = (_limpo("BOOKING_REQUIRES_APPROVAL") or "false").low
     "1", "true", "yes", "sim", "on",
 )
 
+# --- Seed DEMO temporário (/api/dev/seed-dashboard) — DESLIGADO por omissão.
+# Só existe para encher o dashboard V3 no Render Free (sem Shell). Nunca
+# ligar num ambiente com clientes reais. Ver bot.py — secção "seed DEMO".
+ENABLE_DEMO_SEED = (_limpo("ENABLE_DEMO_SEED") or "false").lower() in (
+    "1", "true", "yes", "sim", "on",
+)
+
 
 def graph_url() -> str | None:
     if not PHONE_NUMBER_ID:
