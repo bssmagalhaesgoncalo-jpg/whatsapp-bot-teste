@@ -1009,18 +1009,42 @@ function proximaMarcacaoDoCliente(historico) {
 
 const EVENT_LABEL = { "customer.created": "Cliente registado", "message.manual_sent": "Mensagem enviada" };
 
+// Checklist do pós-atendimento (P0) para uma visita — dados já vêm prontos
+// de /api/clientes/<id> (agendamento + fatura associada), nada é recalculado
+// aqui. Devolve null quando a visita nem chegou a "done".
+function checklistPosAtendimento(m) {
+  if (m.op_status !== "done" && !m.completed_at) return null;
+  const linhas = ["✓ Serviço concluído"];
+  const f = m.fatura;
+  if (f) {
+    linhas.push(`✓ ${chf(f.total_cents)}`);
+    if (f.payment_method) linhas.push(`✓ Pago em ${f.payment_method === "cash" ? "Cash" : f.payment_method}`);
+    if (f.invoice_number) linhas.push(`✓ Fatura #${f.invoice_number}`);
+    if (f.pdf_sent_at) linhas.push("✓ PDF enviado");
+  }
+  if (m.feedback_requested_at) linhas.push("✓ Feedback solicitado");
+  return linhas;
+}
+
 // Timeline compacta: junta o histórico de marcações (já persistido) com os
 // eventos da outbox sobre este cliente (registo/mensagens) — nunca inventa
 // um transcript de conversa, só o que já está guardado.
 function timelineDoCliente(historico, eventos) {
   const itens = [];
-  (historico || []).forEach((m) => itens.push({
-    chave: (m.data_iso || "0000-00-00") + "T" + (m.hora_hhmm || "00:00"),
-    node: h("div", { class: "tl-row", style: "grid-template-columns:70px 1fr auto", onclick: () => openAppointment(m.id) },
-      h("span", { class: "tl-time" }, fmtDataPt(m.data_iso)),
-      h("div", {}, h("div", { class: "tl-name" }, m.servico), h("div", { class: "tl-svc" }, m.hora || "")),
-      statusBadge(m.estado, m.op_status)),
-  }));
+  (historico || []).forEach((m) => {
+    const checklist = checklistPosAtendimento(m);
+    itens.push({
+      chave: (m.data_iso || "0000-00-00") + "T" + (m.hora_hhmm || "00:00"),
+      node: h("div", { class: "tl-row", style: "grid-template-columns:70px 1fr auto", onclick: () => openAppointment(m.id) },
+        h("span", { class: "tl-time" }, fmtDataPt(m.data_iso)),
+        h("div", {},
+          h("div", { class: "tl-name" }, m.servico),
+          h("div", { class: "tl-svc" }, m.hora || ""),
+          checklist ? h("div", { class: "tl-svc", style: "margin-top:2px" }, checklist.join(" · ")) : null,
+          m.feedback_text ? h("div", { class: "tl-svc", style: "font-style:italic" }, `Feedback: "${m.feedback_text}"`) : null),
+        statusBadge(m.estado, m.op_status)),
+    });
+  });
   (eventos || []).forEach((e) => {
     const label = EVENT_LABEL[e.type];
     if (!label) return;
@@ -1349,7 +1373,10 @@ async function openFatura(id) {
     foot.append(h("button", { class: "btn btn--primary", onclick: () => run(() => jpost(`/api/faturas/${id}/pagar`)) }, "Marcar paga"));
     foot.append(h("button", { class: "btn btn--danger", onclick: () => run(() => jpost(`/api/faturas/${id}/anular`)) }, "Anular"));
   }
-  foot.append(h("button", { class: "btn", disabled: true, title: "Próxima iteração" }, "PDF"));
+  if (f.status === "issued" || f.status === "paid") {
+    foot.append(h("button", { class: "btn",
+      onclick: () => run(() => jpost(`/api/faturas/${id}/reenviar`)) }, icon("send"), "Reenviar PDF"));
+  }
 
   Drawer.open(h("div", { style: "display:flex;flex-direction:column;height:100%" },
     h("div", { class: "drawer-head" }, icon("receipt"), h("h3", {}, f.invoice_number || "Rascunho"),
