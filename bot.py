@@ -46,6 +46,7 @@ from core import events as eventos
 from notifications import business as notif_negocio
 from notifications import followup as notif_followup
 from notifications import postservice as notif_postservice
+from notifications import reminders as notif_reminders
 from notifications import jobs as notif_jobs
 from scheduling import business_hours as bh_mod
 from scheduling import availability as av_mod
@@ -118,6 +119,14 @@ eventos.registar("booking.pending", _notificar_criacao_marcacao)
 # /api/automacoes/correr) é que envia o WhatsApp +5 min depois.
 eventos.registar("booking.completed", notif_postservice.handler_booking_completed)
 notif_jobs.registar_handler(notif_jobs.TYPE_POST_SERVICE, notif_postservice.executar_post_service)
+
+# P1 — reminder automático 24h: qualquer evento que possa mudar a
+# elegibilidade/data-hora de uma marcação (criada, aprovada, reagendada,
+# cancelada, concluída, no-show) resincroniza o MESMO job "reminder_24h"
+# (ver notifications/reminders.py — nunca duplica, nunca deixa um antigo
+# por enviar depois de um reagendamento).
+eventos.registar("*", notif_reminders.handler_evento)
+notif_jobs.registar_handler(notif_jobs.TYPE_REMINDER_24H, notif_reminders.executar_reminder_24h)
 
 
 def disparar_automacoes():
@@ -372,6 +381,12 @@ TEXTOS = {
         "pt": "Esta marcação já não pode ser reagendada. Escreva MENU para começar de novo.",
         "de": "Diese Buchung kann nicht mehr verschoben werden. Schreiben Sie MENU, um neu zu beginnen.",
         "en": "This booking can no longer be rescheduled. Type MENU to start again."},
+    # Resposta ao tocar em "Confirmar" no reminder 24h (ver
+    # notifications/reminders.py) — não muda estado nenhum, só agradece.
+    "lembrete_confirmado": {
+        "pt": "🤍 Obrigada por confirmar! Até já.",
+        "de": "🤍 Danke für die Bestätigung! Bis bald.",
+        "en": "🤍 Thanks for confirming! See you soon."},
     "cancelado_cliente": {"pt": "✓ A sua marcação foi cancelada.",
                            "de": "✓ Ihre Buchung wurde storniert.",
                            "en": "✓ Your booking has been cancelled."},
@@ -903,6 +918,14 @@ def atualizar_estado_agendamento(id_agendamento, estado, bloqueia_horario=None):
                                dedupe_key=f"{tipo}:{id_agendamento}", tenant_id=prev[1] or 1)
             if prev[2]:
                 bd.recalcular_customer(prev[2], conn=conn)
+        # P1 — pending -> confirmed (aprovação da equipa, com BOOKING_REQUIRES_
+        # APPROVAL ligado): dispara o reminder 24h. Distinto de "booking.
+        # confirmed" (esse é reservado à cliente confirmar via reminder — ver
+        # notifications/reminders.py) para nunca misturar os dois significados.
+        if prev and canonico == estados.CONFIRMED and chave_estado(prev[0]) != canonico:
+            bd.registar_evento(conn, "booking.approved", "appointment", id_agendamento,
+                               {"customer_id": prev[2]},
+                               dedupe_key=f"booking.approved:{id_agendamento}", tenant_id=prev[1] or 1)
 
 
 # ---------------------------------------------------------------------------
@@ -2528,6 +2551,11 @@ def api_agendamento_detalhe(id_agendamento):
                        (id_agendamento,)).fetchone()
     corpo["fatura"] = (dict(zip(("id", "status", "invoice_number", "total_cents"), fr))
                        if fr else None)
+    # P1 — estado do reminder 24h para o drawer (ver notifications/reminders.py).
+    # None quando nunca chegou a existir job nenhum (marcação sempre pending,
+    # ou já concluída/cancelada antes de qualquer reminder fazer sentido).
+    corpo["reminder_24h"] = notif_reminders.estado_reminder_para_ui(
+        id_agendamento, tenant_id=ag.get("tenant_id") or 1)
     return jsonify(corpo), 200
 
 
@@ -6169,6 +6197,12 @@ def receber_mensagem():
                 id_interativo = msg["interactive"]["button_reply"]["id"]
             elif tipo_interativo == "list_reply":
                 id_interativo = msg["interactive"]["list_reply"]["id"]
+        elif msg.get("type") == "button":
+            # Toque num "quick reply" de uma mensagem de TEMPLATE (ex.: o
+            # reminder 24h — ver messaging/whatsapp.py:enviar_template) — a
+            # Meta manda isto num formato DIFERENTE do "interactive" que as
+            # nossas próprias mensagens usam (enviar_botoes/enviar_lista).
+            id_interativo = msg.get("button", {}).get("payload")
 
         if id_interativo:
             if processar_acao_equipa_marcacao(de, id_interativo):
@@ -6256,8 +6290,48 @@ def receber_mensagem():
         # sem ter de duplicar handlers. Um ID de lista que não seja
         # reconhecido aqui segue para a cadeia das listas, mais abaixo, que
         # trata os passos dependentes da posição no fluxo.
-        if tipo == "interactive" and id_interativo is not None:
+        if tipo in ("interactive", "button") and id_interativo is not None:
             id_botao = id_interativo
+
+            # --- Botões do reminder 24h (mensagem de TEMPLATE — ver
+            # notifications/reminders.py) -----------------------------------
+            # "Confirmar"/"Reagendar"/"Cancelar" trazem o id do JOB, não o da
+            # marcação — resolvido e revalidado (telefone tem de bater com o
+            # da marcação) antes de qualquer ação. "Reagendar"/"Cancelar"
+            # NUNCA reimplementam o fluxo: só registam a atribuição
+            # (origin=reminder_24h) e caem no MESMO handler de sempre,
+            # trocando aqui o id do botão pelo equivalente já existente.
+            if id_botao.startswith("lembrete_confirmar_"):
+                job_id = int(id_botao.rsplit("_", 1)[-1])
+                if notif_reminders.registar_confirmacao(job_id, de):
+                    enviar_texto(de, t("lembrete_confirmado", idioma))
+                else:
+                    enviar_menu_principal(de, idioma, saudacao=False, sessao=sessao)
+                return jsonify(status="ok"), 200
+
+            if id_botao.startswith("lembrete_reagendar_"):
+                job_id = int(id_botao.rsplit("_", 1)[-1])
+                id_ag = notif_reminders.registar_reschedule_iniciado(job_id, de)
+                if id_ag is None:
+                    enviar_texto(de, t("reagendar_ja_nao_valida", idioma))
+                    enviar_menu_principal(de, idioma, saudacao=False, sessao=sessao)
+                    return jsonify(status="ok"), 200
+                id_botao = f"reagendar_{id_ag}"    # cai no fluxo de reagendamento já existente
+
+            if id_botao.startswith("lembrete_cancelar_"):
+                job_id = int(id_botao.rsplit("_", 1)[-1])
+                id_ag = notif_reminders.obter_appointment_do_job(job_id, de)
+                if id_ag is None:
+                    enviar_texto(de, t("reagendar_ja_nao_valida", idioma))
+                    enviar_menu_principal(de, idioma, saudacao=False, sessao=sessao)
+                    return jsonify(status="ok"), 200
+                # Fica na sessão até "Sim, cancelar" (mostrar_confirmar_cancelamento
+                # não mexe na sessão) — é só ali que se sabe que o cancelamento
+                # aconteceu mesmo, para registar a atribuição correta.
+                sessao["lembrete_cancelar_job_id"] = job_id
+                sessao["lembrete_cancelar_ag_id"] = id_ag
+                guardar_sessao(de, sessao)
+                id_botao = f"cancelar_confirmar_{id_ag}"    # ecrã de confirmação já existente
 
             # --- Aliases dos IDs canónicos "acao_*" (ver constantes ACAO_*) -
             # Botões NOVOS usam sempre estes IDs; os antigos equivalentes
@@ -6529,6 +6603,15 @@ def receber_mensagem():
                     marcar_agendamento_cancelado(id_ag, exigir_confirmado=False)
                 except LookupError:
                     pass
+                # Atribuição "veio do reminder 24h" — só se este MESMO
+                # cancelamento é o que ficou pendente de confirmação (guarda
+                # contra um "Cancelar" do reminder abandonado e um
+                # cancelamento normal de outra marcação a seguir).
+                if sessao.get("lembrete_cancelar_ag_id") == id_ag:
+                    notif_reminders.registar_cancelamento(sessao["lembrete_cancelar_job_id"], id_ag)
+                sessao.pop("lembrete_cancelar_job_id", None)
+                sessao.pop("lembrete_cancelar_ag_id", None)
+                guardar_sessao(de, sessao)
                 enviar_texto(de, t("cancelado_cliente", idioma))
                 enviar_botoes(de, t("cancelado_e_agora", idioma), [
                     {"id": ACAO_NOVA_MARCACAO, "titulo": t("botao_nova_marcacao", idioma)},
