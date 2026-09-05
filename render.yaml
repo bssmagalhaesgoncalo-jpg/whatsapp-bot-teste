@@ -55,3 +55,30 @@ services:
       - key: PUBLIC_BASE_URL
         sync: false
       # DATABASE_URL: deixar por definir enquanto usar SQLite.
+
+  # EXECUTOR dos jobs adiados (post_service — P0; reminder_24h — P1; ver
+  # notifications/jobs.py). Sem isto, `/api/automacoes/correr` só corre
+  # quando alguém abre o painel autenticado e clica "correr automações" —
+  # o reminder 24h nunca dispara sozinho. Corre a cada 5 min: run_at é
+  # sempre "há X min ou mais", nunca "no minuto exato", por isso um atraso
+  # de alguns minutos no pior caso é aceitável (nunca envia cedo demais).
+  - type: cron
+    name: daniela-beauty-automacoes
+    runtime: python
+    plan: starter
+    schedule: "*/5 * * * *"
+    buildCommand: pip install requests
+    startCommand: >
+      python -c "
+      import os, requests;
+      r = requests.post(os.environ['PUBLIC_BASE_URL'] + '/api/automacoes/correr',
+                        auth=(os.environ['DASHBOARD_USER'], os.environ['DASHBOARD_PASSWORD']), timeout=30);
+      r.raise_for_status();
+      print(r.text)"
+    envVars:
+      - key: DASHBOARD_USER
+        sync: false
+      - key: DASHBOARD_PASSWORD
+        sync: false
+      - key: PUBLIC_BASE_URL
+        sync: false

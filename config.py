@@ -38,6 +38,14 @@ APP_SECRET = _limpo("APP_SECRET")
 
 GRAPH_API_VERSION = _limpo("GRAPH_API_VERSION") or "v21.0"
 
+# Nomes (não o conteúdo) dos templates Meta aprovados para o reminder 24h —
+# ver notifications/reminders.py. Sem isto configurado, o reminder NUNCA
+# finge um envio: fica "failed" e visível no Attention Center (ver §16 do
+# patch P1) até o template ser aprovado e o nome configurado aqui.
+WHATSAPP_REMINDER_TEMPLATE_PT = _limpo("WHATSAPP_REMINDER_TEMPLATE_PT")
+WHATSAPP_REMINDER_TEMPLATE_DE = _limpo("WHATSAPP_REMINDER_TEMPLATE_DE")
+WHATSAPP_REMINDER_TEMPLATE_EN = _limpo("WHATSAPP_REMINDER_TEMPLATE_EN")
+
 # --- Painel / dashboard (HTTP Basic) — SEM defaults ----------------------
 DASHBOARD_USER = _limpo("DASHBOARD_USER")
 DASHBOARD_PASSWORD = _limpo("DASHBOARD_PASSWORD")

@@ -87,3 +87,39 @@ def enviar_documento(destinatario: str, link: str, filename: str | None = None,
         "type": "document",
         "document": documento,
     })
+
+
+def enviar_template(destinatario: str, template_name: str, idioma_meta: str,
+                    parametros_corpo: list[str] | None = None,
+                    botoes_payload: list[str] | None = None):
+    """Mensagem de TEMPLATE (pré-aprovada pela Meta) — o único tipo permitido
+    para uma mensagem PROATIVA fora da janela de 24h de atendimento (ver
+    notifications/reminders.py, P1). Passa sempre por `enviar()`: DEMO nunca
+    chega à Meta, tal como o texto/documento.
+
+    `parametros_corpo`: valores, por ordem, das variáveis {{1}}, {{2}}... do
+    corpo do template já aprovado.
+    `botoes_payload`: um payload por botão de "quick reply" do template, na
+    MESMA ordem em que foram aprovados — é este payload que volta no webhook
+    (mensagem tipo "button") quando o cliente toca, exatamente como um
+    button_reply de uma mensagem interativa nossa."""
+    componentes = []
+    if parametros_corpo:
+        componentes.append({
+            "type": "body",
+            "parameters": [{"type": "text", "text": str(v)} for v in parametros_corpo],
+        })
+    for indice, payload in enumerate(botoes_payload or []):
+        componentes.append({
+            "type": "button", "sub_type": "quick_reply", "index": str(indice),
+            "parameters": [{"type": "payload", "payload": payload}],
+        })
+    template = {"name": template_name, "language": {"code": idioma_meta}}
+    if componentes:
+        template["components"] = componentes
+    return enviar({
+        "messaging_product": "whatsapp",
+        "to": destinatario,
+        "type": "template",
+        "template": template,
+    })
