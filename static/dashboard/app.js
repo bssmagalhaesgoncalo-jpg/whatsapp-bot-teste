@@ -1040,23 +1040,31 @@ function timelineDoCliente(historico, eventos) {
 function clientComposer(c, proxima) {
   const textarea = h("textarea", { class: "inp", rows: 3, style: "resize:vertical",
     placeholder: "Escrever mensagem…" });
-  const semProxima = !proxima;
-  // Só faz sentido pedir confirmação enquanto a marcação está "pending" —
-  // uma vez confirmed (ou cancelled/completed/no_show, que nem chegam a
-  // "proxima") não se deve voltar a pedir confirmação.
-  const semPendente = semProxima || (proxima.estado || "").toLowerCase() !== "pending";
   const preencher = (txt) => { textarea.value = txt; textarea.focus(); };
-  const rapidas = h("div", { style: "display:flex;gap:8px;flex-wrap:wrap;margin:10px 0" },
-    h("button", { class: "btn btn--sm", disabled: semPendente,
-      onclick: () => preencher(`Confirmo a sua marcação: ${proxima.servico}, ${fmtDataPt(proxima.data_iso)} às ${proxima.hora_hhmm || proxima.hora}. ✨`) },
-      "Confirmar horário"),
-    h("button", { class: "btn btn--sm", disabled: semProxima,
-      onclick: () => preencher(`Só a lembrar a sua marcação: ${proxima.servico}, ${fmtDataPt(proxima.data_iso)} às ${proxima.hora_hhmm || proxima.hora}. 📅`) },
-      "Relembrar marcação"),
-    h("button", { class: "btn btn--sm",
+  const detalhes = () => `${proxima.servico}, ${fmtDataPt(proxima.data_iso)} às ${proxima.hora_hhmm || proxima.hora}`;
+  // Atalhos conforme o estado da próxima marcação — "pending" ainda pode
+  // pedir confirmação; "confirmed" já não (só lembrar/detalhar/avisar
+  // atraso); cancelled/completed/no_show (ou sem próxima) não mostram
+  // nenhum atalho de confirmação/reminder de marcação ativa.
+  const estado = (proxima && proxima.estado || "").toLowerCase();
+  const botoes = [];
+  if (estado === "pending") {
+    botoes.push(h("button", { class: "btn btn--sm",
+      onclick: () => preencher(`Confirmo a sua marcação: ${detalhes()}. ✨`) },
+      "Confirmar horário"));
+  } else if (estado === "confirmed") {
+    botoes.push(h("button", { class: "btn btn--sm",
+      onclick: () => preencher(`Só a lembrar a sua marcação: ${detalhes()}. 📅`) },
+      "Relembrar marcação"));
+    botoes.push(h("button", { class: "btn btn--sm",
+      onclick: () => preencher(`Os detalhes da sua marcação: ${detalhes()}. 💌`) },
+      "Enviar detalhes"));
+    botoes.push(h("button", { class: "btn btn--sm",
       onclick: () => preencher("Vamos atrasar-nos alguns minutos — obrigada pela paciência!") },
-      "Avisar atraso"),
-    h("button", { class: "btn btn--sm", onclick: () => preencher("") }, "Escrever outra"));
+      "Avisar atraso"));
+  }
+  botoes.push(h("button", { class: "btn btn--sm", onclick: () => preencher("") }, "Escrever outra"));
+  const rapidas = h("div", { style: "display:flex;gap:8px;flex-wrap:wrap;margin:10px 0" }, botoes);
   const btnEnviar = h("button", { class: "btn btn--primary btn--sm" }, "Enviar mensagem");
   btnEnviar.addEventListener("click", async () => {
     const texto = textarea.value.trim();
