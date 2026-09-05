@@ -28,6 +28,7 @@ negócio (PROVIDER_WHATSAPP) são sempre em português. No alemão usa-se sempre
 import re
 import json
 import hmac
+import random
 import hashlib
 import logging
 from functools import wraps
@@ -64,6 +65,7 @@ MEDIA_DIR = config.MEDIA_DIR
 DASHBOARD_USER = config.DASHBOARD_USER
 DASHBOARD_PASSWORD = config.DASHBOARD_PASSWORD
 PUBLIC_BASE_URL = config.PUBLIC_BASE_URL
+ENABLE_DEMO_SEED = config.ENABLE_DEMO_SEED
 
 BUSINESS_NAME = config.BUSINESS_NAME
 BUSINESS_ADDRESS = config.BUSINESS_ADDRESS
@@ -203,52 +205,51 @@ BOTOES_IDIOMA = [
 
 TEXTOS = {
     # --- Menu principal / saudação ---------------------------------------
-    "saudacao_novo": {"pt": "👋 Olá! Bem-vindo à *{oficina}*.",
-                       "de": "👋 Hallo! Willkommen bei *{oficina}*.",
-                       "en": "👋 Hello! Welcome to *{oficina}*."},
-    "saudacao_volta": {"pt": "👋 Olá, {nome}! Bem-vindo de volta à *{oficina}*.",
-                        "de": "👋 Hallo, {nome}! Willkommen zurück bei *{oficina}*.",
-                        "en": "👋 Hello, {nome}! Welcome back to *{oficina}*."},
-    "menu_corpo": {"pt": "Posso ajudá-lo em menos de 1 minuto. O que deseja fazer?",
-                   "de": "Ich kann Ihnen in weniger als 1 Minute helfen. Was möchten Sie tun?",
-                   "en": "I can help you in under 1 minute. What would you like to do?"},
+    "saudacao_novo": {"pt": "Olá! Bem-vindo à *{oficina}* ✨",
+                       "de": "Hallo! Willkommen bei *{oficina}* ✨",
+                       "en": "Hello! Welcome to *{oficina}* ✨"},
+    "saudacao_volta": {"pt": "Olá, {nome}.",
+                        "de": "Hallo, {nome}.",
+                        "en": "Hello, {nome}."},
+    "menu_corpo": {"pt": "Como posso ajudar?",
+                   "de": "Wie kann ich helfen?",
+                   "en": "How can I help?"},
     "menu_titulo_lista": {"pt": "Menu principal", "de": "Hauptmenü", "en": "Main menu"},
-    "menu_botao": {"pt": "👉 Escolher opção", "de": "👉 Option wählen", "en": "👉 Choose option"},
+    "menu_botao": {"pt": "Ver opções", "de": "Optionen ansehen", "en": "View options"},
 
 
     # --- Marcação Daniela Beauty: escolha do serviço (passo 1 de 3) --------
-    "servico_corpo": {"pt": "Passo 1 de 3 — Que serviço deseja marcar?",
-                       "de": "Schritt 1 von 3 — Welche Behandlung möchten Sie buchen?",
-                       "en": "Step 1 of 3 — Which treatment would you like to book?"},
-    "servico_seccao": {"pt": "Serviços", "de": "Behandlungen", "en": "Treatments"},
-    "servico_botao": {"pt": "✨ Escolher serviço", "de": "✨ Behandlung wählen",
-                       "en": "✨ Choose treatment"},
+    "servico_corpo": {"pt": "Que tratamento gostaria de marcar?",
+                       "de": "Welche Behandlung möchten Sie buchen?",
+                       "en": "Which treatment would you like to book?"},
+    "servico_seccao": {"pt": "Tratamentos", "de": "Behandlungen", "en": "Treatments"},
+    "servico_botao": {"pt": "Escolher", "de": "Wählen", "en": "Choose"},
     "servico_sem_ativos": {
-        "pt": "De momento não há serviços disponíveis para marcação online. "
-              "Toque em \"Falar com a equipa\".",
+        "pt": "De momento não há tratamentos disponíveis para marcação online. "
+              "Toque em \"Falar com Daniela\".",
         "de": "Zurzeit sind keine Behandlungen online buchbar. "
-              "Tippen Sie auf \"Mit dem Team sprechen\".",
+              "Tippen Sie auf \"Mit Daniela sprechen\".",
         "en": "There are currently no treatments available to book online. "
-              "Tap \"Talk to the team\"."},
+              "Tap \"Talk to Daniela\"."},
     # Preço por definir: NUNCA "CHF 0". Mostrado no serviço, no resumo e no total.
     "preco_a_confirmar": {"pt": "Preço a confirmar", "de": "Preis auf Anfrage",
                            "en": "Price on request"},
     "resumo_total_a_confirmar": {
-        "pt": "💰 Total: a confirmar pela equipa",
-        "de": "💰 Gesamtbetrag: wird vom Team bestätigt",
-        "en": "💰 Total: to be confirmed by the team"},
+        "pt": "Total: a confirmar por Daniela",
+        "de": "Gesamtbetrag: wird von Daniela bestätigt",
+        "en": "Total: to be confirmed by Daniela"},
     "confirmado_preco_a_confirmar": {
-        "pt": "ℹ️ O preço deste serviço é confirmado pela equipa antes da marcação.",
-        "de": "ℹ️ Der Preis dieser Behandlung wird vom Team vor dem Termin bestätigt.",
-        "en": "ℹ️ The price for this treatment is confirmed by the team before your appointment."},
+        "pt": "O preço deste tratamento é confirmado por Daniela antes da marcação.",
+        "de": "Der Preis dieser Behandlung wird von Daniela vor dem Termin bestätigt.",
+        "en": "The price for this treatment is confirmed by Daniela before your appointment."},
 
     # --- Rodapé / linhas auxiliares de lista -------------------------------
     "rodape_padrao": {"pt": "Escreva VOLTAR, CANCELAR ou MENU",
                        "de": "Schreiben Sie VOLTAR, CANCELAR oder MENU",
                        "en": "Type VOLTAR, CANCELAR or MENU"},
-    "voltar_titulo": {"pt": "⬅️ Voltar", "de": "⬅️ Zurück", "en": "⬅️ Back"},
+    "voltar_titulo": {"pt": "Voltar", "de": "Zurück", "en": "Back"},
     "voltar_desc": {"pt": "Passo anterior", "de": "Vorheriger Schritt", "en": "Previous step"},
-    "cancelar_titulo": {"pt": "❌ Cancelar processo", "de": "❌ Vorgang abbrechen", "en": "❌ Cancel process"},
+    "cancelar_titulo": {"pt": "Cancelar processo", "de": "Vorgang abbrechen", "en": "Cancel process"},
     "cancelar_desc": {"pt": "Terminar sem marcar", "de": "Ohne Buchung beenden", "en": "End without booking"},
 
 
@@ -257,54 +258,54 @@ TEXTOS = {
 
 
     # --- Data / hora --------------------------------------------------------
-    "data_corpo": {"pt": "Passo {n} de 3 — Para que dia gostaria de marcar?",
-                   "de": "Schritt {n} von 3 — Für welchen Tag möchten Sie buchen?",
-                   "en": "Step {n} of 3 — Which day would you like to book?"},
+    "data_corpo": {"pt": "Passo {n} de 3 — Para que dia?",
+                   "de": "Schritt {n} von 3 — An welchem Tag?",
+                   "en": "Step {n} of 3 — Which day?"},
     "data_seccao": {"pt": "Datas disponíveis", "de": "Verfügbare Termine", "en": "Available dates"},
-    "data_botao": {"pt": "📅 Escolher dia", "de": "📅 Tag wählen", "en": "📅 Choose day"},
+    "data_botao": {"pt": "Escolher dia", "de": "Tag wählen", "en": "Choose day"},
 
-    "hora_corpo": {"pt": "Passo {n} de 3 — A que horas lhe convém?",
-                   "de": "Schritt {n} von 3 — Um wie viel Uhr passt es Ihnen?",
-                   "en": "Step {n} of 3 — What time suits you?"},
+    "hora_corpo": {"pt": "Passo {n} de 3 — A que horas?",
+                   "de": "Schritt {n} von 3 — Um wie viel Uhr?",
+                   "en": "Step {n} of 3 — What time?"},
     "hora_seccao": {"pt": "Horários disponíveis", "de": "Verfügbare Uhrzeiten", "en": "Available times"},
-    "hora_botao": {"pt": "⏰ Escolher hora", "de": "⏰ Uhrzeit wählen", "en": "⏰ Choose time"},
+    "hora_botao": {"pt": "Escolher hora", "de": "Uhrzeit wählen", "en": "Choose time"},
     # A lista de horas mostra só o que está MESMO livre. Quando nada sobra
     # nesse dia, o cliente volta a escolher a data — nunca fica sem saída.
     "hora_sem_vagas": {
-        "pt": "😕 Nesse dia já não temos horários livres. Escolha outro dia, por favor.",
-        "de": "😕 An diesem Tag haben wir keine freien Uhrzeiten mehr. Bitte wählen Sie einen anderen Tag.",
-        "en": "😕 There are no free time slots left on that day. Please choose another day."},
+        "pt": "Esse dia já não tem horários livres. Escolha outro dia, por favor.",
+        "de": "An diesem Tag gibt es keine freien Uhrzeiten mehr. Bitte wählen Sie einen anderen Tag.",
+        "en": "There are no free time slots left on that day. Please choose another day."},
     "hora_entretanto_ocupada": {
-        "pt": "😕 Esse horário foi ocupado entretanto. Escolha outro, por favor.",
-        "de": "😕 Diese Uhrzeit wurde inzwischen belegt. Bitte wählen Sie eine andere.",
-        "en": "😕 That time slot has just been taken. Please choose another one."},
+        "pt": "Esse horário foi ocupado entretanto. Escolha outro, por favor.",
+        "de": "Diese Uhrzeit wurde inzwischen belegt. Bitte wählen Sie eine andere.",
+        "en": "That time slot has just been taken. Please choose another one."},
 
     # --- Resumo / confirmação -----------------------------------------------
-    "resumo_titulo": {"pt": "📋 *Confirme a sua marcação*", "de": "📋 *Bestätigen Sie Ihre Buchung*",
-                       "en": "📋 *Confirm your booking*"},
-    "resumo_data": {"pt": "📅 Data: {data}", "de": "📅 Datum: {data}", "en": "📅 Date: {data}"},
-    "resumo_hora": {"pt": "🕒 Hora: {hora}", "de": "🕒 Uhrzeit: {hora}", "en": "🕒 Time: {hora}"},
-    "resumo_duracao": {"pt": "⏱️ Duração estimada: {duracao}", "de": "⏱️ Geschätzte Dauer: {duracao}",
-                        "en": "⏱️ Estimated duration: {duracao}"},
-    "resumo_discriminacao": {"pt": "📊 Discriminação:", "de": "📊 Aufschlüsselung:", "en": "📊 Breakdown:"},
-    "resumo_total": {"pt": "💰 Total: {total}", "de": "💰 Gesamtbetrag: {total}", "en": "💰 Total: {total}"},
+    "resumo_titulo": {"pt": "*Confirme a sua marcação*", "de": "*Bestätigen Sie Ihre Buchung*",
+                       "en": "*Confirm your booking*"},
+    "resumo_data": {"pt": "📅 {data}", "de": "📅 {data}", "en": "📅 {data}"},
+    "resumo_hora": {"pt": "🕐 {hora}", "de": "🕐 {hora}", "en": "🕐 {hora}"},
+    "resumo_duracao": {"pt": "Duração estimada: {duracao}", "de": "Geschätzte Dauer: {duracao}",
+                        "en": "Estimated duration: {duracao}"},
+    "resumo_discriminacao": {"pt": "Discriminação:", "de": "Aufschlüsselung:", "en": "Breakdown:"},
+    "resumo_total": {"pt": "Total: {total}", "de": "Gesamtbetrag: {total}", "en": "Total: {total}"},
     "resumo_pergunta": {"pt": "Está tudo correto?", "de": "Ist alles korrekt?", "en": "Is everything correct?"},
-    "botao_confirmar": {"pt": "✅ Confirmar", "de": "✅ Bestätigen", "en": "✅ Confirm"},
-    "botao_alterar": {"pt": "✏️ Alterar", "de": "✏️ Ändern", "en": "✏️ Change"},
-    "botao_cancelar": {"pt": "❌ Cancelar", "de": "❌ Abbrechen", "en": "❌ Cancel"},
+    "botao_confirmar": {"pt": "Confirmar", "de": "Bestätigen", "en": "Confirm"},
+    "botao_alterar": {"pt": "Alterar", "de": "Ändern", "en": "Change"},
+    "botao_cancelar": {"pt": "Cancelar", "de": "Abbrechen", "en": "Cancel"},
 
     "obrigado_nome": {"pt": "Obrigado, {nome}!", "de": "Danke, {nome}!", "en": "Thank you, {nome}!"},
     "obrigado": {"pt": "Obrigado!", "de": "Danke!", "en": "Thank you!"},
-    "confirmado_titulo": {"pt": "🎉 {saudacao} A sua marcação está confirmada!",
-                           "de": "🎉 {saudacao} Ihre Buchung ist bestätigt!",
-                           "en": "🎉 {saudacao} Your booking is confirmed!"},
+    "confirmado_titulo": {"pt": "✓ {saudacao} A sua marcação está confirmada.",
+                           "de": "✓ {saudacao} Ihre Buchung ist bestätigt.",
+                           "en": "✓ {saudacao} Your booking is confirmed."},
     "confirmado_data_hora": {"pt": "📅 {data} às {hora}", "de": "📅 {data} um {hora}", "en": "📅 {data} at {hora}"},
-    "confirmado_duracao": {"pt": "⏱️ Duração: aproximadamente {duracao}",
-                            "de": "⏱️ Dauer: ungefähr {duracao}",
-                            "en": "⏱️ Duration: approximately {duracao}"},
-    "confirmado_instrucao": {"pt": "Por favor, chegue cerca de 5 minutos antes da sua marcação.",
-                              "de": "Bitte kommen Sie etwa 5 Minuten vor Ihrem Termin an.",
-                              "en": "Please arrive about 5 minutes before your appointment."},
+    "confirmado_duracao": {"pt": "Duração: aproximadamente {duracao}",
+                            "de": "Dauer: ungefähr {duracao}",
+                            "en": "Duration: approximately {duracao}"},
+    "confirmado_instrucao": {"pt": "Chegue cerca de 5 minutos antes, por favor.",
+                              "de": "Bitte kommen Sie etwa 5 Minuten vorher an.",
+                              "en": "Please arrive about 5 minutes early."},
     # (o antigo "confirmado_rodape", que mandava escrever MENU/GERIR, foi
     # removido — essas ações são agora os botões enviados logo a seguir à
     # confirmação: "🗓️ Gerir marcação" e "🏠 Menu principal".)
@@ -315,9 +316,9 @@ TEXTOS = {
 
 
     # --- Notificação interna sobre um pedido: reação do cliente (recusa) ----
-    "botao_menu_principal": {"pt": "🏠 Menu principal", "de": "🏠 Hauptmenü", "en": "🏠 Main menu"},
+    "botao_menu_principal": {"pt": "Menu principal", "de": "Hauptmenü", "en": "Main menu"},
 
-    "rapido_linha_lista": {"pt": "⚡ Pedido rápido", "de": "⚡ Schnellanfrage", "en": "⚡ Quick request"},
+    "rapido_linha_lista": {"pt": "Pedido rápido", "de": "Schnellanfrage", "en": "Quick request"},
 
 
 
@@ -332,12 +333,12 @@ TEXTOS = {
     "gerir_sem_marcacao": {"pt": "Não encontrei nenhuma marcação ativa associada a este número.",
                             "de": "Ich habe keine aktive Buchung zu dieser Nummer gefunden.",
                             "en": "I couldn't find any active booking for this number."},
-    "gerir_corpo": {"pt": "🗓️ A sua marcação #{id}:\n\n🔧 {servico}\n📅 {data} às {hora}\n⏱️ Duração: {duracao}\n💰 {preco}\n\nO que deseja fazer?",
-                    "de": "🗓️ Ihre Buchung #{id}:\n\n🔧 {servico}\n📅 {data} um {hora}\n⏱️ Dauer: {duracao}\n💰 {preco}\n\nWas möchten Sie tun?",
-                    "en": "🗓️ Your booking #{id}:\n\n🔧 {servico}\n📅 {data} at {hora}\n⏱️ Duration: {duracao}\n💰 {preco}\n\nWhat would you like to do?"},
-    "botao_reagendar": {"pt": "✏️ Reagendar", "de": "✏️ Verschieben", "en": "✏️ Reschedule"},
-    "botao_cancelar_marcacao": {"pt": "❌ Cancelar", "de": "❌ Stornieren", "en": "❌ Cancel"},
-    "botao_nova_marcacao": {"pt": "📅 Nova marcação", "de": "📅 Neue Buchung", "en": "📅 New booking"},
+    "gerir_corpo": {"pt": "*Marcação #{id}*\n\n{servico}\n📅 {data} · 🕐 {hora}\nDuração: {duracao}\n{preco}\n\nO que deseja fazer?",
+                    "de": "*Buchung #{id}*\n\n{servico}\n📅 {data} · 🕐 {hora}\nDauer: {duracao}\n{preco}\n\nWas möchten Sie tun?",
+                    "en": "*Booking #{id}*\n\n{servico}\n📅 {data} · 🕐 {hora}\nDuration: {duracao}\n{preco}\n\nWhat would you like to do?"},
+    "botao_reagendar": {"pt": "Reagendar", "de": "Verschieben", "en": "Reschedule"},
+    "botao_cancelar_marcacao": {"pt": "Cancelar", "de": "Stornieren", "en": "Cancel"},
+    "botao_nova_marcacao": {"pt": "Nova marcação", "de": "Neue Buchung", "en": "New booking"},
     "reagendar_aviso": {
         "pt": "Sem problema. Vamos escolher a nova data e hora — a sua marcação atual "
               "mantém-se até confirmar a nova.",
@@ -346,33 +347,33 @@ TEXTOS = {
         "en": "No problem. Let's pick the new date and time — your current appointment stays "
               "until you confirm the new one."},
     "reagendar_ocupado": {
-        "pt": "😕 Esse horário foi entretanto ocupado. Escolha outro, por favor — a sua "
+        "pt": "Esse horário foi entretanto ocupado. Escolha outro, por favor — a sua "
               "marcação atual continua igual.",
-        "de": "😕 Diese Uhrzeit ist inzwischen belegt. Bitte wählen Sie eine andere — Ihr "
+        "de": "Diese Uhrzeit ist inzwischen belegt. Bitte wählen Sie eine andere — Ihr "
               "aktueller Termin bleibt unverändert.",
-        "en": "😕 That time was just taken. Please pick another — your current appointment is "
+        "en": "That time was just taken. Please pick another — your current appointment is "
               "unchanged."},
     "reagendar_confirmado": {
-        "pt": "✅ Marcação #{id} reagendada para {data} às {hora}.",
-        "de": "✅ Buchung #{id} verschoben auf {data} um {hora}.",
-        "en": "✅ Booking #{id} rescheduled to {data} at {hora}."},
+        "pt": "✓ Marcação #{id} reagendada para {data} às {hora}.",
+        "de": "✓ Buchung #{id} verschoben auf {data} um {hora}.",
+        "en": "✓ Booking #{id} rescheduled to {data} at {hora}."},
     "reagendar_ja_nao_valida": {
         "pt": "Esta marcação já não pode ser reagendada. Escreva MENU para começar de novo.",
         "de": "Diese Buchung kann nicht mehr verschoben werden. Schreiben Sie MENU, um neu zu beginnen.",
         "en": "This booking can no longer be rescheduled. Type MENU to start again."},
-    "cancelado_cliente": {"pt": "✅ A sua marcação foi cancelada.",
-                           "de": "✅ Ihre Buchung wurde storniert.",
-                           "en": "✅ Your booking has been cancelled."},
+    "cancelado_cliente": {"pt": "✓ A sua marcação foi cancelada.",
+                           "de": "✓ Ihre Buchung wurde storniert.",
+                           "en": "✓ Your booking has been cancelled."},
 
     # --- Falar com a equipa ------------------------------------------------
-    "humano_cliente": {"pt": "💬 Vou avisar já a nossa equipa — em breve alguém entra em contacto consigo por aqui.",
-                        "de": "💬 Ich informiere unser Team sofort — jemand wird sich in Kürze hier bei Ihnen melden.",
-                        "en": "💬 I'll let our team know right away — someone will get in touch with you here shortly."},
+    "humano_cliente": {"pt": "Já avisei a Daniela — em breve responde-lhe por aqui.",
+                        "de": "Ich habe Daniela informiert — sie meldet sich in Kürze hier bei Ihnen.",
+                        "en": "I've let Daniela know — she'll reply here shortly."},
 
     # --- Ajuda / erros / comandos ------------------------------------------
-    "ajuda_header": {"pt": "🆘 *Comandos disponíveis, a qualquer momento:*",
-                      "de": "🆘 *Jederzeit verfügbare Befehle:*",
-                      "en": "🆘 *Commands available at any time:*"},
+    "ajuda_header": {"pt": "*Comandos disponíveis, a qualquer momento:*",
+                      "de": "*Jederzeit verfügbare Befehle:*",
+                      "en": "*Commands available at any time:*"},
     "ajuda_menu": {"pt": "• MENU — voltar ao menu principal", "de": "• MENU — zurück zum Hauptmenü",
                    "en": "• MENU — return to the main menu"},
     "ajuda_voltar": {"pt": "• VOLTAR — passo anterior", "de": "• VOLTAR — vorheriger Schritt",
@@ -389,30 +390,30 @@ TEXTOS = {
                       "de": "• IDIOMA / SPRACHE / LANGUAGE — Sprache ändern",
                       "en": "• IDIOMA / SPRACHE / LANGUAGE — change language"},
 
-    "carrinho_botao_ver": {"pt": "🛒 Carrinho", "de": "🛒 Warenkorb", "en": "🛒 Cart"},
+    "carrinho_botao_ver": {"pt": "Carrinho", "de": "Warenkorb", "en": "Cart"},
 
-    "nao_entendi": {"pt": "Desculpe, não consegui perceber 😅\n\nEscolha uma das opções abaixo.",
-                     "de": "Entschuldigung, das habe ich nicht verstanden 😅\n\nWählen Sie eine der Optionen unten.",
-                     "en": "Sorry, I didn't understand that 😅\n\nPlease choose one of the options below."},
-    "processo_cancelado": {"pt": "❌ Processo cancelado.",
-                            "de": "❌ Vorgang abgebrochen.",
-                            "en": "❌ Process cancelled."},
+    "nao_entendi": {"pt": "Desculpe, não percebi.\n\nEscolha uma das opções abaixo.",
+                     "de": "Entschuldigung, das habe ich nicht verstanden.\n\nWählen Sie eine der Optionen unten.",
+                     "en": "Sorry, I didn't understand that.\n\nPlease choose one of the options below."},
+    "processo_cancelado": {"pt": "Processo cancelado.",
+                            "de": "Vorgang abgebrochen.",
+                            "en": "Process cancelled."},
 
     "retomar_pergunta": {"pt": "Encontrámos uma marcação que ainda não terminou.\nDeseja continuar ou começar novamente?",
                           "de": "Wir haben eine noch nicht abgeschlossene Buchung gefunden.\nMöchten Sie fortfahren oder neu beginnen?",
                           "en": "We found a booking that wasn't finished.\nWould you like to continue or start again?"},
-    "botao_continuar": {"pt": "▶️ Continuar", "de": "▶️ Fortfahren", "en": "▶️ Continue"},
-    "botao_recomecar": {"pt": "🔄 Recomeçar", "de": "🔄 Neu beginnen", "en": "🔄 Start again"},
+    "botao_continuar": {"pt": "Continuar", "de": "Fortfahren", "en": "Continue"},
+    "botao_recomecar": {"pt": "Recomeçar", "de": "Neu beginnen", "en": "Start again"},
 
     "preco_a_combinar": {"pt": "a combinar", "de": "auf Anfrage", "en": "on request"},
 
     # --- Ações universais / seguimento sem obrigar a escrever comandos -------
     "e_agora_pergunta": {"pt": "O que deseja fazer a seguir?", "de": "Was möchten Sie als Nächstes tun?",
                           "en": "What would you like to do next?"},
-    "botao_falar_equipa": {"pt": "💬 Falar com a equipa", "de": "💬 Mit dem Team sprechen",
-                            "en": "💬 Talk to the team"},
-    "botao_gerir_marcacao": {"pt": "🗓️ Gerir marcação", "de": "🗓️ Termin verwalten", "en": "🗓️ Manage booking"},
-    "botao_mais_acoes": {"pt": "⚙️ Mais ações", "de": "⚙️ Weitere Aktionen", "en": "⚙️ More actions"},
+    "botao_falar_equipa": {"pt": "Falar com Daniela", "de": "Mit Daniela sprechen",
+                            "en": "Talk to Daniela"},
+    "botao_gerir_marcacao": {"pt": "Gerir marcação", "de": "Termin verwalten", "en": "Manage booking"},
+    "botao_mais_acoes": {"pt": "Mais ações", "de": "Weitere Aktionen", "en": "More actions"},
     "mais_acoes_pergunta": {"pt": "O que deseja fazer?", "de": "Was möchten Sie tun?", "en": "What would you like to do?"},
     "mais_acoes_seccao": {"pt": "Mais ações", "de": "Weitere Aktionen", "en": "More actions"},
     "nao_entendi_opcoes": {"pt": "Vamos tentar de outra forma. O que deseja fazer?",
@@ -427,10 +428,10 @@ TEXTOS = {
                                           "de": "Diese bestätigte Buchung wurde nicht gefunden.",
                                           "en": "I couldn't find that confirmed booking."},
 
-    "botao_voltar": {"pt": "⬅️ Voltar", "de": "⬅️ Zurück", "en": "⬅️ Back"},
-    "pag_mais_opcoes": {"pt": "➡️ Mais opções", "de": "➡️ Weitere Optionen", "en": "➡️ More options"},
-    "pag_opcoes_anteriores": {"pt": "⬅️ Opções anteriores", "de": "⬅️ Vorherige Optionen",
-                               "en": "⬅️ Previous options"},
+    "botao_voltar": {"pt": "Voltar", "de": "Zurück", "en": "Back"},
+    "pag_mais_opcoes": {"pt": "Mais opções", "de": "Weitere Optionen", "en": "More options"},
+    "pag_opcoes_anteriores": {"pt": "Opções anteriores", "de": "Vorherige Optionen",
+                               "en": "Previous options"},
     "pag_desc_mais": {"pt": "Ver as opções seguintes", "de": "Nächste Optionen ansehen",
                        "en": "See the next options"},
     "pag_desc_anteriores": {"pt": "Ver as opções anteriores", "de": "Vorherige Optionen ansehen",
@@ -452,12 +453,25 @@ TEXTOS = {
 
     # --- Marcação cancelada pela equipa: aviso ao cliente --------------------
     "marcacao_cancelada_equipa_cliente": {
-        "pt": "❌ A sua marcação #{id} foi cancelada. Lamentamos o incómodo — estamos à disposição "
+        "pt": "A sua marcação #{id} foi cancelada. Lamentamos o incómodo — estamos à disposição "
               "para marcar uma nova data quando quiser.",
-        "de": "❌ Ihre Buchung #{id} wurde storniert. Wir bedauern die Unannehmlichkeiten — gerne "
+        "de": "Ihre Buchung #{id} wurde storniert. Wir bedauern die Unannehmlichkeiten — gerne "
               "vereinbaren wir jederzeit einen neuen Termin.",
-        "en": "❌ Your booking #{id} has been cancelled. We're sorry for the inconvenience — we're "
+        "en": "Your booking #{id} has been cancelled. We're sorry for the inconvenience — we're "
               "happy to arrange a new date whenever you'd like."},
+
+    # --- Catálogo de serviços & preços (mp_servicos) -------------------------
+    "servicos_titulo": {"pt": "*Serviços & preços*", "de": "*Leistungen & Preise*", "en": "*Services & prices*"},
+    "servicos_corpo": {"pt": "O nosso catálogo completo:",
+                        "de": "Unser vollständiges Angebot:",
+                        "en": "Our full catalogue:"},
+    "servicos_seccao": {"pt": "Tratamentos", "de": "Behandlungen", "en": "Treatments"},
+    "servicos_botao": {"pt": "Ver serviço", "de": "Behandlung ansehen", "en": "View treatment"},
+    "servico_detalhe_corpo": {"pt": "*{servico}*\n{duracao} · {preco}",
+                               "de": "*{servico}*\n{duracao} · {preco}",
+                               "en": "*{servico}*\n{duracao} · {preco}"},
+    "botao_marcar_este": {"pt": "Marcar agora", "de": "Jetzt buchen",
+                           "en": "Book now"},
 }
 
 
@@ -488,21 +502,21 @@ DIAS_SEMANA = {
 
 MENU_PRINCIPAL = [
     {"id": "mp_marcar",
-     "titulo": {"pt": "📅 Marcar um serviço", "de": "📅 Termin buchen", "en": "📅 Book a service"},
+     "titulo": {"pt": "Marcar tratamento", "de": "Termin buchen", "en": "Book a treatment"},
      "descricao": {"pt": "Escolher serviço, data e hora", "de": "Service, Datum und Uhrzeit wählen",
                    "en": "Choose service, date and time"}},
     {"id": "mp_gerir",
-     "titulo": {"pt": "🗓️ Gerir a minha marcação", "de": "🗓️ Meinen Termin verwalten", "en": "🗓️ Manage my booking"},
+     "titulo": {"pt": "Minhas marcações", "de": "Meine Termine", "en": "My bookings"},
      "descricao": {"pt": "Ver, reagendar ou cancelar", "de": "Ansehen, verschieben oder stornieren",
                    "en": "View, reschedule or cancel"}},
+    {"id": "mp_servicos",
+     "titulo": {"pt": "Serviços & preços", "de": "Leistungen & Preise", "en": "Services & prices"},
+     "descricao": {"pt": "Ver o catálogo completo", "de": "Das ganze Angebot ansehen",
+                   "en": "Browse the full catalogue"}},
     {"id": "mp_humano",
-     "titulo": {"pt": "💬 Falar com a equipa", "de": "💬 Mit dem Team sprechen", "en": "💬 Talk to the team"},
-     "descricao": {"pt": "Um humano responde-lhe em breve", "de": "Ein Mitarbeiter meldet sich in Kürze",
-                   "en": "A team member will reply shortly"}},
-    {"id": "mp_idioma",
-     "titulo": {"pt": "🌐 Alterar idioma", "de": "🌐 Sprache ändern", "en": "🌐 Change language"},
-     "descricao": {"pt": "Português, Deutsch, English", "de": "Português, Deutsch, English",
-                   "en": "Português, Deutsch, English"}},
+     "titulo": {"pt": "Falar com Daniela", "de": "Mit Daniela sprechen", "en": "Talk to Daniela"},
+     "descricao": {"pt": "Uma resposta pessoal em breve", "de": "Eine persönliche Antwort in Kürze",
+                   "en": "A personal reply shortly"}},
 ]
 
 # ---------------------------------------------------------------------------
@@ -1348,6 +1362,41 @@ def opcoes_servicos_lista(idioma):
     return opcoes
 
 
+def mostrar_catalogo_servicos(de, idioma, sessao=None):
+    """Entrada "Serviços & preços" do menu principal — navegação de leitura,
+    sem tocar na sessão de marcação. Tocar numa linha mostra o detalhe
+    (mostrar_detalhe_servico), nunca inicia logo uma marcação."""
+    opcoes = []
+    for s in bd.listar_servicos():
+        cents = s.get("preco_cents")
+        preco = t("preco_a_confirmar", idioma) if cents is None else catalogo.formatar_cents(cents, idioma)
+        dur = catalogo.duracao_label(s.get("duracao_min"), idioma)
+        opcoes.append({
+            "id": f"svcdet_{s['id']}",
+            "titulo": catalogo.nome(s, idioma),
+            "descricao": f"{preco} · {dur}",
+        })
+    enviar_lista(de, t("servicos_corpo", idioma), t("servicos_seccao", idioma), opcoes, idioma,
+                 botao=t("servicos_botao", idioma), com_voltar=True, rodape=t("rodape_padrao", idioma))
+
+
+def mostrar_detalhe_servico(de, idioma, servico_id, sessao):
+    """Detalhe de um serviço tocado a partir do catálogo — só entra no fluxo
+    de marcação real (escolher_servico) se o cliente tocar "Marcar este
+    tratamento"."""
+    s = bd.obter_servico(servico_id)
+    if not s:
+        nao_entendi_com_opcoes(de, idioma, sessao)
+        return
+    cents = s.get("preco_cents")
+    preco = t("preco_a_confirmar", idioma) if cents is None else catalogo.formatar_cents(cents, idioma)
+    dur = catalogo.duracao_label(s.get("duracao_min"), idioma)
+    corpo = t("servico_detalhe_corpo", idioma, servico=catalogo.nome(s, idioma), duracao=dur, preco=preco)
+    enviar_botoes(de, corpo, [
+        {"id": f"svc_{s['id']}", "titulo": t("botao_marcar_este", idioma)},
+    ], idioma, com_voltar=True)
+
+
 def iniciar_escolha_servico(de, idioma, sessao):
     """Passo 1 de 3 — mostra os serviços da Daniela Beauty."""
     sessao = sessao_preservando_perfil(sessao)
@@ -1418,6 +1467,13 @@ def passo_hora(de, idioma, passo_n=3, sessao=None):
     antecedência. Um horário libertado reaparece de imediato, sem cache."""
     livres = horarios_livres_para_sessao(sessao, telefone=de)
     if not livres:
+        # Sem vagas nesta data: volta à escolha de DATA. Tem de limpar
+        # sessao["data"] aqui — senão o próximo list_reply (uma nova data)
+        # cai no ramo "hora" do dispatcher (que decide pelo campo "data"
+        # já estar preenchido) e a data escolhida é gravada como hora.
+        if sessao is not None:
+            sessao.pop("data", None)
+            guardar_sessao(de, sessao)
         enviar_texto(de, t("hora_sem_vagas", idioma))
         passo_data(de, idioma, sessao=sessao)
         return
@@ -1883,7 +1939,12 @@ def reagendar_agendamento(id_agendamento, data_iso, hora, origem="dashboard", av
     d = date.fromisoformat(data_iso)
     dias = DIAS_SEMANA["pt"]
     data_texto = f"{d.strftime('%d.%m.%Y')} ({dias[d.weekday()]})"
-    hora_texto = f"🕘 {hora}"
+    # Valor plano — mesma convenção da criação da marcação (agendamentos.hora
+    # nunca leva emoji; só hora_notif, abaixo, é decorada para a mensagem ao
+    # cliente). Guardar a versão com emoji aqui duplicava-a em qualquer sítio
+    # que reutilizasse ag["hora"] (resumo, dashboard, "Gerir marcação"...).
+    hora_texto = hora
+    hora_notif = f"🕘 {hora}"
     data_antiga, hora_antiga = alvo.get("data"), alvo.get("hora")
 
     with obter_bd() as conn:
@@ -1927,7 +1988,7 @@ def reagendar_agendamento(id_agendamento, data_iso, hora, origem="dashboard", av
     notificado = False
     if avisar_cliente:
         notificado = _avisar_cliente_marcacao_reagendada(
-            agendamento, f"{data_antiga} {hora_antiga}".strip(), f"{data_texto} {hora_texto}")
+            agendamento, f"{data_antiga} {hora_antiga}".strip(), f"{data_texto} {hora_notif}")
     return agendamento, notificado
 
 
@@ -2231,10 +2292,94 @@ def requer_autenticacao(func):
 # ---------------------------------------------------------------------------
 # Webhook
 # ---------------------------------------------------------------------------
-@app.route("/api/agendamentos", methods=["GET"])
+@app.route("/api/agendamentos", methods=["GET", "POST"])
 @requer_autenticacao
 def api_agendamentos():
-    return jsonify(listar_agendamentos()), 200
+    if request.method == "GET":
+        return jsonify(listar_agendamentos()), 200
+    return api_agendamento_criar()
+
+
+def api_agendamento_criar():
+    """Cria uma nova marcação a partir do painel. Reutiliza guardar_agendamento()
+    — o MESMO motor usado pela confirmação via WhatsApp (deteção de conflitos
+    dentro da transação, criação/associação do cliente, outbox de eventos) —
+    o painel nunca reinventa a lógica de marcação.
+
+    Corpo JSON:
+      customer_id  -> cliente já existente (telefone/nome vêm da ficha);
+      telefone/nome -> cliente novo, se customer_id não vier;
+      servico_id, data (YYYY-MM-DD), hora (HH:MM) -> obrigatórios;
+      duracao_min, preco_cents -> opcionais, por omissão vêm do serviço;
+      notas -> texto livre opcional.
+
+    preco_cents nunca é assumido como 0: se o serviço não tiver preço e o
+    pedido não indicar um, a marcação fica com preço por confirmar."""
+    d = request.get_json(silent=True) or {}
+
+    customer_id = d.get("customer_id")
+    telefone = str(d.get("telefone") or "").strip()
+    nome = str(d.get("nome") or "").strip() or None
+    if customer_id:
+        cust = bd.obter_customer(customer_id)
+        if not cust or cust.get("tenant_id", 1) != _TENANT:
+            return jsonify(erro="Cliente não encontrado."), 404
+        telefone = cust["phone"]
+        nome = nome or cust["name"]
+    if not telefone:
+        return jsonify(erro="Cliente é obrigatório (customer_id ou telefone)."), 400
+    if not nome:
+        return jsonify(erro="Nome do cliente é obrigatório."), 400
+
+    servico_id = str(d.get("servico_id") or "").strip()
+    servico = bd.obter_servico(servico_id) if servico_id else None
+    if not servico:
+        return jsonify(erro="Serviço inválido."), 400
+
+    data_iso = str(d.get("data") or "").strip()
+    try:
+        date.fromisoformat(data_iso)
+    except ValueError:
+        return jsonify(erro="Data inválida (esperado YYYY-MM-DD)."), 400
+    hora = str(d.get("hora") or "").strip()
+    if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", hora):
+        return jsonify(erro="Hora inválida (esperado HH:MM entre 00:00 e 23:59)."), 400
+
+    try:
+        duracao_min = _inteiro(d.get("duracao_min", servico.get("duracao_min")),
+                               minimo=5, maximo=600, campo="Duração")
+    except _EntradaInvalida as e:
+        return jsonify(erro=str(e)), 400
+
+    preco_cents = d.get("preco_cents", servico.get("preco_cents"))
+    if preco_cents is not None:
+        try:
+            preco_cents = int(preco_cents)
+        except (TypeError, ValueError):
+            return jsonify(erro="preco_cents tem de ser um número inteiro."), 400
+        if preco_cents < 0:
+            return jsonify(erro="preco_cents não pode ser negativo."), 400
+
+    sessao = {
+        "nome": nome,
+        "servico": servico["nome_pt"],
+        "servico_id": servico["id"],
+        "data": _data_display(data_iso, "pt"),
+        "hora": hora,
+        "duracao": catalogo.duracao_label(duracao_min),
+        "duracao_min": duracao_min,
+        "preco_cents": preco_cents,
+        "extra": str(d.get("notas") or "").strip() or None,
+        "carrinho": [],
+        "tenant_id": _TENANT,
+    }
+    try:
+        id_ag = guardar_agendamento(telefone, sessao)
+    except HorarioOcupado:
+        return jsonify(erro="Esse horário já está ocupado."), 409
+    disparar_automacoes()
+    ag = obter_agendamento(id_ag)
+    return jsonify(ok=True, agendamento=ag, evento=evento_calendario(ag)), 201
 
 
 @app.route("/api/agendamentos/<int:id_agendamento>", methods=["GET"])
@@ -2248,6 +2393,10 @@ def api_agendamento_detalhe(id_agendamento):
     corpo["total_centimos"] = total_centimos_agendamento(ag)
     corpo["preco_por_confirmar"] = preco_por_confirmar_agendamento(ag)
     corpo["historico"] = historico_agendamento(id_agendamento)
+    # Valor RESOLVIDO (nunca a coluna crua) — mesma semântica de
+    # evento_calendario(): diz se o registo ainda ocupa o horário, incluindo
+    # dados legados sem a coluna corretamente preenchida.
+    corpo["bloqueia_horario"] = agendamento_bloqueia_horario(ag)
     if ag.get("customer_id"):
         cust = bd.obter_customer(ag["customer_id"])
         if cust:
@@ -2442,6 +2591,79 @@ def api_agendamento_reagendar(id_agendamento):
         nomes = ", ".join(f"#{o['id']} {o.get('nome') or ''}".strip() for o in ocupados)
         return jsonify(erro=f"Esse horário já está ocupado ({nomes}).", conflitos=nomes), 409
     return _resposta_evento(id_agendamento, notificado)
+
+
+@app.route("/api/agendamentos/<int:id_agendamento>/editar", methods=["POST"])
+@requer_autenticacao
+def api_agendamento_editar(id_agendamento):
+    """Edita serviço, duração, preço e notas de uma marcação ATIVA — a MESMA
+    marcação, nunca cria uma nova. Data/hora só mudam por /reagendar (tem a
+    sua própria regra de conflitos). Uma duração maior é revalidada contra
+    conflitos, à semelhança do reagendamento."""
+    d = request.get_json(silent=True) or {}
+    ag = obter_agendamento(id_agendamento)
+    if not ag or ag.get("tenant_id", 1) != _TENANT:
+        return jsonify(erro="Marcação não encontrada."), 404
+    if chave_estado(ag.get("estado")) not in (estados.CONFIRMED, estados.PENDING):
+        return jsonify(erro=f"Esta marcação já não está ativa (estado atual: {ag.get('estado')}).",
+                       estado=ag.get("estado")), 409
+
+    campos, vals = [], []
+    servico_nome = ag.get("servico")
+    duracao_min = ag.get("duracao_min")
+
+    if "servico_id" in d:
+        s = bd.obter_servico(d["servico_id"])
+        if not s:
+            return jsonify(erro="Serviço inválido."), 400
+        servico_nome = s["nome_pt"]
+        campos += ["servico_id = ?", "servico = ?"]
+        vals += [s["id"], s["nome_pt"]]
+        if "duracao_min" not in d and s.get("duracao_min") is not None:
+            duracao_min = s["duracao_min"]
+        if "preco_cents" not in d:
+            campos.append("preco_cents = ?")
+            vals.append(s.get("preco_cents"))
+
+    if "duracao_min" in d:
+        try:
+            duracao_min = _inteiro(d["duracao_min"], minimo=5, maximo=600, campo="Duração")
+        except _EntradaInvalida as e:
+            return jsonify(erro=str(e)), 400
+
+    if duracao_min != ag.get("duracao_min"):
+        duracao_texto = catalogo.duracao_label(duracao_min)
+        ocup = [o for o in ocupacoes() if o.get("id") != id_agendamento]
+        conflitos = conflitos_no_intervalo(ocup, ag.get("data_iso"), ag.get("hora_hhmm"),
+                                           servico_nome, duracao_texto, ignorar_id=id_agendamento)
+        if conflitos:
+            nomes = ", ".join(f"#{o.get('id')} {o.get('nome') or ''}".strip() for o in conflitos)
+            return jsonify(erro=f"Essa duração entra em conflito com outra marcação ({nomes})."), 409
+        campos += ["duracao_min = ?", "duracao = ?"]
+        vals += [duracao_min, duracao_texto]
+
+    if "preco_cents" in d:
+        preco = d["preco_cents"]
+        if preco is not None:
+            try:
+                preco = int(preco)
+            except (TypeError, ValueError):
+                return jsonify(erro="preco_cents tem de ser um número inteiro."), 400
+            if preco < 0:
+                return jsonify(erro="preco_cents não pode ser negativo."), 400
+        campos.append("preco_cents = ?")
+        vals.append(preco)
+
+    if "notas" in d:
+        campos.append("extra = ?")
+        vals.append(str(d["notas"] or "").strip() or None)
+
+    if not campos:
+        return jsonify(erro="Nada para atualizar."), 400
+
+    with obter_bd() as c:
+        c.execute(f"UPDATE agendamentos SET {', '.join(campos)} WHERE id = ?", (*vals, id_agendamento))
+    return _resposta_evento(id_agendamento, False)
 
 
 def _escapar_html(texto):
@@ -2684,14 +2906,55 @@ def api_cliente(customer_id):
     # histórico de marcações
     with obter_bd() as c:
         marc = c.execute(
-            "SELECT id, servico, data, hora, data_iso, hora_hhmm, estado, preco_cents, op_status "
+            "SELECT id, servico, servico_id, data, hora, data_iso, hora_hhmm, estado, preco_cents, op_status "
             "FROM agendamentos WHERE customer_id = ? ORDER BY COALESCE(data_iso,'') DESC, id DESC",
             (customer_id,)).fetchall()
-    historico = [dict(zip(("id", "servico", "data", "hora", "data_iso", "hora_hhmm",
+    historico = [dict(zip(("id", "servico", "servico_id", "data", "hora", "data_iso", "hora_hhmm",
                            "estado", "preco_cents", "op_status"), m)) for m in marc]
     from billing import engine as _bi
     faturas = _bi.faturas_do_cliente(customer_id, _TENANT)
-    return jsonify(cliente=cust, historico=historico, faturas=faturas), 200
+    eventos_cliente = bd.eventos_da_entidade("customer", customer_id, _TENANT)
+    return jsonify(cliente=cust, historico=historico, faturas=faturas, eventos=eventos_cliente), 200
+
+
+_MENSAGEM_MAX_CHARS = 1000
+
+
+@app.route("/api/clientes/<int:customer_id>/mensagem", methods=["POST"])
+@requer_autenticacao
+def api_cliente_mensagem(customer_id):
+    """Composer do Client Manager: envia UMA mensagem de texto livre a este
+    cliente. O telefone vem SEMPRE do registo do cliente, nunca do corpo do
+    pedido. Clientes DEMO nunca chegam à Meta (bloqueado em
+    messaging/whatsapp.py:enviar) — a mensagem é registada na mesma, para o
+    fluxo ser testável em QA."""
+    cust = bd.obter_customer(customer_id)
+    if not cust or cust["tenant_id"] != _TENANT:
+        return jsonify(erro="Cliente não encontrado."), 404
+
+    d = request.get_json(silent=True) or {}
+    texto = (d.get("texto") or "").strip()
+    if not texto:
+        return jsonify(erro="Escreva uma mensagem antes de enviar."), 400
+    if len(texto) > _MENSAGEM_MAX_CHARS:
+        return jsonify(erro=f"Mensagem demasiado longa (máx. {_MENSAGEM_MAX_CHARS} caracteres)."), 400
+
+    telefone = cust["phone"]
+    demo = telefone.startswith(DEMO_TELEFONE_PREFIXO)
+
+    if not demo and not dentro_da_janela_24h(telefone):
+        return jsonify(
+            erro="Fora da janela de 24h de atendimento do WhatsApp — não é possível enviar uma "
+                 "mensagem livre agora. É necessário um template aprovado pela Meta.",
+        ), 409
+
+    enviar_texto(telefone, texto)
+
+    with obter_bd() as conn:
+        bd.registar_evento(conn, "message.manual_sent", "customer", customer_id,
+                            {"texto": texto[:200]})
+
+    return jsonify(ok=True, demo=demo), 200
 
 
 # --- Faturação --------------------------------------------------------------
@@ -2780,6 +3043,437 @@ def api_definicoes_faturacao():
             return jsonify(erro=str(e)), 400
         return jsonify(cfg), 200
     return jsonify(bi.definicoes_faturacao(_TENANT)), 200
+
+
+# ---------------------------------------------------------------------------
+# Dev: seed de dados DEMO (TEMPORÁRIO) — enche o dashboard V3 no Render Free,
+# que não tem Shell para correr scripts. Protegido por ENABLE_DEMO_SEED
+# (falha sempre fechado, 404) + a MESMA autenticação HTTP Basic do painel.
+# Todos os dados são identificáveis pelo prefixo telefónico
+# DEMO_TELEFONE_PREFIXO — o DELETE só apaga esse prefixo, nunca clientes ou
+# marcações reais. Reutiliza sempre guardar_agendamento /
+# atualizar_estado_agendamento / cancelar_agendamento / transicao_operacional
+# — o MESMO motor de domínio do painel/WhatsApp — para os dados demo terem
+# exatamente a forma de dados reais (conflitos, CRM recalculado, catálogo
+# real). NUNCA chama disparar_automacoes(): os eventos de outbox gerados por
+# essas chamadas são marcados como processados diretamente (ver
+# `_neutralizar_eventos_demo`), para nenhum drain() futuro (webhook ou ação
+# real do painel) enviar uma notificação WhatsApp sobre um cliente ou
+# marcação de demonstração.
+# ---------------------------------------------------------------------------
+DEMO_TELEFONE_PREFIXO = config.DEMO_PHONE_PREFIX
+
+DEMO_NOMES = [
+    "Ana Müller", "Marta Silva", "Sofia Costa", "Laura Ferreira", "Julia Brunner",
+    "Carolina Santos", "Beatriz Lopes", "Sara Almeida", "Inês Martins", "Leonor Costa",
+    "Joana Pereira", "Mariana Rocha", "Clara Meier", "Nina Keller",
+    "Rita Fernandes", "Catarina Neves", "Helena Duarte", "Patrícia Gomes", "Filipa Ramos",
+    "Vera Antunes", "Cristina Baptista", "Diana Correia", "Renata Marques", "Isabel Nogueira",
+    "Anja Frei", "Sabrina Huber", "Lena Zimmermann", "Nicole Baumann", "Fabienne Steiner",
+    "Vanessa Weber", "Melanie Fischer", "Céline Moser", "Tamara Widmer", "Michelle Graf",
+    "Andreia Pinto", "Cátia Sousa", "Débora Teixeira", "Bruna Cardoso",
+]
+
+# Notas internas realistas — só uma parte dos clientes demo recebe uma (ver
+# `_demo_definir_perfis`), nunca todos.
+DEMO_NOTAS = [
+    "Prefere horários de manhã.",
+    "Pele sensível — confirmar produtos antes de aplicar.",
+    "Normalmente marca ao sábado.",
+    "Prefere marcações depois das 16h.",
+    "Gosta de confirmação por WhatsApp na véspera.",
+    "Já cancelou 2x em cima da hora — confirmar presença.",
+]
+
+# Preços "de balcão" usados SÓ para gerar faturas demo de serviços com preço
+# a confirmar no catálogo (brow_lamination/pestanas/dermaplaning) — nunca
+# escreve no catálogo oficial, só na marcação/fatura demo específica (ver
+# `gerar_fatura_de_marcacao`, preco_cents explícito = PrecoEmFalta resolvida
+# como a equipa faria manualmente ao emitir a fatura).
+DEMO_PRECO_A_CONFIRMAR_CENTS = {
+    "brow_lamination": 3500,
+    "pestanas": 6000,
+    "dermaplaning": 5000,
+}
+
+
+def _demo_telefone(indice_cliente):
+    return f"{DEMO_TELEFONE_PREFIXO}{indice_cliente:04d}"
+
+
+def _demo_ja_semeado():
+    with obter_bd() as conn:
+        linha = conn.execute(
+            "SELECT COUNT(*) FROM agendamentos WHERE telefone LIKE ?",
+            (f"{DEMO_TELEFONE_PREFIXO}%",)).fetchone()
+    return int(linha[0]) if linha else 0
+
+
+def _neutralizar_eventos_demo(agendamento_ids, customer_ids, invoice_ids=None):
+    """Marca como PROCESSADOS (sem correr handlers) os eventos das entidades
+    demo indicadas — nunca chama eventos.drain()/disparar_automacoes(). É
+    isto, e só isto, que garante que nenhum handler (que envia WhatsApp)
+    chega a correr para os eventos gerados pelo seed (inclui os eventos
+    invoice.created/issued/paid/cancelled das faturas demo)."""
+    agora = tempo.iso_utc()
+    with obter_bd() as conn:
+        if agendamento_ids:
+            marcas = ", ".join("?" for _ in agendamento_ids)
+            conn.execute(
+                "UPDATE events SET processed_at = ? WHERE processed_at IS NULL "
+                f"AND entity_type = 'appointment' AND entity_id IN ({marcas})",
+                (agora, *agendamento_ids))
+        if customer_ids:
+            marcas = ", ".join("?" for _ in customer_ids)
+            conn.execute(
+                "UPDATE events SET processed_at = ? WHERE processed_at IS NULL "
+                f"AND entity_type = 'customer' AND entity_id IN ({marcas})",
+                (agora, *customer_ids))
+        if invoice_ids:
+            marcas = ", ".join("?" for _ in invoice_ids)
+            conn.execute(
+                "UPDATE events SET processed_at = ? WHERE processed_at IS NULL "
+                f"AND entity_type = 'invoice' AND entity_id IN ({marcas})",
+                (agora, *invoice_ids))
+
+
+def _demo_criar_marcacao(indice_cliente, servico, data_iso, hora):
+    """Cria uma marcação demo com o MESMO motor de guardar_agendamento().
+    Devolve (id_agendamento, customer_id)."""
+    telefone = _demo_telefone(indice_cliente)
+    nome = DEMO_NOMES[indice_cliente % len(DEMO_NOMES)]
+    sessao = {
+        "nome": nome,
+        "servico": servico["nome_pt"],
+        "servico_id": servico["id"],
+        "data": _data_display(data_iso, "pt"),
+        "hora": hora,
+        "duracao": catalogo.duracao_label(servico["duracao_min"]),
+        "duracao_min": servico["duracao_min"],
+        "preco_cents": servico["preco_cents"],
+        "extra": None,
+        "carrinho": [],
+        "tenant_id": _TENANT,
+    }
+    id_ag = guardar_agendamento(telefone, sessao)
+    ag = obter_agendamento(id_ag)
+    return id_ag, (ag or {}).get("customer_id")
+
+
+def _demo_tentar_criar(rng, indice_cliente, servico, data_iso, candidatos):
+    """Tenta criar a marcação em cada candidato (ordem baralhada), saltando
+    os que entretanto ficaram ocupados por outra marcação demo do mesmo dia.
+    Devolve (id_agendamento, customer_id) ou (None, None) se nenhum resultou."""
+    ordem = list(candidatos)
+    rng.shuffle(ordem)
+    for hora in ordem:
+        try:
+            return _demo_criar_marcacao(indice_cliente, servico, data_iso, hora)
+        except HorarioOcupado:
+            continue
+    return None, None
+
+
+def _demo_avancar_para(id_agendamento, op_status_alvo):
+    """Avança passo a passo scheduled -> arrived -> in_progress -> done,
+    exatamente como a equipa faria no painel (nunca salta com forcar=True) —
+    'em curso' vem SEMPRE de op_status, nunca de inferência pelo relógio."""
+    from operations import engine as op_engine
+    for passo in ("arrived", "in_progress", "done"):
+        op_engine.transicao_operacional(id_agendamento, passo, _TENANT)
+        if passo == op_status_alvo:
+            return
+
+
+def _demo_seed_periodo(rng, servicos, dias_offset, ids_ag, ids_cust, historico):
+    """Semeia 2-4 marcações por dia ABERTO nos `dias_offset` indicados
+    (offsets em dias face a hoje). `historico=True` fecha cada marcação
+    (completed maioritariamente, algum no_show, algum cancelled) — usado no
+    passado. No futuro fica confirmed/scheduled (o omisso de
+    guardar_agendamento)."""
+    hoje = tempo.hoje_zurique()
+    for offset in dias_offset:
+        data_iso = (hoje + timedelta(days=offset)).isoformat()
+        if not bh_mod.dia_aberto(data_iso):
+            continue
+        for _ in range(rng.randint(3, 5)):
+            servico = rng.choice(servicos)
+            livres = av_mod.slots(servico["id"], data_iso)
+            if not livres:
+                continue
+            indice_cliente = rng.randrange(len(DEMO_NOMES))
+            id_ag, cust_id = _demo_tentar_criar(rng, indice_cliente, servico, data_iso, livres)
+            if id_ag is None:
+                continue
+            ids_ag.append(id_ag)
+            if cust_id:
+                ids_cust.add(cust_id)
+            if historico:
+                sorte = rng.random()
+                if sorte < 0.75:
+                    atualizar_estado_agendamento(id_ag, "completed")
+                elif sorte < 0.90:
+                    atualizar_estado_agendamento(id_ag, "no_show")
+                else:
+                    cancelar_agendamento(id_ag, libertar=True, avisar_cliente=False)
+
+
+def _demo_horas_dentro_do_horario(data_iso, duracao_min, passo=30):
+    """Horas de início (HH:MM) possíveis dentro do horário de funcionamento
+    do dia, SEM olhar a ocupação nem à hora atual — usado só para hoje, onde
+    é preciso escolher horas do PASSADO (completed/arrived/in_progress) que
+    scheduling.availability.slots() nunca devolve (só devolve futuro)."""
+    candidatas = []
+    for (abre, fecha) in bh_mod.janelas_do_dia(data_iso):
+        t = abre
+        while t + duracao_min <= fecha:
+            candidatas.append(f"{t // 60:02d}:{t % 60:02d}")
+            t += passo
+    return candidatas
+
+
+def _demo_seed_hoje(rng, servicos, ids_ag, ids_cust):
+    """8-10 marcações de hoje (~75-90% da capacidade de um único recurso num
+    dia de 09h-18h) com variedade no cockpit: 2x completed, 1 pending, 1
+    arrived, 1 in_progress, por vezes 1 no_show, resto scheduled. 'Em curso'
+    vem SEMPRE de op_status=in_progress (transicao_operacional) — nunca
+    inferido pelo relógio."""
+    hoje_iso = tempo.hoje_zurique().isoformat()
+    if not bh_mod.dia_aberto(hoje_iso):
+        return
+    agora = tempo.agora_zurique()
+    agora_min = agora.hour * 60 + agora.minute
+    n_hoje = rng.randint(8, 10)
+    base = ["completed", "completed", "pending", "arrived", "in_progress"]
+    sobra = n_hoje - len(base)
+    if sobra >= 2 and rng.random() < 0.5:
+        base.append("no_show")           # só se sobrar pelo menos 1 "scheduled"
+        sobra -= 1
+    papeis = (base + ["scheduled"] * max(0, sobra))[:n_hoje]
+
+    def _minutos(hhmm):
+        h, m = hhmm.split(":")
+        return int(h) * 60 + int(m)
+
+    for papel in papeis:
+        # Tenta cada serviço (ordem baralhada) até um encaixar: os já criados
+        # hoje podem ter ocupado a única janela livre de um serviço mais
+        # longo (ex.: Pestanas, 120min) — passar a outro serviço em vez de
+        # desistir logo é o que garante as 8-10 marcações de hoje do objetivo.
+        id_ag = cust_id = None
+        candidatos_por_servico = list(servicos)
+        rng.shuffle(candidatos_por_servico)
+        for servico in candidatos_por_servico:
+            dur = servico["duracao_min"]
+            if papel in ("scheduled", "pending"):
+                candidatos = av_mod.slots(servico["id"], hoje_iso)
+                if not candidatos:
+                    # Perto do fecho, a antecedência mínima real
+                    # (booking_policy.min_notice_min) já não deixa nada
+                    # livre hoje — mas o objetivo do seed (8-10 marcações de
+                    # HOJE, sempre, seja a que horas correr) não depende
+                    # dessa política pensada para o cliente real: um horário
+                    # mais tarde hoje ainda serve para o cockpit de demo.
+                    todas = _demo_horas_dentro_do_horario(hoje_iso, dur)
+                    candidatos = [h for h in todas if _minutos(h) >= agora_min] or todas
+            else:
+                todas = _demo_horas_dentro_do_horario(hoje_iso, dur)
+                if papel in ("completed", "no_show"):
+                    candidatos = [h for h in todas if _minutos(h) + dur <= agora_min - 15]
+                elif papel == "arrived":
+                    candidatos = [h for h in todas if _minutos(h) <= agora_min]
+                else:  # in_progress
+                    candidatos = [h for h in todas if _minutos(h) <= agora_min < _minutos(h) + dur]
+                if not candidatos:
+                    candidatos = todas
+            if not candidatos:
+                continue
+            indice_cliente = rng.randrange(len(DEMO_NOMES))
+            id_ag, cust_id = _demo_tentar_criar(rng, indice_cliente, servico, hoje_iso, candidatos)
+            if id_ag is not None:
+                break
+        if id_ag is None:
+            continue
+        ids_ag.append(id_ag)
+        if cust_id:
+            ids_cust.add(cust_id)
+        if papel == "completed":
+            _demo_avancar_para(id_ag, "done")
+        elif papel == "arrived":
+            _demo_avancar_para(id_ag, "arrived")
+        elif papel == "in_progress":
+            _demo_avancar_para(id_ag, "in_progress")
+        elif papel == "pending":
+            atualizar_estado_agendamento(id_ag, "pending")
+        elif papel == "no_show":
+            atualizar_estado_agendamento(id_ag, "no_show")
+        # "scheduled": fica tal como guardar_agendamento a criou.
+
+
+def _demo_definir_perfis(rng, ids_cust):
+    """VIP + nota interna para uma PARTE dos clientes demo (nunca todos) —
+    mesma coluna que o Client Manager edita em PATCH /api/clientes/<id>, só
+    que em lote. VIP = os 3 com mais visitas (o próprio recálculo de
+    visits_count já correu em guardar_agendamento/atualizar_estado_agendamento)."""
+    if not ids_cust:
+        return
+    ids_ordenados = sorted(ids_cust)
+    agora = tempo.iso_utc()
+    with obter_bd() as conn:
+        marcas = ", ".join("?" for _ in ids_ordenados)
+        visitas = {row[0]: row[1] for row in conn.execute(
+            f"SELECT id, visits_count FROM customers WHERE id IN ({marcas})",
+            ids_ordenados).fetchall()}
+        vips = sorted(ids_ordenados, key=lambda i: visitas.get(i, 0), reverse=True)[:3]
+        for cid in vips:
+            conn.execute("UPDATE customers SET vip = 1, updated_at = ? WHERE id = ?", (agora, cid))
+        candidatos_nota = [i for i in ids_ordenados if i not in vips]
+        rng.shuffle(candidatos_nota)
+        for cid, nota in zip(candidatos_nota[:len(DEMO_NOTAS)], DEMO_NOTAS):
+            conn.execute("UPDATE customers SET notes_internal = ?, updated_at = ? WHERE id = ?",
+                        (nota, agora, cid))
+
+
+def _demo_seed_faturas(rng, ids_ag):
+    """Fatura DEMO para a maior parte das marcações concluídas: mistura de
+    pagas (maioria)/emitidas/rascunho/anuladas, com 1-2 propositadamente
+    vencidas (due_date retroativo — só assim a Agenda/Faturas mostra uma
+    fatura vencida a sério, já que `emitir_fatura` calcula sempre o
+    vencimento a partir de HOJE). Usa sempre o MESMO motor de faturação do
+    painel (billing.engine) — nunca escreve totais/estados direto na tabela,
+    só o due_date das 1-2 vencidas."""
+    from billing import engine as _bi
+    contagem = {"paid": 0, "issued": 0, "overdue": 0, "draft": 0, "cancelled": 0}
+    if not ids_ag:
+        return [], contagem
+
+    with obter_bd() as conn:
+        marcas = ", ".join("?" for _ in ids_ag)
+        completas = conn.execute(
+            f"SELECT id FROM agendamentos WHERE id IN ({marcas}) AND estado = 'completed' "
+            "ORDER BY id", ids_ag).fetchall()
+    ids_completas = [r[0] for r in completas]
+
+    invoice_ids = []
+    vencidas_por_marcar = 2
+    anuladas_por_marcar = 2
+    for aid in ids_completas:
+        sorte = rng.random()
+        if sorte < 0.05:
+            continue  # nem toda marcação concluída chega a ter fatura — realista
+
+        ag = obter_agendamento(aid)
+        preco_extra = None
+        if ag.get("preco_cents") is None:
+            # serviço "a confirmar" no catálogo — preço fica só nesta
+            # marcação/fatura demo, o catálogo oficial não é tocado.
+            preco_extra = DEMO_PRECO_A_CONFIRMAR_CENTS.get(ag.get("servico_id"), 5000)
+
+        try:
+            inv = _bi.gerar_fatura_de_marcacao(aid, preco_cents=preco_extra, tenant_id=_TENANT)
+        except _bi.PrecoEmFalta:
+            continue
+        invoice_ids.append(inv["id"])
+
+        if sorte < 0.15 and anuladas_por_marcar > 0:
+            anuladas_por_marcar -= 1
+            _bi.anular_fatura(inv["id"], _TENANT)
+            contagem["cancelled"] += 1
+        elif sorte < 0.30:
+            contagem["draft"] += 1                       # fica em rascunho
+        else:
+            _bi.emitir_fatura(inv["id"], _TENANT)
+            if sorte < 0.50 and vencidas_por_marcar > 0:
+                vencidas_por_marcar -= 1
+                vencida = (tempo.hoje_zurique() - timedelta(days=12)).isoformat()
+                with obter_bd() as conn:
+                    conn.execute("UPDATE invoices SET due_date = ? WHERE id = ?",
+                                (vencida, inv["id"]))
+                contagem["overdue"] += 1
+            elif sorte < 0.50:
+                contagem["issued"] += 1
+            else:
+                _bi.marcar_paga(inv["id"], _TENANT)
+                contagem["paid"] += 1
+
+    return invoice_ids, contagem
+
+
+def _semear_dados_demo():
+    rng = random.Random("dashboard-demo-seed-v1")
+    servicos = bd.listar_servicos()
+    ids_ag, ids_cust = [], set()
+    _demo_seed_periodo(rng, servicos, range(-14, 0), ids_ag, ids_cust, historico=True)
+    _demo_seed_hoje(rng, servicos, ids_ag, ids_cust)
+    _demo_seed_periodo(rng, servicos, range(1, 22), ids_ag, ids_cust, historico=False)
+    _demo_definir_perfis(rng, ids_cust)
+    ids_fat, faturas_contagem = _demo_seed_faturas(rng, ids_ag)
+    _neutralizar_eventos_demo(ids_ag, ids_cust, ids_fat)
+    return ids_ag, ids_cust, ids_fat, faturas_contagem
+
+
+@app.route("/api/dev/seed-dashboard", methods=["POST", "DELETE"])
+@requer_autenticacao
+def api_dev_seed_dashboard():
+    """Seed DEMO temporário do dashboard V3 — só existe com ENABLE_DEMO_SEED=1
+    no ambiente (falha sempre fechado com 404, mesmo autenticado). Todos os
+    dados são identificáveis pelo prefixo telefónico DEMO_TELEFONE_PREFIXO.
+    Nunca envia WhatsApp: ver `_neutralizar_eventos_demo`."""
+    if not ENABLE_DEMO_SEED:
+        return jsonify(erro="not found"), 404
+
+    if request.method == "DELETE":
+        with obter_bd() as conn:
+            # Faturas/linhas/eventos demo primeiro — dependem de agendamentos
+            # e customers que só são apagados a seguir.
+            conn.execute(
+                "DELETE FROM invoice_lines WHERE invoice_id IN ("
+                "  SELECT id FROM invoices WHERE appointment_id IN "
+                "    (SELECT id FROM agendamentos WHERE telefone LIKE ?)"
+                "  OR customer_id IN (SELECT id FROM customers WHERE phone LIKE ?))",
+                (f"{DEMO_TELEFONE_PREFIXO}%", f"{DEMO_TELEFONE_PREFIXO}%"))
+            conn.execute(
+                "DELETE FROM events WHERE entity_type = 'invoice' AND entity_id IN ("
+                "  SELECT id FROM invoices WHERE appointment_id IN "
+                "    (SELECT id FROM agendamentos WHERE telefone LIKE ?)"
+                "  OR customer_id IN (SELECT id FROM customers WHERE phone LIKE ?))",
+                (f"{DEMO_TELEFONE_PREFIXO}%", f"{DEMO_TELEFONE_PREFIXO}%"))
+            cur = conn.execute(
+                "DELETE FROM invoices WHERE appointment_id IN "
+                "  (SELECT id FROM agendamentos WHERE telefone LIKE ?)"
+                "OR customer_id IN (SELECT id FROM customers WHERE phone LIKE ?)",
+                (f"{DEMO_TELEFONE_PREFIXO}%", f"{DEMO_TELEFONE_PREFIXO}%"))
+            apagadas_fat = cur.rowcount
+            conn.execute(
+                "DELETE FROM events WHERE entity_type = 'appointment' AND entity_id IN "
+                "(SELECT id FROM agendamentos WHERE telefone LIKE ?)",
+                (f"{DEMO_TELEFONE_PREFIXO}%",))
+            conn.execute(
+                "DELETE FROM events WHERE entity_type = 'customer' AND entity_id IN "
+                "(SELECT id FROM customers WHERE phone LIKE ?)",
+                (f"{DEMO_TELEFONE_PREFIXO}%",))
+            cur = conn.execute("DELETE FROM agendamentos WHERE telefone LIKE ?",
+                              (f"{DEMO_TELEFONE_PREFIXO}%",))
+            apagados_ag = cur.rowcount
+            cur = conn.execute("DELETE FROM customers WHERE phone LIKE ?",
+                              (f"{DEMO_TELEFONE_PREFIXO}%",))
+            apagados_cust = cur.rowcount
+        return jsonify(ok=True, deleted_appointments=apagados_ag,
+                       deleted_customers=apagados_cust, deleted_invoices=apagadas_fat), 200
+
+    ja = _demo_ja_semeado()
+    if ja:
+        return jsonify(ok=True, already_seeded=True, appointments=ja), 200
+
+    ids_ag, ids_cust, ids_fat, faturas_contagem = _semear_dados_demo()
+    hoje_iso = tempo.hoje_zurique().isoformat()
+    with obter_bd() as conn:
+        hoje_count = conn.execute(
+            "SELECT COUNT(*) FROM agendamentos WHERE telefone LIKE ? AND data_iso = ?",
+            (f"{DEMO_TELEFONE_PREFIXO}%", hoje_iso)).fetchone()[0]
+    return jsonify(ok=True, created=len(ids_ag), customers=len(ids_cust),
+                   today=hoje_count, invoices=len(ids_fat),
+                   invoices_breakdown=faturas_contagem), 201
 
 
 @app.route("/painel", methods=["GET"])
@@ -5450,10 +6144,23 @@ def receber_mensagem():
                 iniciar_escolha_servico(de, idioma, sessao)
                 return jsonify(status="ok"), 200
 
+            if id_botao == "mp_servicos":  # menu principal: "Serviços & preços" (leitura, sem tocar na sessão)
+                mostrar_catalogo_servicos(de, idioma, sessao)
+                return jsonify(status="ok"), 200
+
             # Escolha de um serviço Daniela Beauty (svc_<id>) — pode chegar como
             # botão OU como linha de lista; tratada nos dois sítios.
             if id_botao.startswith("svc_"):
                 escolher_servico(de, idioma, sessao, id_botao[len("svc_"):])
+                return jsonify(status="ok"), 200
+
+            # Detalhe de um serviço tocado no catálogo "Serviços & preços"
+            # (svcdet_<id>) — nunca inicia a marcação sozinho. Prefixo distinto
+            # de "cat_" de propósito: "cat_" já é reservado pelos IDs legados
+            # do Spotless (_PREFIXOS_LEGADOS acima) e um id de serviço real
+            # como "limpeza_pele" colidiria com "cat_limpeza".
+            if id_botao.startswith("svcdet_"):
+                mostrar_detalhe_servico(de, idioma, id_botao[len("svcdet_"):], sessao)
                 return jsonify(status="ok"), 200
 
             if id_botao == "confirmar":
@@ -5463,6 +6170,17 @@ def receber_mensagem():
                         and (sessao.get("servico_id") or sessao.get("servico"))):
                     nova = reiniciar_sessao(de)
                     enviar_menu_principal(de, idioma, saudacao=False, sessao=nova)
+                    return jsonify(status="ok"), 200
+
+                # Defesa extra: nunca confirmar com data/hora num formato
+                # inconsistente (ex.: uma data guardada por engano no campo
+                # "hora"). Recupera para o passo certo em vez de gravar ou
+                # mover uma marcação com valores errados.
+                if not data_iso_de_texto(sessao.get("data")) or not hora_hhmm_de_texto(sessao.get("hora")):
+                    libertar_horario_retido(de)
+                    sessao.pop("hora", None)
+                    guardar_sessao(de, sessao)
+                    passo_hora(de, idioma, sessao=sessao)
                     return jsonify(status="ok"), 200
 
                 # --- MODO REAGENDAMENTO — move a MESMA marcação -------------
@@ -5669,13 +6387,26 @@ def receber_mensagem():
                 return jsonify(status="ok"), 200
 
             if sessao.get("fluxo") in ("beauty", "reagendar") and sessao.get("servico_id"):
+                titulo_escolhido = msg["interactive"]["list_reply"]["title"]
                 if "data" not in sessao:
-                    sessao["data"] = msg["interactive"]["list_reply"]["title"]
+                    # Validação defensiva: esta lista só devolve datas: um
+                    # payload que não pareça data nunca pode ficar guardado
+                    # como se fosse — evita um estado inconsistente propagar-se
+                    # até à confirmação (ver passo_hora / passo_data).
+                    if not data_iso_de_texto(titulo_escolhido):
+                        nao_entendi_com_opcoes(de, idioma, sessao)
+                        return jsonify(status="ok"), 200
+                    sessao["data"] = titulo_escolhido
                     guardar_sessao(de, sessao)
                     passo_hora(de, idioma, sessao=sessao)
                     return jsonify(status="ok"), 200
                 if "hora" not in sessao:
-                    sessao["hora"] = msg["interactive"]["list_reply"]["title"]
+                    # Mesma validação defensiva, para a HORA: nunca aceitar
+                    # aqui algo que não seja um HH:MM real (ex.: uma data).
+                    if not hora_hhmm_de_texto(titulo_escolhido):
+                        nao_entendi_com_opcoes(de, idioma, sessao)
+                        return jsonify(status="ok"), 200
+                    sessao["hora"] = titulo_escolhido
                     guardar_sessao(de, sessao)
                     # Horário RETIDO em nome deste cliente até confirmar.
                     reter_horario(de, sessao)
