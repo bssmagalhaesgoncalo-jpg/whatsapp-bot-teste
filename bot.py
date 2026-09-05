@@ -1418,6 +1418,13 @@ def passo_hora(de, idioma, passo_n=3, sessao=None):
     antecedência. Um horário libertado reaparece de imediato, sem cache."""
     livres = horarios_livres_para_sessao(sessao, telefone=de)
     if not livres:
+        # Sem vagas nesta data: volta à escolha de DATA. Tem de limpar
+        # sessao["data"] aqui — senão o próximo list_reply (uma nova data)
+        # cai no ramo "hora" do dispatcher (que decide pelo campo "data"
+        # já estar preenchido) e a data escolhida é gravada como hora.
+        if sessao is not None:
+            sessao.pop("data", None)
+            guardar_sessao(de, sessao)
         enviar_texto(de, t("hora_sem_vagas", idioma))
         passo_data(de, idioma, sessao=sessao)
         return
@@ -5622,6 +5629,17 @@ def receber_mensagem():
                     enviar_menu_principal(de, idioma, saudacao=False, sessao=nova)
                     return jsonify(status="ok"), 200
 
+                # Defesa extra: nunca confirmar com data/hora num formato
+                # inconsistente (ex.: uma data guardada por engano no campo
+                # "hora"). Recupera para o passo certo em vez de gravar ou
+                # mover uma marcação com valores errados.
+                if not data_iso_de_texto(sessao.get("data")) or not hora_hhmm_de_texto(sessao.get("hora")):
+                    libertar_horario_retido(de)
+                    sessao.pop("hora", None)
+                    guardar_sessao(de, sessao)
+                    passo_hora(de, idioma, sessao=sessao)
+                    return jsonify(status="ok"), 200
+
                 # --- MODO REAGENDAMENTO — move a MESMA marcação -------------
                 # A marcação atual mantém-se INTACTA até este ponto. Só aqui,
                 # dentro de reagendar_agendamento (transação atómica, conflito
@@ -5826,13 +5844,26 @@ def receber_mensagem():
                 return jsonify(status="ok"), 200
 
             if sessao.get("fluxo") in ("beauty", "reagendar") and sessao.get("servico_id"):
+                titulo_escolhido = msg["interactive"]["list_reply"]["title"]
                 if "data" not in sessao:
-                    sessao["data"] = msg["interactive"]["list_reply"]["title"]
+                    # Validação defensiva: esta lista só devolve datas: um
+                    # payload que não pareça data nunca pode ficar guardado
+                    # como se fosse — evita um estado inconsistente propagar-se
+                    # até à confirmação (ver passo_hora / passo_data).
+                    if not data_iso_de_texto(titulo_escolhido):
+                        nao_entendi_com_opcoes(de, idioma, sessao)
+                        return jsonify(status="ok"), 200
+                    sessao["data"] = titulo_escolhido
                     guardar_sessao(de, sessao)
                     passo_hora(de, idioma, sessao=sessao)
                     return jsonify(status="ok"), 200
                 if "hora" not in sessao:
-                    sessao["hora"] = msg["interactive"]["list_reply"]["title"]
+                    # Mesma validação defensiva, para a HORA: nunca aceitar
+                    # aqui algo que não seja um HH:MM real (ex.: uma data).
+                    if not hora_hhmm_de_texto(titulo_escolhido):
+                        nao_entendi_com_opcoes(de, idioma, sessao)
+                        return jsonify(status="ok"), 200
+                    sessao["hora"] = titulo_escolhido
                     guardar_sessao(de, sessao)
                     # Horário RETIDO em nome deste cliente até confirmar.
                     reter_horario(de, sessao)
