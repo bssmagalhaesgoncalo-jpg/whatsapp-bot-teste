@@ -3067,7 +3067,34 @@ DEMO_NOMES = [
     "Ana Müller", "Marta Silva", "Sofia Costa", "Laura Ferreira", "Julia Brunner",
     "Carolina Santos", "Beatriz Lopes", "Sara Almeida", "Inês Martins", "Leonor Costa",
     "Joana Pereira", "Mariana Rocha", "Clara Meier", "Nina Keller",
+    "Rita Fernandes", "Catarina Neves", "Helena Duarte", "Patrícia Gomes", "Filipa Ramos",
+    "Vera Antunes", "Cristina Baptista", "Diana Correia", "Renata Marques", "Isabel Nogueira",
+    "Anja Frei", "Sabrina Huber", "Lena Zimmermann", "Nicole Baumann", "Fabienne Steiner",
+    "Vanessa Weber", "Melanie Fischer", "Céline Moser", "Tamara Widmer", "Michelle Graf",
+    "Andreia Pinto", "Cátia Sousa", "Débora Teixeira", "Bruna Cardoso",
 ]
+
+# Notas internas realistas — só uma parte dos clientes demo recebe uma (ver
+# `_demo_definir_perfis`), nunca todos.
+DEMO_NOTAS = [
+    "Prefere horários de manhã.",
+    "Pele sensível — confirmar produtos antes de aplicar.",
+    "Normalmente marca ao sábado.",
+    "Prefere marcações depois das 16h.",
+    "Gosta de confirmação por WhatsApp na véspera.",
+    "Já cancelou 2x em cima da hora — confirmar presença.",
+]
+
+# Preços "de balcão" usados SÓ para gerar faturas demo de serviços com preço
+# a confirmar no catálogo (brow_lamination/pestanas/dermaplaning) — nunca
+# escreve no catálogo oficial, só na marcação/fatura demo específica (ver
+# `gerar_fatura_de_marcacao`, preco_cents explícito = PrecoEmFalta resolvida
+# como a equipa faria manualmente ao emitir a fatura).
+DEMO_PRECO_A_CONFIRMAR_CENTS = {
+    "brow_lamination": 3500,
+    "pestanas": 6000,
+    "dermaplaning": 5000,
+}
 
 
 def _demo_telefone(indice_cliente):
@@ -3082,11 +3109,12 @@ def _demo_ja_semeado():
     return int(linha[0]) if linha else 0
 
 
-def _neutralizar_eventos_demo(agendamento_ids, customer_ids):
+def _neutralizar_eventos_demo(agendamento_ids, customer_ids, invoice_ids=None):
     """Marca como PROCESSADOS (sem correr handlers) os eventos das entidades
     demo indicadas — nunca chama eventos.drain()/disparar_automacoes(). É
     isto, e só isto, que garante que nenhum handler (que envia WhatsApp)
-    chega a correr para os eventos gerados pelo seed."""
+    chega a correr para os eventos gerados pelo seed (inclui os eventos
+    invoice.created/issued/paid/cancelled das faturas demo)."""
     agora = tempo.iso_utc()
     with obter_bd() as conn:
         if agendamento_ids:
@@ -3101,6 +3129,12 @@ def _neutralizar_eventos_demo(agendamento_ids, customer_ids):
                 "UPDATE events SET processed_at = ? WHERE processed_at IS NULL "
                 f"AND entity_type = 'customer' AND entity_id IN ({marcas})",
                 (agora, *customer_ids))
+        if invoice_ids:
+            marcas = ", ".join("?" for _ in invoice_ids)
+            conn.execute(
+                "UPDATE events SET processed_at = ? WHERE processed_at IS NULL "
+                f"AND entity_type = 'invoice' AND entity_id IN ({marcas})",
+                (agora, *invoice_ids))
 
 
 def _demo_criar_marcacao(indice_cliente, servico, data_iso, hora):
@@ -3162,7 +3196,7 @@ def _demo_seed_periodo(rng, servicos, dias_offset, ids_ag, ids_cust, historico):
         data_iso = (hoje + timedelta(days=offset)).isoformat()
         if not bh_mod.dia_aberto(data_iso):
             continue
-        for _ in range(rng.randint(2, 4)):
+        for _ in range(rng.randint(3, 5)):
             servico = rng.choice(servicos)
             livres = av_mod.slots(servico["id"], data_iso)
             if not livres:
@@ -3199,17 +3233,23 @@ def _demo_horas_dentro_do_horario(data_iso, duracao_min, passo=30):
 
 
 def _demo_seed_hoje(rng, servicos, ids_ag, ids_cust):
-    """4-6 marcações de hoje com variedade no cockpit: completed, arrived,
-    in_progress e as restantes scheduled. 'Em curso' vem SEMPRE de
-    op_status=in_progress (transicao_operacional) — nunca inferido pelo
-    relógio."""
+    """8-10 marcações de hoje (~75-90% da capacidade de um único recurso num
+    dia de 09h-18h) com variedade no cockpit: 2x completed, 1 pending, 1
+    arrived, 1 in_progress, por vezes 1 no_show, resto scheduled. 'Em curso'
+    vem SEMPRE de op_status=in_progress (transicao_operacional) — nunca
+    inferido pelo relógio."""
     hoje_iso = tempo.hoje_zurique().isoformat()
     if not bh_mod.dia_aberto(hoje_iso):
         return
     agora = tempo.agora_zurique()
     agora_min = agora.hour * 60 + agora.minute
-    n_hoje = rng.randint(4, 6)
-    papeis = (["completed", "arrived", "in_progress"] + ["scheduled"] * (n_hoje - 3))[:n_hoje]
+    n_hoje = rng.randint(8, 10)
+    base = ["completed", "completed", "pending", "arrived", "in_progress"]
+    sobra = n_hoje - len(base)
+    if sobra >= 2 and rng.random() < 0.5:
+        base.append("no_show")           # só se sobrar pelo menos 1 "scheduled"
+        sobra -= 1
+    papeis = (base + ["scheduled"] * max(0, sobra))[:n_hoje]
 
     def _minutos(hhmm):
         h, m = hhmm.split(":")
@@ -3219,18 +3259,18 @@ def _demo_seed_hoje(rng, servicos, ids_ag, ids_cust):
         # Tenta cada serviço (ordem baralhada) até um encaixar: os já criados
         # hoje podem ter ocupado a única janela livre de um serviço mais
         # longo (ex.: Pestanas, 120min) — passar a outro serviço em vez de
-        # desistir logo é o que garante as 4-6 marcações de hoje do objetivo.
+        # desistir logo é o que garante as 8-10 marcações de hoje do objetivo.
         id_ag = cust_id = None
         candidatos_por_servico = list(servicos)
         rng.shuffle(candidatos_por_servico)
         for servico in candidatos_por_servico:
             dur = servico["duracao_min"]
-            if papel == "scheduled":
+            if papel in ("scheduled", "pending"):
                 candidatos = av_mod.slots(servico["id"], hoje_iso)
                 if not candidatos:
                     # Perto do fecho, a antecedência mínima real
                     # (booking_policy.min_notice_min) já não deixa nada
-                    # livre hoje — mas o objetivo do seed (4-6 marcações de
+                    # livre hoje — mas o objetivo do seed (8-10 marcações de
                     # HOJE, sempre, seja a que horas correr) não depende
                     # dessa política pensada para o cliente real: um horário
                     # mais tarde hoje ainda serve para o cockpit de demo.
@@ -3238,7 +3278,7 @@ def _demo_seed_hoje(rng, servicos, ids_ag, ids_cust):
                     candidatos = [h for h in todas if _minutos(h) >= agora_min] or todas
             else:
                 todas = _demo_horas_dentro_do_horario(hoje_iso, dur)
-                if papel == "completed":
+                if papel in ("completed", "no_show"):
                     candidatos = [h for h in todas if _minutos(h) + dur <= agora_min - 15]
                 elif papel == "arrived":
                     candidatos = [h for h in todas if _minutos(h) <= agora_min]
@@ -3263,7 +3303,100 @@ def _demo_seed_hoje(rng, servicos, ids_ag, ids_cust):
             _demo_avancar_para(id_ag, "arrived")
         elif papel == "in_progress":
             _demo_avancar_para(id_ag, "in_progress")
+        elif papel == "pending":
+            atualizar_estado_agendamento(id_ag, "pending")
+        elif papel == "no_show":
+            atualizar_estado_agendamento(id_ag, "no_show")
         # "scheduled": fica tal como guardar_agendamento a criou.
+
+
+def _demo_definir_perfis(rng, ids_cust):
+    """VIP + nota interna para uma PARTE dos clientes demo (nunca todos) —
+    mesma coluna que o Client Manager edita em PATCH /api/clientes/<id>, só
+    que em lote. VIP = os 3 com mais visitas (o próprio recálculo de
+    visits_count já correu em guardar_agendamento/atualizar_estado_agendamento)."""
+    if not ids_cust:
+        return
+    ids_ordenados = sorted(ids_cust)
+    agora = tempo.iso_utc()
+    with obter_bd() as conn:
+        marcas = ", ".join("?" for _ in ids_ordenados)
+        visitas = {row[0]: row[1] for row in conn.execute(
+            f"SELECT id, visits_count FROM customers WHERE id IN ({marcas})",
+            ids_ordenados).fetchall()}
+        vips = sorted(ids_ordenados, key=lambda i: visitas.get(i, 0), reverse=True)[:3]
+        for cid in vips:
+            conn.execute("UPDATE customers SET vip = 1, updated_at = ? WHERE id = ?", (agora, cid))
+        candidatos_nota = [i for i in ids_ordenados if i not in vips]
+        rng.shuffle(candidatos_nota)
+        for cid, nota in zip(candidatos_nota[:len(DEMO_NOTAS)], DEMO_NOTAS):
+            conn.execute("UPDATE customers SET notes_internal = ?, updated_at = ? WHERE id = ?",
+                        (nota, agora, cid))
+
+
+def _demo_seed_faturas(rng, ids_ag):
+    """Fatura DEMO para a maior parte das marcações concluídas: mistura de
+    pagas (maioria)/emitidas/rascunho/anuladas, com 1-2 propositadamente
+    vencidas (due_date retroativo — só assim a Agenda/Faturas mostra uma
+    fatura vencida a sério, já que `emitir_fatura` calcula sempre o
+    vencimento a partir de HOJE). Usa sempre o MESMO motor de faturação do
+    painel (billing.engine) — nunca escreve totais/estados direto na tabela,
+    só o due_date das 1-2 vencidas."""
+    from billing import engine as _bi
+    contagem = {"paid": 0, "issued": 0, "overdue": 0, "draft": 0, "cancelled": 0}
+    if not ids_ag:
+        return [], contagem
+
+    with obter_bd() as conn:
+        marcas = ", ".join("?" for _ in ids_ag)
+        completas = conn.execute(
+            f"SELECT id FROM agendamentos WHERE id IN ({marcas}) AND estado = 'completed' "
+            "ORDER BY id", ids_ag).fetchall()
+    ids_completas = [r[0] for r in completas]
+
+    invoice_ids = []
+    vencidas_por_marcar = 2
+    anuladas_por_marcar = 2
+    for aid in ids_completas:
+        sorte = rng.random()
+        if sorte < 0.05:
+            continue  # nem toda marcação concluída chega a ter fatura — realista
+
+        ag = obter_agendamento(aid)
+        preco_extra = None
+        if ag.get("preco_cents") is None:
+            # serviço "a confirmar" no catálogo — preço fica só nesta
+            # marcação/fatura demo, o catálogo oficial não é tocado.
+            preco_extra = DEMO_PRECO_A_CONFIRMAR_CENTS.get(ag.get("servico_id"), 5000)
+
+        try:
+            inv = _bi.gerar_fatura_de_marcacao(aid, preco_cents=preco_extra, tenant_id=_TENANT)
+        except _bi.PrecoEmFalta:
+            continue
+        invoice_ids.append(inv["id"])
+
+        if sorte < 0.15 and anuladas_por_marcar > 0:
+            anuladas_por_marcar -= 1
+            _bi.anular_fatura(inv["id"], _TENANT)
+            contagem["cancelled"] += 1
+        elif sorte < 0.30:
+            contagem["draft"] += 1                       # fica em rascunho
+        else:
+            _bi.emitir_fatura(inv["id"], _TENANT)
+            if sorte < 0.50 and vencidas_por_marcar > 0:
+                vencidas_por_marcar -= 1
+                vencida = (tempo.hoje_zurique() - timedelta(days=12)).isoformat()
+                with obter_bd() as conn:
+                    conn.execute("UPDATE invoices SET due_date = ? WHERE id = ?",
+                                (vencida, inv["id"]))
+                contagem["overdue"] += 1
+            elif sorte < 0.50:
+                contagem["issued"] += 1
+            else:
+                _bi.marcar_paga(inv["id"], _TENANT)
+                contagem["paid"] += 1
+
+    return invoice_ids, contagem
 
 
 def _semear_dados_demo():
@@ -3273,8 +3406,10 @@ def _semear_dados_demo():
     _demo_seed_periodo(rng, servicos, range(-14, 0), ids_ag, ids_cust, historico=True)
     _demo_seed_hoje(rng, servicos, ids_ag, ids_cust)
     _demo_seed_periodo(rng, servicos, range(1, 22), ids_ag, ids_cust, historico=False)
-    _neutralizar_eventos_demo(ids_ag, ids_cust)
-    return ids_ag, ids_cust
+    _demo_definir_perfis(rng, ids_cust)
+    ids_fat, faturas_contagem = _demo_seed_faturas(rng, ids_ag)
+    _neutralizar_eventos_demo(ids_ag, ids_cust, ids_fat)
+    return ids_ag, ids_cust, ids_fat, faturas_contagem
 
 
 @app.route("/api/dev/seed-dashboard", methods=["POST", "DELETE"])
@@ -3289,6 +3424,26 @@ def api_dev_seed_dashboard():
 
     if request.method == "DELETE":
         with obter_bd() as conn:
+            # Faturas/linhas/eventos demo primeiro — dependem de agendamentos
+            # e customers que só são apagados a seguir.
+            conn.execute(
+                "DELETE FROM invoice_lines WHERE invoice_id IN ("
+                "  SELECT id FROM invoices WHERE appointment_id IN "
+                "    (SELECT id FROM agendamentos WHERE telefone LIKE ?)"
+                "  OR customer_id IN (SELECT id FROM customers WHERE phone LIKE ?))",
+                (f"{DEMO_TELEFONE_PREFIXO}%", f"{DEMO_TELEFONE_PREFIXO}%"))
+            conn.execute(
+                "DELETE FROM events WHERE entity_type = 'invoice' AND entity_id IN ("
+                "  SELECT id FROM invoices WHERE appointment_id IN "
+                "    (SELECT id FROM agendamentos WHERE telefone LIKE ?)"
+                "  OR customer_id IN (SELECT id FROM customers WHERE phone LIKE ?))",
+                (f"{DEMO_TELEFONE_PREFIXO}%", f"{DEMO_TELEFONE_PREFIXO}%"))
+            cur = conn.execute(
+                "DELETE FROM invoices WHERE appointment_id IN "
+                "  (SELECT id FROM agendamentos WHERE telefone LIKE ?)"
+                "OR customer_id IN (SELECT id FROM customers WHERE phone LIKE ?)",
+                (f"{DEMO_TELEFONE_PREFIXO}%", f"{DEMO_TELEFONE_PREFIXO}%"))
+            apagadas_fat = cur.rowcount
             conn.execute(
                 "DELETE FROM events WHERE entity_type = 'appointment' AND entity_id IN "
                 "(SELECT id FROM agendamentos WHERE telefone LIKE ?)",
@@ -3304,20 +3459,21 @@ def api_dev_seed_dashboard():
                               (f"{DEMO_TELEFONE_PREFIXO}%",))
             apagados_cust = cur.rowcount
         return jsonify(ok=True, deleted_appointments=apagados_ag,
-                       deleted_customers=apagados_cust), 200
+                       deleted_customers=apagados_cust, deleted_invoices=apagadas_fat), 200
 
     ja = _demo_ja_semeado()
     if ja:
         return jsonify(ok=True, already_seeded=True, appointments=ja), 200
 
-    ids_ag, ids_cust = _semear_dados_demo()
+    ids_ag, ids_cust, ids_fat, faturas_contagem = _semear_dados_demo()
     hoje_iso = tempo.hoje_zurique().isoformat()
     with obter_bd() as conn:
         hoje_count = conn.execute(
             "SELECT COUNT(*) FROM agendamentos WHERE telefone LIKE ? AND data_iso = ?",
             (f"{DEMO_TELEFONE_PREFIXO}%", hoje_iso)).fetchone()[0]
     return jsonify(ok=True, created=len(ids_ag), customers=len(ids_cust),
-                   today=hoje_count), 201
+                   today=hoje_count, invoices=len(ids_fat),
+                   invoices_breakdown=faturas_contagem), 201
 
 
 @app.route("/painel", methods=["GET"])
