@@ -87,6 +87,10 @@ const initials = (name) =>
 
 const OP_LABEL = { scheduled: "Agendada", arrived: "Chegou", in_progress: "Em curso", done: "Concluída" };
 const EST_LABEL = { confirmed: "Confirmada", pending: "Pendente", cancelled: "Cancelada", completed: "Concluída", no_show: "Não compareceu" };
+// Reminder 24h (P1, ver notifications/reminders.py) — mesmos 5 conceitos do
+// backend, sem inventar mais nenhum aqui.
+const REMINDER_LABEL = { agendado: "Agendado", enviado: "Enviado", confirmado: "Confirmado",
+                         nao_aplicavel: "Não aplicável", cancelado: "Cancelado", falhou: "Falhou" };
 function statusBadge(estado, op, bloqueiaHorario) {
   const e = (estado || "").toLowerCase();
   if (e === "cancelled")
@@ -171,7 +175,9 @@ function renderAppointment(ag) {
       h("dt", {}, "Hora"), h("dd", { class: "tnum" }, ag.hora || ag.hora_hhmm || "—"),
       h("dt", {}, "Duração"), h("dd", {}, ag.duracao_min ? fmtMin(ag.duracao_min) : (ag.duracao || "—")),
       h("dt", {}, "Preço"), h("dd", {}, totalLabel),
-      h("dt", {}, "Estado operacional"), h("dd", {}, OP_LABEL[op] || op)),
+      h("dt", {}, "Estado operacional"), h("dd", {}, OP_LABEL[op] || op),
+      ag.reminder_24h ? h("dt", {}, "Reminder 24h") : null,
+      ag.reminder_24h ? h("dd", {}, REMINDER_LABEL[ag.reminder_24h.estado] || ag.reminder_24h.estado) : null),
     cli ? h("div", { class: "card card--pad", style: "margin-top:8px" },
       h("div", { class: "eyebrow", style: "margin:0 0 8px" }, "Cliente"),
       h("dl", { class: "dl" },

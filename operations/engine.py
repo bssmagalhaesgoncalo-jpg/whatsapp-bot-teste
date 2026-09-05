@@ -286,14 +286,22 @@ def attention_items(tenant_id: int = 1, agora: datetime | None = None) -> list[d
                       "detalhe": f"{data} {hora}", "acao": "definir_preco",
                       "appointment_id": aid})
 
-    # notificações que falharam todas as tentativas (só owner)
+    # notificações que falharam todas as tentativas (só owner) — junta a
+    # outbox de eventos (P0) com os jobs adiados "failed" (P0 post_service +
+    # P1 reminder_24h, ver notifications/jobs.py): é o MESMO item, não dois,
+    # porque para quem gere o negócio é a mesma coisa — "algo não chegou ao
+    # cliente e precisa de atenção".
     with db.ligacao() as c:
         falhas = c.execute(
             "SELECT COUNT(*) FROM events WHERE tenant_id = ? AND processed_at IS NULL "
             "AND created_at < ?", (tenant_id, tempo.iso_utc(agora - timedelta(minutes=15)))).fetchone()[0]
-    if falhas:
+        jobs_falhados = c.execute(
+            "SELECT COUNT(*) FROM automation_jobs WHERE tenant_id = ? AND status = 'failed'",
+            (tenant_id,)).fetchone()[0]
+    total_falhas = falhas + jobs_falhados
+    if total_falhas:
         itens.append({"nivel": "agora", "tipo": "automacao_falhou",
-                      "titulo": f"{falhas} notificação(ões) por enviar há >15 min",
+                      "titulo": f"{total_falhas} notificação(ões) por enviar há >15 min",
                       "detalhe": "A Meta pode estar em baixo — as marcações estão OK.",
                       "acao": "re_tentar"})
 
