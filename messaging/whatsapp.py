@@ -69,3 +69,21 @@ def enviar_texto(destinatario: str, texto: str):
         "type": "text",
         "text": {"body": texto},
     })
+
+
+def enviar_documento(destinatario: str, link: str, filename: str | None = None,
+                     caption: str | None = None):
+    """Documento por LINK público (ex.: o PDF de uma fatura) — evita o upload
+    em dois passos da Graph API. Passa sempre por `enviar()`: DEMO nunca
+    chega à Meta, tal como o texto."""
+    documento = {"link": link}
+    if filename:
+        documento["filename"] = filename
+    if caption:
+        documento["caption"] = caption
+    return enviar({
+        "messaging_product": "whatsapp",
+        "to": destinatario,
+        "type": "document",
+        "document": documento,
+    })

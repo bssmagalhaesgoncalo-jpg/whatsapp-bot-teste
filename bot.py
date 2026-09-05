@@ -45,6 +45,8 @@ from messaging import whatsapp as _wa
 from core import events as eventos
 from notifications import business as notif_negocio
 from notifications import followup as notif_followup
+from notifications import postservice as notif_postservice
+from notifications import jobs as notif_jobs
 from scheduling import business_hours as bh_mod
 from scheduling import availability as av_mod
 
@@ -110,6 +112,12 @@ def _notificar_criacao_marcacao(ev):
 
 eventos.registar("booking.created", _notificar_criacao_marcacao)
 eventos.registar("booking.pending", _notificar_criacao_marcacao)
+
+# P0 — pós-atendimento automático: booking.completed prepara a faturação e
+# agenda o job "post_service"; o job (executado por process_due_jobs, ver
+# /api/automacoes/correr) é que envia o WhatsApp +5 min depois.
+eventos.registar("booking.completed", notif_postservice.handler_booking_completed)
+notif_jobs.registar_handler(notif_jobs.TYPE_POST_SERVICE, notif_postservice.executar_post_service)
 
 
 def disparar_automacoes():
@@ -492,6 +500,22 @@ TEXTOS = {
                                "en": "*{servico}*\n{duracao} · {preco}"},
     "botao_marcar_este": {"pt": "Marcar agora", "de": "Jetzt buchen",
                            "en": "Book now"},
+
+    # --- Pós-atendimento (P0): agradecimento + PDF + pedido de feedback ------
+    "pos_atendimento_obrigada": {
+        "pt": "Obrigada pela sua visita 🤍 Esperamos que tenha gostado do seu tratamento.",
+        "de": "Vielen Dank für Ihren Besuch 🤍 Wir hoffen, Ihre Behandlung hat Ihnen gefallen.",
+        "en": "Thank you for your visit 🤍 We hope you enjoyed your treatment."},
+    "pos_atendimento_pdf_legenda": {
+        "pt": "A sua fatura.", "de": "Ihre Rechnung.", "en": "Your invoice."},
+    "pos_atendimento_feedback_pedido": {
+        "pt": "Como foi a sua experiência? Pode responder diretamente a esta mensagem.",
+        "de": "Wie war Ihre Erfahrung? Sie können direkt auf diese Nachricht antworten.",
+        "en": "How was your experience? You can reply directly to this message."},
+    "pos_atendimento_feedback_obrigada": {
+        "pt": "Muito obrigada pelo seu feedback! 🤍",
+        "de": "Vielen Dank für Ihr Feedback! 🤍",
+        "en": "Thank you so much for your feedback! 🤍"},
 }
 
 
@@ -660,7 +684,11 @@ CAMPOS_AGENDAMENTO = ["id", "telefone", "nome", "categoria", "servico", "extra",
                       "tenant_id", "customer_id",
                       "op_status", "arrived_at", "started_at", "completed_at",
                       # follow-up / reativação (migração 17, ver notifications/followup.py)
-                      "follow_up_status", "follow_up_sent_at"]
+                      "follow_up_status", "follow_up_sent_at",
+                      # P0 — pós-atendimento + instrumentação (migração 18, ver
+                      # notifications/postservice.py e notifications/jobs.py)
+                      "booking_source", "post_service_thanks_sent_at",
+                      "feedback_requested_at", "feedback_text", "feedback_at"]
 SQL_COLUNAS_AGENDAMENTO = ", ".join(CAMPOS_AGENDAMENTO)
 
 
@@ -701,12 +729,18 @@ def guardar_agendamento(telefone, sessao):
         cust = bd.obter_ou_criar_customer(telefone, sessao.get("nome"), sessao.get("idioma"),
                                           tenant_id=tenant_id, conn=conn)
 
+        # De onde veio esta marcação (instrumentação — nunca inferido para
+        # marcações antigas, que ficam 'unknown' pelo DEFAULT da coluna).
+        # O painel (api_agendamento_criar) passa "dashboard" explicitamente;
+        # sem indicação nenhuma, assume-se o chamador principal desta função:
+        # o próprio fluxo de marcação do bot no WhatsApp.
+        booking_source = sessao.get("booking_source") or "whatsapp_bot"
         cur = conn.execute(
             "INSERT INTO agendamentos "
             "(telefone, nome, categoria, servico, extra, data, hora, preco, duracao, estado, criado_em, "
             "carrinho_json, bloqueia_horario, servico_id, data_iso, hora_hhmm, duracao_min, preco_cents, "
-            "tenant_id, customer_id, op_status) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, 'scheduled')",
+            "tenant_id, customer_id, op_status, booking_source) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, 'scheduled', ?)",
             (
                 telefone, sessao.get("nome"), sessao.get("categoria"),
                 sessao.get("servico"), sessao.get("extra"),
@@ -716,7 +750,7 @@ def guardar_agendamento(telefone, sessao):
                 tempo.iso_utc(),
                 json.dumps(sessao.get("carrinho", [])),
                 servico_id, data_iso, hora, duracao_min, preco_cents,
-                tenant_id, cust["id"],
+                tenant_id, cust["id"], booking_source,
             ),
         )
         id_ag = cur.lastrowid
@@ -1107,6 +1141,10 @@ def enviar(payload):
 
 def enviar_texto(destinatario, texto):
     return _wa.enviar_texto(destinatario, texto)
+
+
+def enviar_documento(destinatario, link, filename=None, caption=None):
+    return _wa.enviar_documento(destinatario, link, filename=filename, caption=caption)
 
 
 ID_PAG_SEGUINTE = "pag_seguinte_"
@@ -2450,6 +2488,7 @@ def api_agendamento_criar():
         "extra": str(d.get("notas") or "").strip() or None,
         "carrinho": [],
         "tenant_id": _TENANT,
+        "booking_source": "dashboard",
     }
     try:
         id_ag = guardar_agendamento(telefone, sessao)
@@ -2981,16 +3020,30 @@ def api_cliente(customer_id):
             with obter_bd() as c:
                 c.execute(f"UPDATE customers SET {', '.join(campos)} WHERE id = ?", vals)
         cust = bd.obter_customer(customer_id)
-    # histórico de marcações
+    # histórico de marcações — inclui os marcadores do pós-atendimento (P0)
+    # para o Client Manager mostrar o checklist da visita (§17 do patch):
+    # concluído / fatura / pago / PDF enviado / feedback pedido+recebido.
+    # Tudo composto a partir de fontes já existentes (agendamentos + invoices
+    # + eventos) — nenhuma fonte de verdade nova.
+    _campos_historico = ("id", "servico", "servico_id", "data", "hora", "data_iso", "hora_hhmm",
+                         "estado", "preco_cents", "op_status", "completed_at",
+                         "post_service_thanks_sent_at", "feedback_requested_at",
+                         "feedback_text", "feedback_at")
     with obter_bd() as c:
         marc = c.execute(
-            "SELECT id, servico, servico_id, data, hora, data_iso, hora_hhmm, estado, preco_cents, op_status "
-            "FROM agendamentos WHERE customer_id = ? ORDER BY COALESCE(data_iso,'') DESC, id DESC",
+            f"SELECT {', '.join(_campos_historico)} FROM agendamentos "
+            "WHERE customer_id = ? ORDER BY COALESCE(data_iso,'') DESC, id DESC",
             (customer_id,)).fetchall()
-    historico = [dict(zip(("id", "servico", "servico_id", "data", "hora", "data_iso", "hora_hhmm",
-                           "estado", "preco_cents", "op_status"), m)) for m in marc]
+    historico = [dict(zip(_campos_historico, m)) for m in marc]
     from billing import engine as _bi
     faturas = _bi.faturas_do_cliente(customer_id, _TENANT)
+    faturas_por_marcacao = {f["appointment_id"]: f for f in faturas if f.get("appointment_id")}
+    for visita in historico:
+        fatura = faturas_por_marcacao.get(visita["id"])
+        visita["fatura"] = None if not fatura else {
+            "id": fatura["id"], "invoice_number": fatura["invoice_number"],
+            "status": fatura["status"], "total_cents": fatura["total_cents"],
+            "payment_method": fatura["payment_method"], "pdf_sent_at": fatura["pdf_sent_at"]}
     eventos_cliente = bd.eventos_da_entidade("customer", customer_id, _TENANT)
     return jsonify(cliente=cust, historico=historico, faturas=faturas, eventos=eventos_cliente), 200
 
@@ -3102,12 +3155,42 @@ def api_fatura(invoice_id):
 def api_fatura_accao(invoice_id, accao):
     bi = _faturas_engine()
     fn = {"emitir": bi.emitir_fatura, "pagar": bi.marcar_paga, "anular": bi.anular_fatura}.get(accao)
-    if not fn:
-        return jsonify(erro="Ação inválida (emitir / pagar / anular)."), 400
-    try:
-        return jsonify(fn(invoice_id, _TENANT)), 200
-    except bi.ErroFaturacao as e:
-        return _resp_erro_fatura(e)
+    if fn:
+        try:
+            return jsonify(fn(invoice_id, _TENANT)), 200
+        except bi.ErroFaturacao as e:
+            return _resp_erro_fatura(e)
+    if accao == "reenviar":
+        return api_fatura_reenviar(invoice_id)
+    return jsonify(erro="Ação inválida (emitir / pagar / anular / reenviar)."), 400
+
+
+def api_fatura_reenviar(invoice_id):
+    """Reenvio manual do PDF (botão no painel) — mesmo envio do pós-atendimento
+    automático, mas sem esperar pelo job nem pela idempotência de "primeira
+    vez": `forcar=True` envia sempre, mesmo que já tenha sido enviado."""
+    bi = _faturas_engine()
+    inv = bi.obter_fatura(invoice_id, _TENANT)
+    if not inv:
+        return jsonify(erro="Fatura não encontrada."), 404
+    if inv["status"] not in (bi.STATUS_EMITIDA, bi.STATUS_PAGA):
+        return jsonify(erro="Só se reenvia o PDF de uma fatura emitida ou paga."), 409
+    if not inv.get("customer_id"):
+        return jsonify(erro="Fatura sem cliente associado."), 409
+    cust = bd.obter_customer(inv["customer_id"])
+    telefone = cust.get("phone") if cust else None
+    if not telefone:
+        return jsonify(erro="Cliente sem telefone válido."), 409
+    if not config.PUBLIC_BASE_URL:
+        return jsonify(erro="PUBLIC_BASE_URL não configurado — não é possível gerar o link do PDF."), 503
+
+    idioma = (cust.get("locale") if cust else None) or "pt"
+    token = bi.garantir_pdf_token(invoice_id, _TENANT)
+    link = f"{config.PUBLIC_BASE_URL}/faturas/pdf/{token}"
+    nome_ficheiro = f"fatura-{inv.get('invoice_number') or invoice_id}.pdf"
+    enviar_documento(telefone, link, filename=nome_ficheiro, caption=t("pos_atendimento_pdf_legenda", idioma))
+    inv = bi.marcar_pdf_enviado(invoice_id, _TENANT, reenvio=True)
+    return jsonify(inv), 200
 
 
 @app.route("/api/definicoes/faturacao", methods=["GET", "PUT"])
@@ -3121,6 +3204,40 @@ def api_definicoes_faturacao():
             return jsonify(erro=str(e)), 400
         return jsonify(cfg), 200
     return jsonify(bi.definicoes_faturacao(_TENANT)), 200
+
+
+@app.route("/faturas/pdf/<token>", methods=["GET"])
+def servir_pdf_fatura(token):
+    """Download do PDF de uma fatura — SEM autenticação de painel: o token
+    (longo, aleatório, gerado em billing.engine.garantir_pdf_token) É a
+    autorização, exatamente como um link de fatura enviado por e-mail/
+    WhatsApp normalmente funciona. Gera o PDF na hora a partir dos dados já
+    congelados na fatura — não se guarda nenhum ficheiro em disco."""
+    from billing import engine as bi
+    from billing import pdf as bi_pdf
+    inv = bi.obter_fatura_por_token(token)
+    if not inv:
+        return jsonify(erro="Fatura não encontrada."), 404
+    settings = bi.definicoes_faturacao(inv["tenant_id"])
+    corpo = bi_pdf.gerar_pdf_fatura(inv, settings)
+    nome_ficheiro = f"fatura-{inv.get('invoice_number') or inv['id']}.pdf"
+    return Response(corpo, mimetype="application/pdf", headers={
+        "Content-Disposition": f'inline; filename="{nome_ficheiro}"'})
+
+
+@app.route("/api/automacoes/correr", methods=["POST"])
+@requer_autenticacao
+def api_automacoes_correr():
+    """EXECUTOR — chamado periodicamente (Render Cron ou equivalente
+    externo; painel autenticado por agora) para processar os jobs de
+    automação já devidos. Hoje só existe o handler "post_service" (P0);
+    reminders/rebooking (P1/P2) registam-se pelo mesmo mecanismo, sem mexer
+    nesta rota. Idempotente: correr duas vezes seguidas nunca duplica envios
+    — cada efeito importante tem o seu próprio marcador (ver
+    notifications/postservice.py)."""
+    resumo = notif_jobs.process_due_jobs(_TENANT)
+    disparar_automacoes()
+    return jsonify(ok=True, **resumo), 200
 
 
 # ---------------------------------------------------------------------------
@@ -6119,6 +6236,13 @@ def receber_mensagem():
                     {"id": "retomar_recomecar", "titulo": t("botao_recomecar", idioma)},
                 ]
                 enviar_botoes(de, t("retomar_pergunta", idioma), botoes_retomar, idioma)
+                return jsonify(status="ok"), 200
+
+            # resposta a um pedido de feedback pós-atendimento em aberto —
+            # só intercepta quando chega aqui (nenhum fluxo em curso, não é
+            # um comando conhecido); nunca "adivinha" se não há pedido pendente.
+            if notif_postservice.tentar_guardar_feedback(de, msg["text"]["body"]):
+                enviar_texto(de, t("pos_atendimento_feedback_obrigada", idioma))
                 return jsonify(status="ok"), 200
 
             # primeira mensagem / sem sessão em curso -> menu principal

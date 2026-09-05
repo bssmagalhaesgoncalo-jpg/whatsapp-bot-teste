@@ -22,6 +22,8 @@ Estados: draft -> issued -> paid ; draft|issued -> cancelled (paid não).
 
 from __future__ import annotations
 
+import secrets
+
 import db
 import tempo
 
@@ -37,6 +39,8 @@ _CAMPOS_INVOICE = (
     "customer_name_snapshot", "customer_address_snapshot",
     "business_name_snapshot", "business_address_snapshot", "business_vat_snapshot",
     "notes", "created_at", "issued_at", "paid_at", "cancelled_at",
+    # P0 — pós-atendimento automático (ver notifications/postservice.py)
+    "payment_method", "pdf_token", "pdf_sent_at", "pdf_last_sent_at",
 )
 _SQL_INVOICE = ", ".join(_CAMPOS_INVOICE)
 
@@ -361,7 +365,14 @@ def emitir_fatura(invoice_id: int, tenant_id: int = 1) -> dict:
         return _montar(c, row)
 
 
-def marcar_paga(invoice_id: int, tenant_id: int = 1) -> dict:
+PAGAMENTO_CASH = "cash"
+
+
+def marcar_paga(invoice_id: int, tenant_id: int = 1, metodo: str = PAGAMENTO_CASH) -> dict:
+    """issued -> paid. `metodo` é só informativo (P0: sempre "cash" — é o
+    único que a Daniela usa; ver §23 do patch — TWINT/Stripe/QR-Bill ficam de
+    fora). Idempotente: chamar outra vez numa fatura já paga não muda o
+    método nem gera um segundo evento."""
     with db.ligacao() as c:
         c.execute("BEGIN IMMEDIATE")
         row = c.execute("SELECT status FROM invoices WHERE id = ? AND tenant_id = ?",
@@ -373,10 +384,66 @@ def marcar_paga(invoice_id: int, tenant_id: int = 1) -> dict:
         elif row[0] != STATUS_EMITIDA:
             raise TransicaoInvalida("Só uma fatura emitida pode ser marcada como paga.")
         else:
-            c.execute("UPDATE invoices SET status = 'paid', paid_at = ? WHERE id = ?",
-                      (tempo.iso_utc(), invoice_id))
-            db.registar_evento(c, "invoice.paid", "invoice", invoice_id, {},
+            c.execute("UPDATE invoices SET status = 'paid', paid_at = ?, payment_method = ? WHERE id = ?",
+                      (tempo.iso_utc(), metodo, invoice_id))
+            db.registar_evento(c, "invoice.paid", "invoice", invoice_id, {"payment_method": metodo},
                                dedupe_key=f"invoice.paid:{invoice_id}", tenant_id=tenant_id)
+        r = c.execute(f"SELECT {_SQL_INVOICE} FROM invoices WHERE id = ?", (invoice_id,)).fetchone()
+        return _montar(c, r)
+
+
+def obter_fatura_por_agendamento(appointment_id: int, tenant_id: int = 1) -> dict | None:
+    """A fatura VIVA (não anulada) desta marcação, se existir — mesma
+    condição de idempotência usada em gerar_fatura_de_marcacao."""
+    with db.ligacao() as c:
+        row = c.execute(
+            f"SELECT {_SQL_INVOICE} FROM invoices WHERE tenant_id = ? AND appointment_id = ? "
+            "AND status <> 'cancelled'", (tenant_id, appointment_id)).fetchone()
+        return _montar(c, row) if row else None
+
+
+def garantir_pdf_token(invoice_id: int, tenant_id: int = 1) -> str:
+    """Devolve o token do PDF desta fatura, gerando um na primeira vez
+    (idempotente — chamadas seguintes devolvem sempre o mesmo)."""
+    with db.ligacao() as c:
+        row = c.execute("SELECT pdf_token FROM invoices WHERE id = ? AND tenant_id = ?",
+                        (invoice_id, tenant_id)).fetchone()
+        if not row:
+            raise FaturaNaoEncontrada("Fatura não encontrada.")
+        if row[0]:
+            return row[0]
+        token = secrets.token_urlsafe(24)
+        c.execute("UPDATE invoices SET pdf_token = ? WHERE id = ?", (token, invoice_id))
+        return token
+
+
+def obter_fatura_por_token(token: str) -> dict | None:
+    """Usado só pela rota pública de download do PDF — o token É a
+    autorização (longo, aleatório, imprevisível), por isso não filtra tenant."""
+    if not token:
+        return None
+    with db.ligacao() as c:
+        row = c.execute(f"SELECT {_SQL_INVOICE} FROM invoices WHERE pdf_token = ?", (token,)).fetchone()
+        return _montar(c, row) if row else None
+
+
+def marcar_pdf_enviado(invoice_id: int, tenant_id: int = 1, reenvio: bool = False) -> dict:
+    """Regista o envio do PDF por WhatsApp. `pdf_sent_at` só é gravado da
+    PRIMEIRA vez (idempotente); `pdf_last_sent_at` atualiza sempre — permite
+    distinguir "enviado" de "reenviado" sem inventar um segundo campo."""
+    with db.ligacao() as c:
+        c.execute("BEGIN IMMEDIATE")
+        row = c.execute("SELECT id FROM invoices WHERE id = ? AND tenant_id = ?",
+                        (invoice_id, tenant_id)).fetchone()
+        if not row:
+            raise FaturaNaoEncontrada("Fatura não encontrada.")
+        agora = tempo.iso_utc()
+        c.execute("UPDATE invoices SET pdf_sent_at = COALESCE(pdf_sent_at, ?), "
+                  "pdf_last_sent_at = ? WHERE id = ?", (agora, agora, invoice_id))
+        db.registar_evento(c, "invoice.pdf_resent" if reenvio else "invoice.pdf_sent",
+                           "invoice", invoice_id, {},
+                           dedupe_key=None if reenvio else f"invoice.pdf_sent:{invoice_id}",
+                           tenant_id=tenant_id)
         r = c.execute(f"SELECT {_SQL_INVOICE} FROM invoices WHERE id = ?", (invoice_id,)).fetchone()
         return _montar(c, r)
 

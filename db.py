@@ -668,6 +668,61 @@ def _m17_follow_up(conn):
     _add_coluna_se_falta(conn, "customers", "follow_up_opt_out", "INTEGER NOT NULL DEFAULT 0")
 
 
+def _m18_pos_atendimento(conn):
+    """P0 — pós-atendimento automático (fatura -> PDF -> job +5min -> WhatsApp
+    -> feedback) + instrumentação mínima. Ver notifications/postservice.py e
+    notifications/jobs.py.
+
+    - invoices.payment_method: método registado ao marcar paga ("cash" no P0
+      — é o único que a Daniela usa; ver billing/engine.py:marcar_paga).
+    - invoices.pdf_token: identificador opaco e não-adivinhável para servir o
+      PDF em GET /faturas/pdf/<token> sem autenticação (a fatura em si não é
+      secreta — é o que se manda ao cliente). pdf_sent_at / pdf_last_sent_at:
+      idempotência do envio (1ª vez / reenvios seguintes).
+    - agendamentos.booking_source: de onde veio a marcação — nunca inferido
+      para marcações antigas (ficam 'unknown' pelo DEFAULT). Valores:
+      whatsapp_bot / dashboard / rebooking_followup / unknown.
+    - agendamentos.post_service_thanks_sent_at / feedback_requested_at /
+      feedback_text / feedback_at: cada efeito do pós-atendimento tem o SEU
+      próprio marcador — para um retry depois de uma falha a meio nunca
+      repetir um envio que já tinha tido sucesso (ver notifications/postservice.py).
+    - automation_jobs: executor mínimo e genérico (pending/processing/done/
+      failed/cancelled), pensado para ser reutilizado por outros tipos de job
+      no futuro (appointment_reminder, rebooking_followup) — neste patch só
+      "post_service" tem handler."""
+    _add_coluna_se_falta(conn, "invoices", "payment_method", "TEXT")
+    _add_coluna_se_falta(conn, "invoices", "pdf_token", "TEXT")
+    _add_coluna_se_falta(conn, "invoices", "pdf_sent_at", "TEXT")
+    _add_coluna_se_falta(conn, "invoices", "pdf_last_sent_at", "TEXT")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS ix_invoices_pdf_token "
+                 "ON invoices (pdf_token) WHERE pdf_token IS NOT NULL")
+
+    _add_coluna_se_falta(conn, "agendamentos", "booking_source", "TEXT NOT NULL DEFAULT 'unknown'")
+    _add_coluna_se_falta(conn, "agendamentos", "post_service_thanks_sent_at", "TEXT")
+    _add_coluna_se_falta(conn, "agendamentos", "feedback_requested_at", "TEXT")
+    _add_coluna_se_falta(conn, "agendamentos", "feedback_text", "TEXT")
+    _add_coluna_se_falta(conn, "agendamentos", "feedback_at", "TEXT")
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS automation_jobs ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "tenant_id INTEGER NOT NULL DEFAULT 1, "
+        "type TEXT NOT NULL, "
+        "booking_id INTEGER, customer_id INTEGER, "
+        "payload TEXT, "
+        "run_at TEXT NOT NULL, "
+        "status TEXT NOT NULL DEFAULT 'pending', "
+        "attempts INTEGER NOT NULL DEFAULT 0, "
+        "last_error TEXT, "
+        "idempotency_key TEXT, "
+        "created_at TEXT NOT NULL, processed_at TEXT)"
+    )
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS ix_automation_jobs_idem "
+                 "ON automation_jobs (tenant_id, idempotency_key) WHERE idempotency_key IS NOT NULL")
+    conn.execute("CREATE INDEX IF NOT EXISTS ix_automation_jobs_due "
+                 "ON automation_jobs (status, run_at)")
+
+
 MIGRACOES = [
     (1, "baseline", _m1_baseline),
     (2, "colunas_legadas", _m2_colunas_legadas),
@@ -686,6 +741,7 @@ MIGRACOES = [
     (15, "identidade_por_tenant", _m15_identidade_por_tenant),
     (16, "faturacao", _m16_faturacao),
     (17, "follow_up", _m17_follow_up),
+    (18, "pos_atendimento", _m18_pos_atendimento),
 ]
 
 
