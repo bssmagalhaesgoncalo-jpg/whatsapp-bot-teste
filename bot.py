@@ -1939,7 +1939,12 @@ def reagendar_agendamento(id_agendamento, data_iso, hora, origem="dashboard", av
     d = date.fromisoformat(data_iso)
     dias = DIAS_SEMANA["pt"]
     data_texto = f"{d.strftime('%d.%m.%Y')} ({dias[d.weekday()]})"
-    hora_texto = f"🕘 {hora}"
+    # Valor plano — mesma convenção da criação da marcação (agendamentos.hora
+    # nunca leva emoji; só hora_notif, abaixo, é decorada para a mensagem ao
+    # cliente). Guardar a versão com emoji aqui duplicava-a em qualquer sítio
+    # que reutilizasse ag["hora"] (resumo, dashboard, "Gerir marcação"...).
+    hora_texto = hora
+    hora_notif = f"🕘 {hora}"
     data_antiga, hora_antiga = alvo.get("data"), alvo.get("hora")
 
     with obter_bd() as conn:
@@ -1983,7 +1988,7 @@ def reagendar_agendamento(id_agendamento, data_iso, hora, origem="dashboard", av
     notificado = False
     if avisar_cliente:
         notificado = _avisar_cliente_marcacao_reagendada(
-            agendamento, f"{data_antiga} {hora_antiga}".strip(), f"{data_texto} {hora_texto}")
+            agendamento, f"{data_antiga} {hora_antiga}".strip(), f"{data_texto} {hora_notif}")
     return agendamento, notificado
 
 
