@@ -98,13 +98,17 @@ const REBOOKING_LABEL = { agendado: "Agendado", enviado: "Enviado", mais_tarde: 
                           cancelado: "Cancelado", falhou: "Falhou" };
 function statusBadge(estado, op, bloqueiaHorario) {
   const e = (estado || "").toLowerCase();
+  // Cores dedicadas por estado (ver .badge--* + --st-* em app.css) — nunca
+  // reaproveitadas entre estados, para dar para reconhecer de relance
+  // (mesma paleta da legenda .ag-legend e dos cartões .ag-ev.st-*).
   if (e === "cancelled")
-    return h("span", { class: "badge badge--danger" }, bloqueiaHorario ? "Cancelada · horário bloqueado" : "Cancelada");
-  if (e === "no_show") return h("span", { class: "badge badge--danger" }, EST_LABEL.no_show);
+    return h("span", { class: "badge badge--cancelled" }, bloqueiaHorario ? "Cancelada · horário bloqueado" : "Cancelada");
+  if (e === "no_show") return h("span", { class: "badge badge--noshow" }, EST_LABEL.no_show);
   if (op === "done" || e === "completed") return h("span", { class: "badge badge--success" }, "Concluída");
-  if (op === "in_progress") return h("span", { class: "badge badge--warning" }, "Em curso");
-  if (op === "arrived") return h("span", { class: "badge badge--info" }, "Chegou");
-  return h("span", { class: "badge" }, EST_LABEL[e] || "Agendada");
+  if (op === "in_progress") return h("span", { class: "badge badge--progress" }, "Em curso");
+  if (op === "arrived") return h("span", { class: "badge badge--arrived" }, "Chegou");
+  if (e === "pending") return h("span", { class: "badge badge--pending" }, EST_LABEL.pending);
+  return h("span", { class: "badge badge--confirmed" }, EST_LABEL[e] || "Agendada");
 }
 
 function skeletonCard() { return h("div", { class: "card card--pad" }, h("div", { class: "skel", style: "height:64px" })); }
@@ -196,13 +200,13 @@ function renderAppointment(ag) {
     // P4.1 — pedido de reagendamento pendente (ver notifications/reschedule.py):
     // a marcação acima continua a mostrar a data/hora ORIGINAL — só muda
     // quando o cliente confirmar. Nunca aparece um segundo cartão na Agenda.
-    ag.reschedule_pendente ? h("div", { class: "att sev-info", style: "margin-top:14px" },
+    ag.reschedule_pendente ? h("div", { class: "att sev-pending-reschedule", style: "margin-top:14px" },
       icon("clock"),
       h("div", { class: "a-body" },
-        h("div", { class: "a-title" }, "Reagendamento pendente"),
+        h("div", { class: "a-title" }, "Reagendamento pendente ",
+          h("span", { class: "badge badge--progress", style: "margin-left:4px" }, "Aguarda cliente")),
         h("div", { class: "a-desc" },
-          `Proposto: ${fmtDataPt(ag.reschedule_pendente.new_date)} · ${ag.reschedule_pendente.new_time}`),
-        h("div", { class: "a-desc" }, "Aguarda confirmação do cliente")),
+          `Proposto: ${fmtDataPt(ag.reschedule_pendente.new_date)} · ${ag.reschedule_pendente.new_time}`)),
       h("button", { class: "btn btn--sm", onclick: () => cancelarPedidoReagendamentoPrompt(ag) },
         "Cancelar pedido")) : null,
     cli ? h("div", { class: "card card--pad", style: "margin-top:8px" },
@@ -769,6 +773,29 @@ function matchBuscaAg(e, q) {
   return `${e.nome || ""} ${e.telefone || ""} ${e.servico || ""}`.toLowerCase().includes(q);
 }
 
+// Legenda de estados — entre os filtros e a grelha (ver .ag-legend em
+// app.css). Estática: os 6 estados de negócio/operação da Agenda, na mesma
+// cor usada nos cartões (.ag-ev.st-*) e nas badges (statusBadge()). "Chegou"
+// (arrived) fica de fora de propósito — é uma transição rápida entre
+// Confirmada e Em curso, não um estado em que uma marcação costuma parar.
+const AG_LEGENDA = [
+  ["confirmed", "Confirmada", "Agendamento confirmado"],
+  ["pending", "Pendente", "A aguardar confirmação"],
+  ["progress", "Em curso", "Atendimento em andamento"],
+  ["success", "Concluída", "Atendimento finalizado"],
+  ["cancelled", "Cancelada", "Agendamento cancelado"],
+  ["noshow", "Não compareceu", "Cliente não compareceu"],
+];
+function agLegenda() {
+  return h("div", { class: "ag-legend", role: "list", "aria-label": "Legenda de estados da Agenda" },
+    AG_LEGENDA.map(([chave, titulo, desc]) =>
+      h("div", { class: "ag-legend-item", role: "listitem" },
+        h("span", { class: `ag-legend-dot ag-legend-dot--${chave}`, "aria-hidden": "true" }),
+        h("div", {},
+          h("div", { class: "ag-legend-title" }, titulo),
+          h("div", { class: "ag-legend-desc" }, desc)))));
+}
+
 const DAY_SHORT = ["seg", "ter", "qua", "qui", "sex", "sáb", "dom"];
 function ymdOf(d) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
 function dateOf(s) {
@@ -815,8 +842,9 @@ async function viewAgenda(mount) {
   const searchInp = h("input", { class: "inp ag-search", type: "search",
     placeholder: "Procurar por nome, telefone ou serviço…", value: agendaBusca });
   searchInp.addEventListener("input", () => { agendaBusca = searchInp.value; renderList(); });
+  const filterBar = h("div", { class: "ag-filterbar" }, chipsWrap, searchInp);
 
-  mount.append(nav, chipsWrap, searchInp, skeletonCard());
+  mount.append(nav, filterBar, agLegenda(), skeletonCard());
 
   let d;
   try { d = await api(`/api/calendario?inicio=${anchor}&fim=${fim}`); }
@@ -1022,6 +1050,15 @@ function agEventCard(p, todayCol) {
   const left = (100 / p.total) * p.coluna + 3;
   const txt = `${ev.hora_hhmm || "—"} · ${ev.nome || ev.primeiro_nome || "Cliente"}`;
   const sub = [ev.servico, fmtMin(ev.duracao_minutos || 0)].filter(Boolean).join(" · ");
+  // Cartão curto demais (< ~45min) para caber hora + nome + serviço + badge
+  // sem cortar nada: a badge de estado (e a chip do P4.1, se houver) saem
+  // primeiro — hora e serviço nunca desaparecem. Prioridade do redesign:
+  // 1 hora, 2 nome, 3 serviço, 4 estado (ver .ag-ev--compact em app.css).
+  const compact = altura < 56;
+  // P4.1 — pedido de reagendamento pendente desta marcação, se houver (ver
+  // bot.eventos_calendario). É um indício AUXILIAR: nunca muda a cor de
+  // estado do cartão (--ev), só acrescenta um sinal violeta à parte.
+  const pendente = ev.reschedule_pendente;
   // Reagendar por drag & drop exige uma marcação ainda ativa e SEM
   // atendimento em curso — a mesma regra do backend (op_status
   // arrived/in_progress/done bloqueia em bot.py:reagendar_agendamento,
@@ -1034,18 +1071,25 @@ function agEventCard(p, todayCol) {
   // é um atalho, nunca o único caminho (drawer -> Editar tem o mesmo
   // reagendamento por data/hora, acessível por teclado e em mobile/tablet
   // onde o drag nativo não é fiável).
-  const el = h("button", { class: `ag-ev st-${op} st-${estadoKey}` + (todayCol ? " on-today" : ""),
+  const el = h("button", { class: `ag-ev st-${op} st-${estadoKey}` + (todayCol ? " on-today" : "")
+      + (compact ? " ag-ev--compact" : "") + (pendente ? " has-pending-reschedule" : ""),
     style: `top:${top.toFixed(1)}px;height:${altura.toFixed(1)}px;left:${left.toFixed(2)}%;width:${larg.toFixed(2)}%`,
     // draggable é um atributo ENUMERADO (precisa do valor "true", nunca ""
     // — o helper h() genérico escreve "" para `true`, que o browser trata
     // como não-arrastável; ver core helpers no topo do ficheiro). Corrigido
     // só aqui, sem tocar no comportamento genérico de h() para não arriscar
     // regressão nos outros atributos booleanos usados no dashboard.
-    title: `${txt} · ${sub}`, draggable: podeArrastar ? "true" : undefined, onclick: () => openAppointment(ev.id),
-    "aria-label": `${sub} às ${ev.hora_hhmm || "—"}` + (podeArrastar ? " — arrastável para reagendar" : "") },
+    title: `${txt} · ${sub}` + (pendente ? ` · Reagendamento pendente: ${fmtDataPt(pendente.new_date)} ${pendente.new_time}` : ""),
+    draggable: podeArrastar ? "true" : undefined, onclick: () => openAppointment(ev.id),
+    "aria-label": `${sub} às ${ev.hora_hhmm || "—"}` + (podeArrastar ? " — arrastável para reagendar" : "")
+      + (pendente ? " — reagendamento pendente" : "") },
     h("span", { class: "ag-ev-t" }, txt),
     h("span", { class: "ag-ev-s" }, sub),
-    statusBadge(ev.estado, op, ev.bloqueia_horario));
+    statusBadge(ev.estado, op, ev.bloqueia_horario),
+    // Chip completa ("Aguarda cliente") quando cabe; no cartão compacto,
+    // um ponto no canto chega — o detalhe fica sempre disponível no drawer.
+    pendente && !compact ? h("span", { class: "ag-ev-pending" }, icon("clock"), "Aguarda cliente") : null,
+    pendente && compact ? h("span", { class: "ag-ev-pending-dot", "aria-hidden": "true" }) : null);
   if (podeArrastar) {
     el.addEventListener("dragstart", (e) => {
       _dragEv = { id: ev.id, dia: ev.dia, hora: ev.hora_hhmm, el, nome: ev.nome || ev.primeiro_nome };
@@ -1808,6 +1852,9 @@ const Router = {
     const view = $("#view");
     view.innerHTML = "";
     view.classList.toggle("view-narrow", ["definicoes"].includes(name));
+    // Agenda precisa de (quase) toda a largura — as outras vistas ficam
+    // no teto de leitura confortável (980px) de .view. Ver .view-wide.
+    view.classList.toggle("view-wide", ["agenda"].includes(name));
     $$(".nav-item").forEach((a) => a.classList.toggle("is-active", a.getAttribute("href") === "#/" + name));
     (ROUTES[name] || viewHoje)(view).catch((e) => { view.innerHTML = ""; view.append(emptyState(e.message)); });
     $("#sidebar").classList.remove("open");

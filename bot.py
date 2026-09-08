@@ -1136,6 +1136,11 @@ def evento_calendario(agendamento, pedido=None):
         "carrinho": linhas_carrinho_agendamento(agendamento),
         "criado_em": agendamento.get("criado_em"),
         "pedido": None,
+        # P4.1 — preenchido em lote por eventos_calendario() (ver
+        # notifications.reschedule.pendentes_por_marcacoes); aqui fica sempre
+        # None porque evento_calendario() nunca soube o tenant_id certo para
+        # decidir isto sozinho, um por um.
+        "reschedule_pendente": None,
     }
     return evento
 
@@ -1157,6 +1162,13 @@ def eventos_calendario(inicio_iso=None, fim_iso=None):
             continue
         eventos.append(evento)
     eventos.sort(key=lambda e: (e["inicio"], e["id"]))
+    # P4.1 — só apresentação: assinala no cartão do calendário as marcações
+    # com um pedido de reagendamento pendente (ver notifications/reschedule.py
+    # e o mesmo campo em api_agendamento_detalhe). Uma única query em lote,
+    # nunca N+1 por evento.
+    pendentes = notif_reschedule.pendentes_por_marcacoes([e["id"] for e in eventos])
+    for evento in eventos:
+        evento["reschedule_pendente"] = pendentes.get(evento["id"])
     return eventos, invalidos
 
 

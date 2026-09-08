@@ -108,6 +108,24 @@ def pedido_pendente_da_marcacao(appointment_id: int, tenant_id: int = 1) -> dict
     return dict(zip(_CAMPOS, row)) if row else None
 
 
+def pendentes_por_marcacoes(appointment_ids, tenant_id: int = 1) -> dict:
+    """Versão em lote de `pedido_pendente_para_ui`, para anotar uma lista de
+    eventos do calendário (ver bot.eventos_calendario) sem N+1 queries — o
+    painel só precisa de mostrar "Reagendamento pendente" no cartão, nunca
+    de mudar a marcação em si. Devolve {appointment_id: {new_date, new_time}},
+    só com as que têm mesmo um pedido 'pending'."""
+    ids = sorted({int(i) for i in appointment_ids if i is not None})
+    if not ids:
+        return {}
+    marcadores = ", ".join("?" * len(ids))
+    with db.ligacao() as conn:
+        rows = conn.execute(
+            "SELECT appointment_id, new_date, new_time FROM reschedule_requests "
+            f"WHERE tenant_id = ? AND status = 'pending' AND appointment_id IN ({marcadores})",
+            (tenant_id, *ids)).fetchall()
+    return {r[0]: {"new_date": r[1], "new_time": r[2]} for r in rows}
+
+
 # ===========================================================================
 # CRIAR — dashboard-initiated (drag ou diálogo "Reagendar"/"Editar")
 # ===========================================================================

@@ -30,6 +30,22 @@
   --danger-weak:     #fbe9e7;
   --info:            #2f5fa8;
   --info-weak:       #e8effa;
+
+  /* estados semânticos da Agenda (P4.1 incl.) — cada um com border/bg/badge
+     próprios, para nunca depender só da cor (ver .badge--* e .ag-ev.st-*).
+     st-confirmed/st-pending reaproveitam a paleta "brand"/"warning" onde faz
+     sentido; st-progress, st-arrived e st-noshow são tons dedicados para não
+     colidir visualmente com pendente/cancelada. */
+  --st-confirmed:      #2a5cb8;
+  --st-confirmed-weak: #e8eefb;
+  --st-pending:        #92600a;
+  --st-pending-weak:   #faf1de;
+  --st-progress:       #6d3fc9;
+  --st-progress-weak:  #efe9fc;
+  --st-arrived:        #12786f;
+  --st-arrived-weak:   #e1f4f1;
+  --st-noshow:         #b3450f;
+  --st-noshow-weak:    #fdece0;
   --shadow-xs: 0 1px 2px rgba(15,15,20,.04);
   --shadow-sm: 0 1px 2px rgba(15,15,20,.04), 0 4px 10px rgba(15,15,20,.04);
   --shadow-md: 0 2px 6px rgba(15,15,20,.05), 0 10px 24px rgba(15,15,20,.06);
@@ -94,6 +110,16 @@
   --danger-weak:     #2b1b1a;
   --info:            #7ea6dc;
   --info-weak:       #1a2230;
+  --st-confirmed:      #85aef2;
+  --st-confirmed-weak: #182338;
+  --st-pending:        #d09a56;
+  --st-pending-weak:   #291f14;
+  --st-progress:       #b09bf7;
+  --st-progress-weak:  #241c3a;
+  --st-arrived:        #59c9be;
+  --st-arrived-weak:   #12302c;
+  --st-noshow:         #f0916a;
+  --st-noshow-weak:    #301e13;
   --shadow-xs: 0 1px 2px rgba(0,0,0,.3);
   --shadow-sm: 0 1px 2px rgba(0,0,0,.32), 0 4px 12px rgba(0,0,0,.2);
   --shadow-md: 0 2px 8px rgba(0,0,0,.34), 0 10px 28px rgba(0,0,0,.24);
@@ -124,6 +150,16 @@
     --danger-weak:     #2b1b1a;
     --info:            #7ea6dc;
     --info-weak:       #1a2230;
+    --st-confirmed:      #85aef2;
+    --st-confirmed-weak: #182338;
+    --st-pending:        #d09a56;
+    --st-pending-weak:   #291f14;
+    --st-progress:       #b09bf7;
+    --st-progress-weak:  #241c3a;
+    --st-arrived:        #59c9be;
+    --st-arrived-weak:   #12302c;
+    --st-noshow:         #f0916a;
+    --st-noshow-weak:    #301e13;
     --shadow-xs: 0 1px 2px rgba(0,0,0,.3);
     --shadow-sm: 0 1px 2px rgba(0,0,0,.32), 0 4px 12px rgba(0,0,0,.2);
     --shadow-md: 0 2px 8px rgba(0,0,0,.34), 0 10px 28px rgba(0,0,0,.24);
@@ -246,6 +282,11 @@ button, a, [role="button"], .tl-row, .tab {
 .topbar-actions { margin-left: auto; display: flex; gap: var(--space-2); align-items: center; }
 .view { padding: var(--space-7) var(--space-7) 80px; max-width: 980px; width: 100%; }
 .view-narrow { max-width: 560px; }
+/* Agenda: a grelha semanal precisa de (quase) toda a largura disponível —
+   980px era um teto pensado para listas/formulários, não para 7 colunas de
+   calendário. Regra à parte em vez de subir o max-width geral: as outras
+   vistas (Clientes, Faturas, Definições…) continuam confortáveis a 980px. */
+.view-wide { max-width: 1600px; }
 
 /* ---------- section label ---------- */
 .eyebrow {
@@ -348,6 +389,17 @@ button, a, [role="button"], .tl-row, .tab {
 .badge--danger  { background: var(--danger-weak);  color: var(--danger); }
 .badge--info    { background: var(--info-weak);    color: var(--info); }
 .badge--brand   { background: var(--brand-weak);   color: var(--brand); }
+/* estados da Agenda (ver statusBadge() em app.js e a legenda .ag-legend) —
+   cada estado tem cor própria e nunca reaproveita a de outro, para que dê
+   para reconhecer confirmada/pendente/em curso/não compareceu sem ler o
+   texto. Cancelada continua a reaproveitar --danger (mesma família visual
+   de "não vai acontecer" que --st-noshow, mas tom distinto). */
+.badge--confirmed { background: var(--st-confirmed-weak); color: var(--st-confirmed); }
+.badge--pending   { background: var(--st-pending-weak);   color: var(--st-pending); }
+.badge--progress  { background: var(--st-progress-weak);  color: var(--st-progress); }
+.badge--arrived   { background: var(--st-arrived-weak);   color: var(--st-arrived); }
+.badge--noshow    { background: var(--st-noshow-weak);    color: var(--st-noshow); }
+.badge--cancelled { background: var(--danger-weak);       color: var(--danger); }
 
 /* ---------- metric row (secundário — hairlines, sem caixas) ---------- */
 .metrics {
@@ -449,6 +501,14 @@ button, a, [role="button"], .tl-row, .tab {
 .att.sev-agora:hover { background: color-mix(in srgb, var(--danger) 8%, var(--surface)); }
 .att.sev-hoje  { border-left-color: var(--warning); }
 .att.sev-info  { border-left-color: var(--info); }
+/* P4.1 no drawer — identidade própria (violeta), coerente com o indicador
+   no cartão da Agenda (.ag-ev-pending / .has-pending-reschedule), mas
+   claramente um estado AUXILIAR, nunca o estado principal da marcação. */
+.att.sev-pending-reschedule {
+  border-left-color: var(--st-progress);
+  background: color-mix(in srgb, var(--st-progress) 5%, var(--surface));
+}
+.att.sev-pending-reschedule:hover { background: color-mix(in srgb, var(--st-progress) 9%, var(--surface)); }
 .att .a-body { flex: 1; min-width: 0; }
 .att .a-title { font-weight: 600; font-size: 13.5px; }
 .att .a-desc { color: var(--text-3); font-size: 12px; }
@@ -480,7 +540,7 @@ button, a, [role="button"], .tl-row, .tab {
 /* ---------- agenda : toolbar + vista semanal ---------- */
 .ag-toolbar {
   display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
-  margin-bottom: 16px;
+  margin-bottom: 14px;
 }
 .ag-nav { display: flex; gap: 6px; }
 .ag-range { margin-left: 2px; font-weight: 600; color: var(--text-2); font-size: 13px; }
@@ -500,10 +560,17 @@ button, a, [role="button"], .tl-row, .tab {
 .seg button.is-active { background: var(--surface); color: var(--text); box-shadow: var(--shadow-xs); }
 .seg button:not(.is-active):hover { color: var(--text); }
 
+/* linha 2 da toolbar: filtros à esquerda, pesquisa à direita — a mesma
+   estrutura visual em desktop e a envolver (search fica na sua própria
+   linha) assim que não cabe. */
+.ag-filterbar {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  margin-bottom: 14px;
+}
 /* filtros compactos (Todas/Confirmadas/…) — scroll horizontal INTERNO só, nunca a página */
 .ag-filtros {
-  display: flex; gap: 6px; overflow-x: auto; padding: 2px 2px 6px;
-  margin-bottom: 4px; scrollbar-width: none;
+  display: flex; gap: 6px; overflow-x: auto; padding: 2px 2px 4px;
+  flex: 1 1 auto; min-width: 0; scrollbar-width: none;
 }
 .ag-filtros::-webkit-scrollbar { display: none; }
 .chip {
@@ -516,7 +583,30 @@ button, a, [role="button"], .tl-row, .tab {
 .chip.is-active { background: var(--text); border-color: var(--text); color: var(--surface); }
 
 /* pesquisa rápida — client-side, sem pedidos por tecla */
-.ag-search { max-width: 360px; margin: 4px 0 16px; }
+.ag-search { max-width: 320px; flex: 0 1 320px; margin: 0 0 0 auto; }
+
+/* ---------- legenda de estados — entre os filtros e a grelha, para se
+   perceber o significado das cores sem ter de adivinhar (nunca depende só
+   da cor: cada item tem sempre o nome do estado por extenso). ---------- */
+.ag-legend {
+  display: flex; flex-wrap: wrap; gap: 10px 28px;
+  padding: 14px 18px; margin-bottom: 16px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+.ag-legend-item { display: flex; align-items: flex-start; gap: 8px; max-width: 220px; }
+.ag-legend-dot {
+  width: 9px; height: 9px; border-radius: 50%; flex: none;
+  margin-top: 4px; box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 14%, transparent);
+}
+.ag-legend-dot--confirmed { background: var(--st-confirmed); color: var(--st-confirmed); }
+.ag-legend-dot--pending   { background: var(--st-pending);   color: var(--st-pending); }
+.ag-legend-dot--progress  { background: var(--st-progress);  color: var(--st-progress); }
+.ag-legend-dot--success   { background: var(--success);      color: var(--success); }
+.ag-legend-dot--cancelled { background: var(--danger);       color: var(--danger); }
+.ag-legend-dot--noshow    { background: var(--st-noshow);    color: var(--st-noshow); }
+.ag-legend-title { font-size: 12.5px; font-weight: 650; color: var(--text); line-height: 1.3; }
+.ag-legend-desc { font-size: 11.5px; color: var(--text-3); line-height: 1.3; }
 
 /* container de scroll INTERNO da semana — a página nunca transborda */
 .ag-week-scroll { overflow-x: auto; overscroll-behavior-x: contain; padding-bottom: 4px; }
@@ -524,39 +614,46 @@ button, a, [role="button"], .tl-row, .tab {
   display: grid; grid-template-columns: 1fr;
   min-width: 760px;                 /* dias nunca esmagados abaixo do legível */
   border: 1px solid var(--border); border-radius: var(--radius-lg);
-  background: var(--surface); box-shadow: var(--shadow-sm); overflow: hidden;
+  background: var(--surface); box-shadow: var(--shadow-md); overflow: hidden;
 }
 .ag-grid--dia { min-width: 0; }
-.ag-bd.ag-bd--dia { display: grid; grid-template-columns: 50px 1fr; }
-.ag-hd { display: grid; grid-template-columns: 50px repeat(7, 1fr); border-bottom: 1px solid var(--border); }
+.ag-bd.ag-bd--dia { display: grid; grid-template-columns: var(--ag-hcol-w, 64px) 1fr; }
+.ag-hd { display: grid; grid-template-columns: var(--ag-hcol-w, 64px) repeat(7, 1fr); border-bottom: 1px solid var(--border); }
 .ag-hd-corner { border-right: 1px solid var(--border); background: var(--surface-2); }
 .ag-hd-dia {
+  position: relative;
   display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 1px; padding: 8px 4px; border-right: 1px solid var(--border);
+  gap: 1px; padding: 10px 4px; border-right: 1px solid var(--border);
   background: var(--surface-2); color: var(--text-2);
 }
 .ag-hd-dia:last-child { border-right: none; }
 .ag-hd-wd { font-size: 11px; font-weight: 650; text-transform: uppercase; letter-spacing: .05em; }
-.ag-hd-dt { font-size: 13px; font-weight: 700; }
+.ag-hd-dt { font-size: 14px; font-weight: 700; }
 .ag-hd-hoje {
   font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em;
   color: var(--brand); background: var(--brand-weak);
   border-radius: 999px; padding: 1px 7px; margin-top: 2px;
 }
-/* dia de hoje: destaque DISCRETO (nunca amarelo, nunca grita) */
+/* dia de hoje: destaque DISCRETO (nunca amarelo, nunca grita) — bg leve +
+   uma linha violeta fina no topo, a mesma pista repetida no cabeçalho e na
+   coluna toda (::before), sem pintar a coluna inteira de roxo. */
 .ag-hd-dia.is-today { background: var(--brand-weak); color: var(--text); }
 .ag-hd-dia.is-today .ag-hd-wd { color: var(--brand); }
+.ag-hd-dia.is-today::before, .ag-col.is-today::before {
+  content: ""; position: absolute; top: 0; left: 0; right: 0; height: 2px;
+  background: var(--brand);
+}
 /* dia PASSADO: cabeçalho ligeiramente mais escuro/apagado que o normal —
    só o dia, nunca as marcações lá dentro (o histórico continua legível).
    O FUTURO fica no estilo base acima (neutro), já claramente distinto. */
 .ag-hd-dia.is-past { background: color-mix(in srgb, var(--surface-3) 55%, var(--surface-2)); color: var(--text-3); }
 .ag-hd-dia.is-past .ag-hd-wd { color: var(--text-3); }
-.ag-bd { display: grid; grid-template-columns: 50px repeat(7, 1fr); }
+.ag-bd { display: grid; grid-template-columns: var(--ag-hcol-w, 64px) repeat(7, 1fr); }
 .ag-hcol { border-right: 1px solid var(--border); background: var(--surface-2); }
 .ag-hora {
   height: var(--ag-faixa, 34px); box-sizing: border-box;
   font-size: 10.5px; color: var(--text-3); text-align: right;
-  padding-right: 7px; border-bottom: 1px solid var(--border); line-height: 18px;
+  padding-right: 9px; border-bottom: 1px solid var(--border); line-height: 18px;
   font-variant-numeric: tabular-nums;
 }
 .ag-col { position: relative; border-right: 1px solid var(--border); background: var(--surface); }
@@ -569,34 +666,50 @@ button, a, [role="button"], .tl-row, .tab {
   height: var(--ag-faixa, 34px); box-sizing: border-box;
   border-bottom: 1px dashed var(--border);
   cursor: pointer;
-  transition: background .1s ease;
+  transition: background .1s ease, outline-color .1s ease;
 }
 .ag-col.is-today .ag-faixa { border-bottom-color: color-mix(in srgb, var(--brand) 16%, var(--border)); }
 .ag-faixa.hora-cheia { border-bottom-style: solid; border-bottom-color: var(--border); }
 .ag-faixa:hover { background: var(--surface-2); }
-.ag-faixa.drop-target { background: color-mix(in srgb, var(--brand) 16%, var(--surface-2)); }
+/* alvo do drop — contorno bem visível, nunca só a cor de fundo */
+.ag-faixa.drop-target {
+  background: color-mix(in srgb, var(--brand) 18%, var(--surface-2));
+  outline: 2px solid var(--brand); outline-offset: -2px;
+}
 /* candidato inválido — dia já passado, nunca aceita o drop. A decisão FINAL
    continua a ser sempre do backend; isto é só feedback visual imediato. */
-.ag-faixa.drop-invalid { background: color-mix(in srgb, var(--danger) 12%, var(--surface-2)); cursor: not-allowed; }
-
-/* cartão de marcação — absoluto dentro da coluna, altura ∝ duração */
-.ag-ev {
-  position: absolute; display: flex; flex-direction: column;
-  justify-content: flex-start; gap: 1px;
-  box-sizing: border-box; padding: 3px 5px 2px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border-strong);
-  border-left: 3px solid var(--text-3);
-  background: var(--surface);
-  overflow: hidden; text-align: left;
-  font: inherit; font-size: 11px; line-height: 1.22;
-  color: var(--text);
-  transition: filter .12s ease, box-shadow .12s ease;
+.ag-faixa.drop-invalid {
+  background: color-mix(in srgb, var(--danger) 14%, var(--surface-2));
+  outline: 2px solid var(--danger); outline-offset: -2px;
+  cursor: not-allowed;
 }
-.ag-ev:hover { filter: brightness(.97); box-shadow: var(--shadow-sm); }
+
+/* cartão de marcação — absoluto dentro da coluna, altura ∝ duração. A cor
+   (--ev) diz o ESTADO e aparece em três sítios ao mesmo tempo: a barra
+   lateral, um tint muito leve do fundo e a badge — nunca só uma linha fina,
+   como pedido no redesign (ver .ag-ev.st-* mais abaixo). */
+.ag-ev {
+  --ev: var(--text-3);
+  position: absolute; display: flex; flex-direction: column;
+  justify-content: flex-start; gap: 2px;
+  box-sizing: border-box; padding: 5px 7px 4px 8px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-strong);
+  border-left: 3px solid var(--ev);
+  background: color-mix(in srgb, var(--ev) 6%, var(--surface));
+  overflow: hidden; text-align: left;
+  font: inherit; font-size: 12px; line-height: 1.28;
+  color: var(--text);
+  box-shadow: var(--shadow-xs);
+  transition: filter .12s ease, box-shadow .12s ease, transform .12s ease;
+}
+.ag-ev:hover { filter: brightness(.98); box-shadow: var(--shadow-sm); transform: translateY(-1px); }
 .ag-ev[draggable="true"] { cursor: grab; }
 .ag-ev[draggable="true"]:active { cursor: grabbing; }
-.ag-ev.dragging { opacity: .35; }
+/* a arrastar: nunca desaparece por completo — continua a dar para ver o
+   cartão a ser movido, com um leve encolher + sombra a "levantá-lo" da
+   grelha. */
+.ag-ev.dragging { opacity: .7; transform: scale(.97); box-shadow: var(--shadow-lg); z-index: 5; }
 /* a aguardar resposta do /reagendar — nunca se move sozinho, só assinala
    que o pedido está em curso; some ao voltar a desenhar (sucesso) ou fica
    removido no próprio catch (erro), sem sair do sítio em nenhum dos casos. */
@@ -610,25 +723,55 @@ button, a, [role="button"], .tl-row, .tab {
   font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0;
 }
 .ag-ev .ag-ev-s {
-  color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 10px; flex-shrink: 0;
+  color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 10.5px; flex-shrink: 0;
 }
 .ag-ev .badge {
-  margin-top: auto; padding: 1px 6px; font-size: 9px;
+  margin-top: auto; padding: 1px 6px; font-size: 9.5px;
   align-self: flex-start; max-width: 100%;
   overflow: hidden; text-overflow: ellipsis; flex-shrink: 0;
 }
-/* cor de borda = STATUS/CONTEXTO (tokens V2), nunca cor aleatória de serviço */
-.ag-ev.st-done, .ag-ev.st-completed { border-left-color: var(--success); }
-.ag-ev.st-in_progress { border-left-color: var(--warning); }
-.ag-ev.st-arrived { border-left-color: var(--info); }
-.ag-ev.st-pending { border-left-color: var(--warning); }
-.ag-ev.st-cancelled, .ag-ev.st-no_show { border-left-color: var(--danger); opacity: .72; }
+/* cartão curto demais para tudo (< ~45min): a badge de estado sai primeiro
+   — hora e nome (a informação mais importante) nunca ficam cortados nem
+   sobrepostos por causa dela. Ver a func. agH()/agEventCard() no app.js. */
+.ag-ev--compact .badge, .ag-ev--compact .ag-ev-pending { display: none; }
+
+/* cor de estado = --ev, usada na barra lateral + tint do fundo acima.
+   Ordem propositada: operacional (chegou/em curso/concluída) por cima do
+   estado de negócio (confirmada/pendente), e cancelada/não-compareceu por
+   cima de tudo — são estados terminais, têm sempre a última palavra. */
+.ag-ev.st-confirmed  { --ev: var(--st-confirmed); }
+.ag-ev.st-pending     { --ev: var(--st-pending); }
+.ag-ev.st-arrived     { --ev: var(--st-arrived); }
+.ag-ev.st-in_progress { --ev: var(--st-progress); }
+.ag-ev.st-done, .ag-ev.st-completed { --ev: var(--success); }
+.ag-ev.st-cancelled, .ag-ev.st-no_show { --ev: var(--danger); opacity: .72; }
+.ag-ev.st-no_show { --ev: var(--st-noshow); }
 .ag-ev.st-cancelled .ag-ev-t, .ag-ev.st-no_show .ag-ev-t { text-decoration: line-through; color: var(--text-3); }
+
+/* P4.1 — pedido de reagendamento pendente: um sinal AUXILIAR, nunca o
+   estado principal do cartão (que continua a ser o da marcação atual) —
+   por isso nunca muda --ev, só acrescenta um indício violeta próprio. */
+.ag-ev.has-pending-reschedule { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--st-progress) 45%, transparent); }
+.ag-ev-pending {
+  display: flex; align-items: center; gap: 3px;
+  margin-top: 1px; padding: 1px 6px 1px 4px; border-radius: 999px;
+  background: color-mix(in srgb, var(--st-progress) 16%, var(--surface));
+  color: var(--st-progress); font-size: 9px; font-weight: 700;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  max-width: 100%; flex-shrink: 0;
+}
+.ag-ev-pending .ico { width: 9px; height: 9px; }
+/* cartão compacto de mais para a chip: um ponto no canto chega para avisar
+   que há qualquer coisa pendente — o detalhe está sempre no drawer. */
+.ag-ev-pending-dot {
+  position: absolute; top: 4px; right: 4px; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--st-progress); box-shadow: 0 0 0 2px var(--surface);
+}
 
 /* linha "Agora" — só na coluna do dia atual */
 .ag-now {
   position: absolute; left: 0; right: 0; height: 0;
-  border-top: 1.5px solid var(--brand); z-index: 6; pointer-events: none;
+  border-top: 2px solid var(--brand); z-index: 6; pointer-events: none;
 }
 .ag-now span {
   position: absolute; left: 4px; top: -9px;
@@ -642,6 +785,9 @@ button, a, [role="button"], .tl-row, .tab {
 @media (max-width: 560px) {
   .seg button { min-height: 40px; padding: 6px 18px; }
   .ag-toolbar { gap: 8px; }
+  .ag-filterbar { flex-direction: column; align-items: stretch; }
+  .ag-search { margin: 0; flex: none; max-width: 100%; }
+  .ag-legend { padding: 12px 14px; gap: 10px 20px; }
   .ag-week-scroll { margin: 0 -14px; padding: 0 14px 6px; } /* respiro até à margem do .view */
 }
 
