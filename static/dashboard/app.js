@@ -1435,6 +1435,172 @@ async function openFatura(id) {
 }
 
 /* ===================================================================
+   VIEW: RESULTADOS (P3) — impacto económico do BMS.
+   Estratégico ("o sistema está a produzir valor?"), nunca operacional —
+   isso é o Attention Center em Hoje. Cada número aqui vem de
+   GET /api/resultados, que só agrega dados reais (ver reports/results.py).
+   Sem lib de gráficos: barras simples com CSS (.res-bar-*).
+   =================================================================== */
+const RESULTADOS_PERIODOS = [["7d", "7 dias"], ["30d", "30 dias"], ["90d", "90 dias"], ["ano", "Este ano"]];
+let resultadosPeriodo = "30d";
+
+function pctLabel(v) {
+  return v == null ? "Sem dados suficientes" : String(v).replace(".", ",") + "%";
+}
+
+function resBar(label, valueText, amount, max) {
+  const pct = max > 0 && amount > 0 ? Math.max(2, Math.round((amount / max) * 100)) : 0;
+  return h("div", { class: "res-bar-row" },
+    h("div", { class: "res-bar-label" }, label),
+    h("div", { class: "res-bar-track" }, h("div", { class: "res-bar-fill", style: `width:${pct}%` })),
+    h("div", { class: "res-bar-value tnum" }, valueText));
+}
+
+function resDelta(delta, unidade = "%") {
+  if (delta == null) return "—";
+  const up = delta >= 0;
+  return h("span", { class: "res-delta " + (up ? "res-delta--up" : "res-delta--down") },
+    (up ? "▲ " : "▼ ") + Math.abs(delta).toFixed(1).replace(".", ",") + unidade);
+}
+
+const RESULTADOS_DETALHE_LABEL = {
+  marcacoes_whatsapp_bot: "Marcações via WhatsApp Bot",
+  marcacoes_rebooking: "Marcações via rebooking automático",
+  reminders_enviados: "Reminders 24h enviados",
+  cancelamentos_via_reminder: "Cancelamentos via reminder",
+  seguimentos_rebooking_enviados: "Seguimentos de rebooking enviados",
+  agradecimentos_pos_atendimento: "Agradecimentos pós-atendimento",
+  pedidos_feedback: "Pedidos de feedback",
+  pdfs_fatura_enviados: "PDFs de fatura enviados",
+};
+
+async function viewResultados(mount) {
+  setTitle("Resultados", "Impacto económico do BMS");
+  const seg = h("div", { class: "seg", role: "tablist", "aria-label": "Período" },
+    RESULTADOS_PERIODOS.map(([p, label]) =>
+      h("button", { class: resultadosPeriodo === p ? "is-active" : "", role: "tab",
+        "aria-selected": String(resultadosPeriodo === p),
+        onclick: () => { resultadosPeriodo = p; Router.reload(); } }, label)));
+  mount.append(seg, skeletonCard());
+
+  let d;
+  try { d = await api(`/api/resultados?periodo=${resultadosPeriodo}`); }
+  catch (e) { mount.innerHTML = ""; mount.append(seg, emptyState("Não foi possível carregar: " + e.message)); return; }
+  mount.lastChild.remove();
+
+  const b = d.bookings, r = d.revenue, c = d.customers, ns = d.no_show, ca = d.cancellations,
+        rem = d.reminders, fb = d.feedback, rb = d.rebooking, ts = d.time_saved, cmp = d.comparacao;
+
+  // 1 — 5 KPIs principais
+  mount.append(h("div", { class: "eyebrow", style: "margin-top:20px" }, "Visão geral"));
+  mount.append(h("div", { class: "metrics metrics--5" },
+    metric(b.bms, "Marcações via BMS", true),
+    metric(chf(r.bms_cents), "Receita atribuída ao BMS", true),
+    metric(ns.rate_pct == null ? "Sem dados" : pctLabel(ns.rate_pct), "No-show rate"),
+    metric(c.recorrentes, "Clientes recorrentes"),
+    metric(fmtMin(ts.minutos_estimados), "Tempo poupado (estim.)")));
+  mount.append(h("div", { class: "res-note" },
+    `Estimativa baseada em ${ts.minutos_por_acao} min por interação automatizada.`));
+  if (cmp) {
+    mount.append(h("div", { class: "res-note" },
+      "vs. período anterior — Marcações BMS ", resDelta(cmp.marcacoes_bms.delta_pct),
+      " · Receita paga ", resDelta(cmp.receita_paga_cents.delta_pct),
+      " · Receita BMS ", resDelta(cmp.receita_bms_cents.delta_pct),
+      " · No-show rate ", resDelta(cmp.no_show_rate_pct.delta_pp, "pp")));
+  }
+
+  // 2 — Receita
+  mount.append(h("div", { class: "eyebrow", style: "margin-top:28px" }, "Receita"));
+  mount.append(h("div", { class: "metrics", style: "grid-template-columns:repeat(4,1fr)" },
+    metric(chf(r.whatsapp_bot_cents), "WhatsApp Bot"),
+    metric(chf(r.rebooking_followup_cents), "Rebooking automático"),
+    metric(chf(r.dashboard_cents), "Dashboard (manual)"),
+    metric(chf(r.total_paid_cents), "Total pago", true)));
+  mount.append(h("div", { class: "res-note" },
+    `${r.faturas_pagas} faturas pagas · ticket médio ${chf(r.ticket_medio_cents)}.`));
+  if (r.por_servico.length) {
+    const maxServ = Math.max(...r.por_servico.map((s) => s.total_cents));
+    const card = h("div", { class: "card card--pad", style: "margin-top:10px" });
+    r.por_servico.slice(0, 8).forEach((s) => card.append(resBar(s.servico, chf(s.total_cents), s.total_cents, maxServ)));
+    mount.append(card);
+  }
+
+  // 3 — Marcações por origem
+  mount.append(h("div", { class: "eyebrow", style: "margin-top:28px" }, "Marcações por origem"));
+  const maxOrigem = Math.max(b.whatsapp_bot, b.rebooking_followup, b.dashboard, b.unknown, 1);
+  mount.append(h("div", { class: "card card--pad" },
+    resBar("WhatsApp Bot", String(b.whatsapp_bot), b.whatsapp_bot, maxOrigem),
+    resBar("Rebooking automático", String(b.rebooking_followup), b.rebooking_followup, maxOrigem),
+    resBar("Dashboard (manual)", String(b.dashboard), b.dashboard, maxOrigem),
+    resBar("Desconhecida", String(b.unknown), b.unknown, maxOrigem)));
+  mount.append(h("div", { class: "res-note" },
+    `${b.total} marcações criadas no período · ${b.bms} via BMS (WhatsApp Bot + rebooking automático).`));
+
+  // 4 — Clientes
+  mount.append(h("div", { class: "eyebrow", style: "margin-top:28px" }, "Clientes"));
+  mount.append(h("div", { class: "metrics", style: "grid-template-columns:repeat(4,1fr)" },
+    metric(c.novos, "Novos"),
+    metric(c.atendidos, "Atendidos"),
+    metric(c.recorrentes, "Recorrentes"),
+    metric(c.taxa_recorrencia_pct == null ? "Sem dados" : pctLabel(c.taxa_recorrencia_pct), "Taxa de recorrência")));
+  mount.append(h("div", { class: "res-note" },
+    "\"Recorrente\" = pelo menos 2 marcações concluídas no histórico (mesma definição usada em Clientes)."));
+
+  // 5 — No-show e cancelamentos (métricas SEPARADAS, nunca conflar)
+  mount.append(h("div", { class: "eyebrow", style: "margin-top:28px" }, "No-show e cancelamentos"));
+  mount.append(h("div", { class: "metrics", style: "grid-template-columns:repeat(3,1fr)" },
+    metric(ns.no_shows, "Não compareceu"),
+    metric(ns.elegiveis, "Marcações elegíveis"),
+    metric(ns.rate_pct == null ? "Sem dados" : pctLabel(ns.rate_pct), "Taxa de no-show")));
+  mount.append(h("div", { class: "metrics", style: "grid-template-columns:repeat(2,1fr);margin-top:10px" },
+    metric(ca.cancelamentos, "Cancelamentos"),
+    metric(ca.rate_pct == null ? "Sem dados" : pctLabel(ca.rate_pct), "Taxa de cancelamento")));
+
+  // 6 — Reminder 24h
+  mount.append(h("div", { class: "eyebrow", style: "margin-top:28px" }, "Reminder 24h"));
+  mount.append(h("div", { class: "metrics", style: "grid-template-columns:repeat(4,1fr)" },
+    metric(rem.enviados, "Enviados"),
+    metric(rem.confirmacoes, "Confirmações"),
+    metric(rem.reagendamentos_iniciados, "Reagendamentos iniciados"),
+    metric(rem.cancelamentos, "Cancelamentos")));
+  mount.append(h("div", { class: "res-note" },
+    "\"Iniciados\" é o clique em reagendar — não prova que o reagendamento foi concluído. Nenhum destes números implica que o reminder \"evitou\" um no-show."));
+
+  // 7 — Rebooking automático
+  mount.append(h("div", { class: "eyebrow", style: "margin-top:28px" }, "Rebooking automático"));
+  mount.append(h("div", { class: "metrics metrics--5" },
+    metric(rb.seguimentos_enviados, "Seguimentos enviados"),
+    metric(rb.mais_tarde, "Mais tarde"),
+    metric(rb.marcacoes_criadas, "Marcações criadas"),
+    metric(rb.conversao_pct == null ? "Sem dados" : pctLabel(rb.conversao_pct), "Conversão"),
+    metric(chf(rb.receita_atribuida_cents), "Receita atribuída", true)));
+  mount.append(h("div", { class: "res-note" },
+    "Conversão = marcações criadas via rebooking / seguimentos enviados no mesmo período (proporção agregada, não um match causal por cliente)."));
+
+  // 8 — Feedback
+  mount.append(h("div", { class: "eyebrow", style: "margin-top:28px" }, "Feedback"));
+  mount.append(h("div", { class: "metrics", style: "grid-template-columns:repeat(3,1fr)" },
+    metric(fb.pedidos, "Pedidos"),
+    metric(fb.recebidos, "Recebidos"),
+    metric(fb.taxa_resposta_pct == null ? "Sem dados" : pctLabel(fb.taxa_resposta_pct), "Taxa de resposta")));
+
+  // 9 — Funil de automação / tempo poupado
+  mount.append(h("div", { class: "eyebrow", style: "margin-top:28px" }, "Ações automatizadas (tempo poupado)"));
+  const detEntries = Object.entries(ts.detalhe);
+  const maxDet = Math.max(...detEntries.map(([, v]) => v), 1);
+  const detCard = h("div", { class: "card card--pad" });
+  detEntries.forEach(([k, v]) => detCard.append(resBar(RESULTADOS_DETALHE_LABEL[k] || k, String(v), v, maxDet)));
+  mount.append(detCard);
+  mount.append(h("div", { class: "res-note" },
+    `${ts.acoes_automatizadas} ações automatizadas × ${ts.minutos_por_acao} min ≈ ${fmtMin(ts.minutos_estimados)} estimados — `,
+    "estimativa, não medição real. Não inclui reagendamentos/cancelamentos feitos pelo próprio cliente (sem marcador de origem hoje)."));
+
+  // 10 — âmbito desta versão
+  mount.append(h("div", { class: "res-note", style: "margin-top:24px" },
+    "Ocupação da agenda não é mostrada nesta versão: o cálculo correto exige cruzar horário de funcionamento, exceções e durações reais — um número aproximado arriscaria enganar."));
+}
+
+/* ===================================================================
    VIEW: DEFINIÇÕES  (faturação)
    =================================================================== */
 async function viewDefinicoes(mount) {
@@ -1486,7 +1652,8 @@ async function viewDefinicoes(mount) {
    =================================================================== */
 const ROUTES = {
   hoje: viewHoje, agenda: viewAgenda, clientes: viewClientes,
-  servicos: viewServicos, horarios: viewHorarios, faturas: viewFaturas, definicoes: viewDefinicoes,
+  servicos: viewServicos, horarios: viewHorarios, faturas: viewFaturas,
+  resultados: viewResultados, definicoes: viewDefinicoes,
 };
 const Router = {
   current: "hoje",

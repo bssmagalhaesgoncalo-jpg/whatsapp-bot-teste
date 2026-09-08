@@ -366,6 +366,18 @@ button, a, [role="button"], .tl-row, .tab {
 .metric .m-val { font-size: 20px; font-weight: 700; letter-spacing: -.025em; }
 .metric .m-lbl { color: var(--text-3); font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; margin-top: 4px; font-weight: 600; }
 .metric--accent .m-val { color: var(--brand); }
+.metrics--5 { grid-template-columns: repeat(5, 1fr); }
+
+/* ---------- Resultados (P3) — barras simples, sem lib de gráficos ---------- */
+.res-bar-row { display: flex; align-items: center; gap: 10px; padding: 7px 0; }
+.res-bar-label { flex: 0 0 150px; font-size: 13px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.res-bar-track { flex: 1; height: 8px; border-radius: var(--radius-full); background: var(--surface-2); overflow: hidden; }
+.res-bar-fill { height: 100%; border-radius: var(--radius-full); background: var(--brand); }
+.res-bar-value { flex: 0 0 auto; min-width: 78px; text-align: right; font-size: 13px; font-weight: 650; }
+.res-note { color: var(--text-3); font-size: 12px; margin-top: 6px; }
+.res-delta { font-size: 12px; font-weight: 650; margin-left: 6px; }
+.res-delta--up { color: var(--success); }
+.res-delta--down { color: var(--danger); }
 
 /* ---------- cockpit (operação atual) ---------- */
 .cockpit {
@@ -759,6 +771,10 @@ input.inp:focus, select.inp:focus, textarea.inp:focus {
   .metrics { grid-template-columns: 1fr 1fr; }
   .metric:nth-child(2) { border-right: none; }
   .metric:nth-child(1), .metric:nth-child(2) { border-bottom: 1px solid var(--border); }
+  .metrics--5 { grid-template-columns: 1fr 1fr; }
+  .metrics--5 .metric:nth-child(2n) { border-right: none; }
+  .metrics--5 .metric:nth-child(-n+4) { border-bottom: 1px solid var(--border); }
+  .res-bar-label { flex-basis: 96px; }
   .cockpit { padding: 18px; border-radius: var(--radius-lg); }
   .cockpit h2 { font-size: 20px; }
   .view { padding: 14px 14px 56px; }

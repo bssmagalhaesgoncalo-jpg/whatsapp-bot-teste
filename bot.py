@@ -2849,6 +2849,20 @@ def api_painel_hoje():
     ), 200
 
 
+@app.route("/api/resultados", methods=["GET"])
+@requer_autenticacao
+def api_resultados():
+    """RESULTADOS / IMPACTO ECONÓMICO DO BMS (P3). Ver reports/results.py —
+    tudo calculado a partir de dados reais, nada inventado."""
+    from reports import results as relatorios
+    periodo = (request.args.get("periodo") or "30d").strip().lower()
+    try:
+        dados = relatorios.calcular_resultados(_TENANT, periodo)
+    except relatorios.PeriodoInvalido as e:
+        return jsonify(erro=str(e)), 400
+    return jsonify(dados), 200
+
+
 @app.route("/api/agendamentos/<int:id_agendamento>/op", methods=["POST"])
 @requer_autenticacao
 def api_agendamento_op(id_agendamento):
