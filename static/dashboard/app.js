@@ -985,7 +985,12 @@ function agEventCard(p, todayCol) {
   // onde o drag nativo não é fiável).
   const el = h("button", { class: `ag-ev st-${op} st-${estadoKey}` + (todayCol ? " on-today" : ""),
     style: `top:${top.toFixed(1)}px;height:${altura.toFixed(1)}px;left:${left.toFixed(2)}%;width:${larg.toFixed(2)}%`,
-    title: `${txt} · ${sub}`, draggable: podeArrastar || undefined, onclick: () => openAppointment(ev.id),
+    // draggable é um atributo ENUMERADO (precisa do valor "true", nunca ""
+    // — o helper h() genérico escreve "" para `true`, que o browser trata
+    // como não-arrastável; ver core helpers no topo do ficheiro). Corrigido
+    // só aqui, sem tocar no comportamento genérico de h() para não arriscar
+    // regressão nos outros atributos booleanos usados no dashboard.
+    title: `${txt} · ${sub}`, draggable: podeArrastar ? "true" : undefined, onclick: () => openAppointment(ev.id),
     "aria-label": `${sub} às ${ev.hora_hhmm || "—"}` + (podeArrastar ? " — arrastável para reagendar" : "") },
     h("span", { class: "ag-ev-t" }, txt),
     h("span", { class: "ag-ev-s" }, sub),

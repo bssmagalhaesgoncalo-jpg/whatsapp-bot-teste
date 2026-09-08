@@ -449,3 +449,22 @@ def test_31_conflito_nunca_e_500(cliente_http, base_dados):
     for hora in ("10:00", "19:00", "10:30"):
         r = _reagendar_http(cliente_http, b, TER, hora, origem="dashboard_drag")
         assert r.status_code in (200, 409), (hora, r.status_code, r.get_json())
+
+
+# ===========================================================================
+# 32 — front-end: cartão elegível tem de sair do agEventCard() com
+# draggable="true" a sério. Não há framework de testes DOM JS no projeto
+# (sem package.json/jsdom) — mesmo padrão estático já usado em
+# test_resultados.py/test_pos_atendimento.py: ler o app.js e verificar o
+# literal, sem instalar nada novo. Guarda de regressão do bug em que o
+# helper genérico h() escrevia draggable="" (atributo enumerado, o browser
+# trata como não-arrastável) em vez de draggable="true".
+# ===========================================================================
+def test_32_agenda_card_draggable_usa_atributo_enumerado_true():
+    src = open("static/dashboard/app.js", encoding="utf-8").read()
+    inicio = src.index("function agEventCard(")
+    fim = src.index("\nfunction ", inicio + 1)
+    corpo = src[inicio:fim]
+    assert 'draggable: podeArrastar ? "true" : undefined' in corpo
+    # nunca mais o padrão que gerava draggable="" via helper genérico h()
+    assert "draggable: podeArrastar || undefined" not in corpo
