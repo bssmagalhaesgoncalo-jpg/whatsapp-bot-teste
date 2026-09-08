@@ -91,6 +91,11 @@ const EST_LABEL = { confirmed: "Confirmada", pending: "Pendente", cancelled: "Ca
 // backend, sem inventar mais nenhum aqui.
 const REMINDER_LABEL = { agendado: "Agendado", enviado: "Enviado", confirmado: "Confirmado",
                          nao_aplicavel: "Não aplicável", cancelado: "Cancelado", falhou: "Falhou" };
+// Rebooking followup (P2, ver notifications/followup.py) — mesmos conceitos
+// do backend (estado_rebooking_para_ui), sem inventar mais nenhum aqui.
+const REBOOKING_LABEL = { agendado: "Agendado", enviado: "Enviado", mais_tarde: "Mais tarde",
+                          cancelado_marcacao_existente: "Cancelado — já tem marcação",
+                          cancelado: "Cancelado", falhou: "Falhou" };
 function statusBadge(estado, op, bloqueiaHorario) {
   const e = (estado || "").toLowerCase();
   if (e === "cancelled")
@@ -177,7 +182,17 @@ function renderAppointment(ag) {
       h("dt", {}, "Preço"), h("dd", {}, totalLabel),
       h("dt", {}, "Estado operacional"), h("dd", {}, OP_LABEL[op] || op),
       ag.reminder_24h ? h("dt", {}, "Reminder 24h") : null,
-      ag.reminder_24h ? h("dd", {}, REMINDER_LABEL[ag.reminder_24h.estado] || ag.reminder_24h.estado) : null),
+      ag.reminder_24h ? h("dd", {}, REMINDER_LABEL[ag.reminder_24h.estado] || ag.reminder_24h.estado) : null,
+      ag.rebooking_followup ? h("dt", {}, "Próxima manutenção") : null,
+      ag.rebooking_followup
+        ? h("dd", {}, ag.rebooking_followup.proxima_manutencao
+            ? ag.rebooking_followup.proxima_manutencao.split("-").reverse().join(".")
+            : "—")
+        : null,
+      ag.rebooking_followup ? h("dt", {}, "Follow-up") : null,
+      ag.rebooking_followup
+        ? h("dd", {}, REBOOKING_LABEL[ag.rebooking_followup.estado] || ag.rebooking_followup.estado || "Não configurado")
+        : null),
     cli ? h("div", { class: "card card--pad", style: "margin-top:8px" },
       h("div", { class: "eyebrow", style: "margin:0 0 8px" }, "Cliente"),
       h("dl", { class: "dl" },
@@ -1278,17 +1293,27 @@ async function viewServicos(mount) {
 function editServico(s) {
   const f = (name, val, attrs = {}) => h("div", { class: "field" }, h("label", {}, name),
     h("input", Object.assign({ class: "inp", value: val ?? "", "data-k": attrs.k }, attrs)));
+  // P2 — follow-up automático (rebooking): reutiliza rebook_days já
+  // existente ("de quantos em quantos dias sugerir outra vez") + o
+  // interruptor follow_up_enabled (por omissão desligado — ver migração 17).
+  const followUpToggle = h("label", { class: "field", style: "display:flex;gap:8px;align-items:center" },
+    h("input", { type: "checkbox", "data-k": "follow_up_enabled", checked: s.follow_up_enabled || undefined }),
+    h("span", {}, "Follow-up automático (rebooking)"));
   const body = h("div", { class: "drawer-body" },
     f("Nome (PT)", s.nome_pt, { k: "nome_pt" }),
     f("Duração (min)", s.duracao_min, { k: "duracao_min", type: "number", min: 5, max: 600 }),
     f("Preço (cêntimos, vazio = a confirmar)", s.preco_cents ?? "", { k: "preco_cents", type: "number", min: 0 }),
     f("Buffer antes (min)", s.buffer_before_min ?? 0, { k: "buffer_before_min", type: "number", min: 0 }),
     f("Buffer depois (min)", s.buffer_after_min ?? 0, { k: "buffer_after_min", type: "number", min: 0 }),
-    f("Reagendar após (dias)", s.rebook_days ?? "", { k: "rebook_days", type: "number", min: 0 }));
+    followUpToggle,
+    f("Próxima manutenção (dias)", s.rebook_days ?? "", { k: "rebook_days", type: "number", min: 1 }));
   const foot = h("div", { class: "drawer-foot" },
     h("button", { class: "btn btn--primary", onclick: async (ev) => {
       const patch = {};
-      $$("input[data-k]", body).forEach((i) => { if (i.value !== "") patch[i.dataset.k] = i.type === "number" ? Number(i.value) : i.value; });
+      $$("input[data-k]", body).forEach((i) => {
+        if (i.type === "checkbox") { patch[i.dataset.k] = i.checked; return; }
+        if (i.value !== "") patch[i.dataset.k] = i.type === "number" ? Number(i.value) : i.value;
+      });
       if ($("input[data-k=preco_cents]", body).value === "") patch.preco_cents = null;
       try { await jpatch(`/api/servicos/${s.id}`, patch); toast("Serviço atualizado."); Drawer.close(); Router.reload(); }
       catch (e) { toast(e.message, "err"); }

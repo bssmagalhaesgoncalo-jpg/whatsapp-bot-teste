@@ -128,6 +128,14 @@ notif_jobs.registar_handler(notif_jobs.TYPE_POST_SERVICE, notif_postservice.exec
 eventos.registar("*", notif_reminders.handler_evento)
 notif_jobs.registar_handler(notif_jobs.TYPE_REMINDER_24H, notif_reminders.executar_reminder_24h)
 
+# P2 — rebooking automático: booking.completed agenda (se o serviço tiver
+# follow_up_enabled + rebook_days válido) UM job "rebooking_followup" para
+# completed_at + rebook_days dias; o job (executado por process_due_jobs)
+# revalida tudo e manda o WhatsApp com [Marcar novamente]/[Mais tarde] (ver
+# notifications/followup.py).
+eventos.registar("booking.completed", notif_followup.handler_evento)
+notif_jobs.registar_handler(notif_jobs.TYPE_REBOOKING_FOLLOWUP, notif_followup.executar_rebooking_followup)
+
 
 def disparar_automacoes():
     """Processa a outbox de eventos (síncrono, V1). Chamado no fim de cada
@@ -2556,6 +2564,11 @@ def api_agendamento_detalhe(id_agendamento):
     # ou já concluída/cancelada antes de qualquer reminder fazer sentido).
     corpo["reminder_24h"] = notif_reminders.estado_reminder_para_ui(
         id_agendamento, tenant_id=ag.get("tenant_id") or 1)
+    # P2 — próxima manutenção recomendada + estado do rebooking followup
+    # (ver notifications/followup.py). None quando a marcação não está
+    # completed ou o serviço não tem follow-up configurado.
+    corpo["rebooking_followup"] = notif_followup.info_rebooking_para_ui(
+        id_agendamento, tenant_id=ag.get("tenant_id") or 1)
     return jsonify(corpo), 200
 
 
@@ -2952,6 +2965,8 @@ def api_servico_editar(servico_id):
         return jsonify(erro=str(e)), 400
     if "ativo" in d:
         patch["ativo"] = bool(d["ativo"])
+    if "follow_up_enabled" in d:
+        patch["follow_up_enabled"] = 1 if d["follow_up_enabled"] else 0
     bd.atualizar_servico(servico_id, patch)
     return jsonify(ok=True, servico=bd.obter_servico(servico_id)), 200
 
@@ -6439,12 +6454,14 @@ def receber_mensagem():
                 mostrar_detalhe_servico(de, idioma, id_botao[len("svcdet_"):], sessao)
                 return jsonify(status="ok"), 200
 
-            # --- Entrada de uma futura mensagem de FOLLOW-UP -----------------
-            # (ver notifications/followup.py — hoje nada envia isto sozinho,
-            # mas o webhook já sabe responder aos dois botões que essa
-            # mensagem teria). "Marcar novamente" reaproveita o MESMO fluxo
-            # de marcação normal — nunca um segundo fluxo.
+            # --- Entrada da mensagem de FOLLOW-UP / rebooking automático ----
+            # (ver notifications/followup.py, P2). "Marcar novamente"
+            # reaproveita o MESMO fluxo de marcação normal — nunca um segundo
+            # fluxo — mas marca a ORIGEM comercial como "rebooking_followup"
+            # (nunca "whatsapp_bot") antes de entrar nele: o canal é o mesmo,
+            # a origem do negócio não.
             if id_botao.startswith("followup_marcar_"):
+                sessao["booking_source"] = "rebooking_followup"
                 escolher_servico(de, idioma, sessao, id_botao[len("followup_marcar_"):])
                 return jsonify(status="ok"), 200
 
