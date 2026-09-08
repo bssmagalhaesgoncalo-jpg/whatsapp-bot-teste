@@ -575,6 +575,9 @@ button, a, [role="button"], .tl-row, .tab {
 .ag-faixa.hora-cheia { border-bottom-style: solid; border-bottom-color: var(--border); }
 .ag-faixa:hover { background: var(--surface-2); }
 .ag-faixa.drop-target { background: color-mix(in srgb, var(--brand) 16%, var(--surface-2)); }
+/* candidato inválido — dia já passado, nunca aceita o drop. A decisão FINAL
+   continua a ser sempre do backend; isto é só feedback visual imediato. */
+.ag-faixa.drop-invalid { background: color-mix(in srgb, var(--danger) 12%, var(--surface-2)); cursor: not-allowed; }
 
 /* cartão de marcação — absoluto dentro da coluna, altura ∝ duração */
 .ag-ev {
@@ -594,6 +597,15 @@ button, a, [role="button"], .tl-row, .tab {
 .ag-ev[draggable="true"] { cursor: grab; }
 .ag-ev[draggable="true"]:active { cursor: grabbing; }
 .ag-ev.dragging { opacity: .35; }
+/* a aguardar resposta do /reagendar — nunca se move sozinho, só assinala
+   que o pedido está em curso; some ao voltar a desenhar (sucesso) ou fica
+   removido no próprio catch (erro), sem sair do sítio em nenhum dos casos. */
+.ag-ev--pending { opacity: .55; pointer-events: none; }
+.ag-ev--pending::after {
+  content: ""; position: absolute; inset: 0; border-radius: inherit;
+  background: repeating-linear-gradient(135deg, transparent 0 6px,
+    color-mix(in srgb, var(--text) 8%, transparent) 6px 12px);
+}
 .ag-ev .ag-ev-t {
   font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0;
 }

@@ -221,6 +221,11 @@ function renderAppointment(ag) {
       foot.append(h("button", { class: "btn btn--primary", onclick: () => act(() => opTransition(ag.id, "in_progress")) }, icon("play"), "Iniciar"));
     if (op === "in_progress" || op === "arrived")
       foot.append(h("button", { class: "btn btn--primary", onclick: () => act(() => concluirEFaturar(ag)) }, icon("check"), "Concluir"));
+    // Reagendar (atalho, igual ao drag & drop da Agenda) só faz sentido
+    // antes de qualquer atendimento em curso — a mesma regra que o backend
+    // aplica (OperacaoEmCurso): "arrived"/"in_progress" já não se reagenda.
+    if (op === "scheduled")
+      foot.append(h("button", { class: "btn", onclick: () => openReagendarRapido(ag) }, icon("clock"), "Reagendar"));
     foot.append(h("button", { class: "btn", onclick: () => openEditAppointment(ag) }, "Editar"));
     foot.append(h("button", { class: "btn btn--danger", onclick: () => cancelarPrompt(ag) }, "Cancelar"));
   } else if (op === "done" && !ag.fatura) {
@@ -396,6 +401,44 @@ async function openCreateAppointment(prefill = {}) {
 }
 
 /* ===================================================================
+   REAGENDAR (atalho rápido) — só data/hora, via /reagendar. O MESMO caminho
+   do arrastar-e-largar da Agenda (mesmo endpoint, mesma validação real de
+   disponibilidade), só que por formulário — o caminho principal em
+   mobile/tablet e para quem prefere não arrastar (drag & drop é atalho,
+   nunca a única forma de reagendar).
+   =================================================================== */
+function openReagendarRapido(ag) {
+  const f = (label, node) => h("div", { class: "field" }, h("label", {}, label), node);
+  const iData = h("input", { class: "inp", type: "date", value: ag.data_iso || "", min: ymdOf(new Date()) });
+  const iHora = h("input", { class: "inp", type: "time", value: ag.hora_hhmm || "" });
+
+  const body = h("div", { class: "drawer-body" },
+    h("div", { style: "color:var(--text-3);font-size:12.5px;margin-bottom:12px" },
+      `${ag.servico || "Serviço"} · ${ag.duracao_min ? fmtMin(ag.duracao_min) : ag.duracao || ""} — a duração mantém-se, só a data/hora mudam.`),
+    h("div", { style: "display:flex;gap:12px" }, f("Nova data", iData), f("Nova hora", iHora)));
+
+  const btnGuardar = h("button", { class: "btn btn--primary" }, icon("clock"), "Reagendar");
+  const foot = h("div", { class: "drawer-foot" },
+    h("button", { class: "btn", onclick: () => renderAppointment(ag) }, "Voltar"), btnGuardar);
+
+  btnGuardar.addEventListener("click", async () => {
+    if (!iData.value || !HORA_RE.test(iHora.value)) { toast("Data e hora são obrigatórias.", "err"); return; }
+    if (iData.value === ag.data_iso && iHora.value === ag.hora_hhmm) { Drawer.close(); return; } // no-op
+    btnGuardar.disabled = true;
+    try {
+      await jpost(`/api/agendamentos/${ag.id}/reagendar`, { data: iData.value, hora: iHora.value, origem: "dashboard" });
+      toast("Marcação reagendada.");
+      Drawer.close(); Router.reload();
+    } catch (e) { toast(e.message, "err"); btnGuardar.disabled = false; }
+  });
+
+  Drawer.open(h("div", { style: "display:flex;flex-direction:column;height:100%" },
+    h("div", { class: "drawer-head" }, icon("clock"), h("h3", {}, `Reagendar marcação #${ag.id}`),
+      h("span", { style: "flex:1" }), h("button", { class: "icon-btn", onclick: () => Drawer.close() }, icon("x"))),
+    body, foot));
+}
+
+/* ===================================================================
    EDITAR MARCAÇÃO — /editar (serviço/duração/preço/notas) + /reagendar
    (data/hora), na mesma marcação. Cancelar/concluir/estado operacional/
    cliente/fatura mantêm-se nas suas próprias ações.
@@ -416,8 +459,13 @@ async function openEditAppointment(ag) {
     value: ag.preco_cents == null ? "" : (ag.preco_cents / 100).toFixed(2) });
   const iNotas = h("textarea", { class: "inp", rows: 3, style: "resize:vertical" }, ag.extra || "");
 
+  // Data/Hora só ficam editáveis aqui em "scheduled" — a mesma regra do
+  // botão "Reagendar" e do drag & drop (op_status arrived/in_progress já
+  // tem atendimento em curso, o backend recusa-o sempre). Os restantes
+  // campos continuam editáveis em qualquer estado ativo.
+  const podeReagendar = (ag.op_status || "scheduled") === "scheduled";
   const body = h("div", { class: "drawer-body" },
-    h("div", { style: "display:flex;gap:12px" }, f("Data", iData), f("Hora", iHora)),
+    podeReagendar ? h("div", { style: "display:flex;gap:12px" }, f("Data", iData), f("Hora", iHora)) : null,
     f("Serviço", selServico),
     h("div", { style: "display:flex;gap:12px" },
       f("Duração (min)", iDuracao), f("Preço (CHF, vazio = a confirmar)", iPreco)),
@@ -782,9 +830,31 @@ function faixaHora(i) {
   return String(Math.floor(min / 60)).padStart(2, "0") + ":" + String(min % 60).padStart(2, "0");
 }
 let _dragEv = null;
-async function reagendarDrag(id, data, hora) {
-  try { await jpost(`/api/agendamentos/${id}/reagendar`, { data, hora }); toast("Marcação reagendada."); Router.reload(); }
-  catch (e) { toast(e.message, "err"); }
+let _dragEmCurso = false;   // 1 pedido de cada vez — um segundo drop durante o 1º é ignorado
+// Reagenda por drag & drop. Passa SEMPRE por /reagendar — o MESMO endpoint,
+// a MESMA transação e os MESMOS eventos do diálogo "Editar"/"Reagendar" (ver
+// bot.py:api_agendamento_reagendar); só a `origem` muda, para a timeline e a
+// atribuição em Resultados (P3) distinguirem os dois. O backend é sempre a
+// fonte da verdade: nada aqui decide disponibilidade, só mostra o resultado.
+async function reagendarDrag(id, data, hora, el) {
+  if (_dragEmCurso) return;
+  _dragEmCurso = true;
+  if (el) el.classList.add("ag-ev--pending");
+  try {
+    await jpost(`/api/agendamentos/${id}/reagendar`, { data, hora, origem: "dashboard_drag" });
+    const diaTxt = dateOf(data).toLocaleDateString("pt-PT", { weekday: "long", day: "numeric", month: "long" });
+    toast(`Marcação reagendada para ${diaTxt}, ${hora}.`);
+    Router.reload();
+  } catch (e) {
+    // Falhou: NADA foi persistido (o backend só grava depois de validar), a
+    // única reposição necessária é tirar o estado "a processar" — o cartão
+    // nunca chegou a sair do sítio, porque este drag & drop não move o DOM
+    // otimisticamente, só pede ao servidor e volta a desenhar a partir dele.
+    if (el) el.classList.remove("ag-ev--pending");
+    toast(e.message || "Não foi possível reagendar.", "err");
+  } finally {
+    _dragEmCurso = false;
+  }
 }
 // Uma faixa vazia é uma célula de fundo: um clique cria uma marcação pré-
 // preenchida; um drop reagenda a marcação arrastada para esta hora/dia.
@@ -792,16 +862,27 @@ async function reagendarDrag(id, data, hora) {
 // por isso um clique numa marcação existente NUNCA chega a esta faixa.
 function makeFaixa(i, dia) {
   const min = agGrelha.hora_inicio * 60 + i * (agGrelha.intervalo_min || 30);
+  const hojeYmd = ymdOf(new Date());
+  const passado = dia < hojeYmd;
   const el = h("div", { class: "ag-faixa" + (min % 60 === 0 ? " hora-cheia" : ""),
     onclick: () => openCreateAppointment({ data: dia, hora: faixaHora(i) }) });
-  el.addEventListener("dragover", (e) => { e.preventDefault(); el.classList.add("drop-target"); });
-  el.addEventListener("dragleave", () => el.classList.remove("drop-target"));
+  el.addEventListener("dragover", (e) => {
+    if (!_dragEv) return;
+    e.preventDefault();
+    // Feedback visual só — nunca a decisão: um slot que "parece" livre no
+    // browser ainda pode ser recusado pelo motor real no drop (expediente,
+    // pausa, conflito). Um dia já passado nunca sequer aceita o drop.
+    el.classList.add(passado ? "drop-invalid" : "drop-target");
+  });
+  el.addEventListener("dragleave", () => el.classList.remove("drop-target", "drop-invalid"));
   el.addEventListener("drop", (e) => {
     e.preventDefault();
-    el.classList.remove("drop-target");
-    if (!_dragEv) return;
+    el.classList.remove("drop-target", "drop-invalid");
+    if (!_dragEv || passado) { _dragEv = null; return; }
     const novaHora = faixaHora(i);
-    if (dia !== _dragEv.dia || novaHora !== _dragEv.hora) reagendarDrag(_dragEv.id, dia, novaHora);
+    // Mesmo slot solto de volta -> no-op, sem pedido nenhum ao servidor.
+    if (dia === _dragEv.dia && novaHora === _dragEv.hora) { _dragEv = null; return; }
+    reagendarDrag(_dragEv.id, dia, novaHora, _dragEv.el);
     _dragEv = null;
   });
   return el;
@@ -890,20 +971,28 @@ function agEventCard(p, todayCol) {
   const left = (100 / p.total) * p.coluna + 3;
   const txt = `${ev.hora_hhmm || "—"} · ${ev.nome || ev.primeiro_nome || "Cliente"}`;
   const sub = [ev.servico, fmtMin(ev.duracao_minutos || 0)].filter(Boolean).join(" · ");
-  // Reagendar por drag & drop exige uma marcação ainda ativa e não concluída
-  // — a mesma regra da API de /reagendar. A duração nunca é enviada aqui:
-  // o drop só muda dia/hora, o backend mantém a duração existente.
-  const podeArrastar = !["cancelled", "no_show"].includes(estadoKey) && op !== "done" && estadoKey !== "completed";
+  // Reagendar por drag & drop exige uma marcação ainda ativa e SEM
+  // atendimento em curso — a mesma regra do backend (op_status
+  // arrived/in_progress/done bloqueia em bot.py:reagendar_agendamento,
+  // OperacaoEmCurso). Nunca se mostra como arrastável algo que o servidor ia
+  // recusar de qualquer forma. A duração nunca é enviada aqui: o drop só
+  // muda dia/hora, o backend mantém a duração existente.
+  const podeArrastar = !["cancelled", "no_show", "completed"].includes(estadoKey)
+    && !["arrived", "in_progress", "done"].includes(op);
+  // O cartão continua clicável (abre o drawer) em QUALQUER estado — arrastar
+  // é um atalho, nunca o único caminho (drawer -> Editar tem o mesmo
+  // reagendamento por data/hora, acessível por teclado e em mobile/tablet
+  // onde o drag nativo não é fiável).
   const el = h("button", { class: `ag-ev st-${op} st-${estadoKey}` + (todayCol ? " on-today" : ""),
     style: `top:${top.toFixed(1)}px;height:${altura.toFixed(1)}px;left:${left.toFixed(2)}%;width:${larg.toFixed(2)}%`,
     title: `${txt} · ${sub}`, draggable: podeArrastar || undefined, onclick: () => openAppointment(ev.id),
-    "aria-label": `${sub} às ${ev.hora_hhmm || "—"}` },
+    "aria-label": `${sub} às ${ev.hora_hhmm || "—"}` + (podeArrastar ? " — arrastável para reagendar" : "") },
     h("span", { class: "ag-ev-t" }, txt),
     h("span", { class: "ag-ev-s" }, sub),
     statusBadge(ev.estado, op, ev.bloqueia_horario));
   if (podeArrastar) {
     el.addEventListener("dragstart", (e) => {
-      _dragEv = { id: ev.id, dia: ev.dia, hora: ev.hora_hhmm };
+      _dragEv = { id: ev.id, dia: ev.dia, hora: ev.hora_hhmm, el };
       e.dataTransfer.effectAllowed = "move";
       e.dataTransfer.setData("text/plain", String(ev.id));
       el.classList.add("dragging");
