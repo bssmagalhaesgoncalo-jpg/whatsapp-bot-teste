@@ -37,6 +37,7 @@ log = logging.getLogger("notif.jobs")
 
 TYPE_POST_SERVICE = "post_service"
 TYPE_REMINDER_24H = "reminder_24h"
+TYPE_REBOOKING_FOLLOWUP = "rebooking_followup"
 
 PENDING = "pending"
 PROCESSING = "processing"

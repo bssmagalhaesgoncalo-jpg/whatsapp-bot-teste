@@ -46,6 +46,12 @@ WHATSAPP_REMINDER_TEMPLATE_PT = _limpo("WHATSAPP_REMINDER_TEMPLATE_PT")
 WHATSAPP_REMINDER_TEMPLATE_DE = _limpo("WHATSAPP_REMINDER_TEMPLATE_DE")
 WHATSAPP_REMINDER_TEMPLATE_EN = _limpo("WHATSAPP_REMINDER_TEMPLATE_EN")
 
+# Idem, para o rebooking followup automático (P2, ver notifications/followup.py)
+# — mesma regra: sem o nome do template aqui, o job nunca finge um envio.
+WHATSAPP_REBOOKING_TEMPLATE_PT = _limpo("WHATSAPP_REBOOKING_TEMPLATE_PT")
+WHATSAPP_REBOOKING_TEMPLATE_DE = _limpo("WHATSAPP_REBOOKING_TEMPLATE_DE")
+WHATSAPP_REBOOKING_TEMPLATE_EN = _limpo("WHATSAPP_REBOOKING_TEMPLATE_EN")
+
 # --- Painel / dashboard (HTTP Basic) — SEM defaults ----------------------
 DASHBOARD_USER = _limpo("DASHBOARD_USER")
 DASHBOARD_PASSWORD = _limpo("DASHBOARD_PASSWORD")
