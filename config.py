@@ -81,6 +81,14 @@ ENABLE_DEMO_SEED = (_limpo("ENABLE_DEMO_SEED") or "false").lower() in (
     "1", "true", "yes", "sim", "on",
 )
 
+# Estimativa de minutos poupados por CADA ação automatizada real (reminder
+# enviado, follow-up de rebooking, agradecimento pós-atendimento, PDF de
+# fatura enviado, etc.) — ver reports/results.py "Tempo poupado". É sempre
+# rotulado como estimativa na UI, nunca como "tempo real poupado".
+ESTIMATED_MINUTES_SAVED_PER_AUTOMATION = int(
+    _limpo("ESTIMATED_MINUTES_SAVED_PER_AUTOMATION") or "3"
+)
+
 # Prefixo dos números de telefone DEMO (seed do dashboard). Usado em dois
 # sítios: aqui para identificar clientes demo em geral, e em
 # `messaging/whatsapp.py:enviar()` para bloquear qualquer envio real à Meta
