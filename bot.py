@@ -47,6 +47,7 @@ from notifications import business as notif_negocio
 from notifications import followup as notif_followup
 from notifications import postservice as notif_postservice
 from notifications import reminders as notif_reminders
+from notifications import reschedule as notif_reschedule
 from notifications import jobs as notif_jobs
 from scheduling import business_hours as bh_mod
 from scheduling import availability as av_mod
@@ -135,6 +136,11 @@ notif_jobs.registar_handler(notif_jobs.TYPE_REMINDER_24H, notif_reminders.execut
 # notifications/followup.py).
 eventos.registar("booking.completed", notif_followup.handler_evento)
 notif_jobs.registar_handler(notif_jobs.TYPE_REBOOKING_FOLLOWUP, notif_followup.executar_rebooking_followup)
+
+# P4.1 — reagendamento iniciado pelo painel com confirmação do cliente: um
+# pedido pendente nunca deve sobreviver à marcação a que pertence, senão o
+# horário novo ficava reservado para sempre (ver notifications/reschedule.py).
+eventos.registar("booking.cancelled", notif_reschedule.handler_evento)
 
 
 def disparar_automacoes():
@@ -389,6 +395,45 @@ TEXTOS = {
         "pt": "Esta marcação já não pode ser reagendada. Escreva MENU para começar de novo.",
         "de": "Diese Buchung kann nicht mehr verschoben werden. Schreiben Sie MENU, um neu zu beginnen.",
         "en": "This booking can no longer be rescheduled. Type MENU to start again."},
+    # --- P4.1: reagendamento iniciado pelo PAINEL, com confirmação do
+    # cliente (ver notifications/reschedule.py) — distinto do reagendamento
+    # que o próprio cliente inicia pelo WhatsApp (chaves acima, intocadas).
+    "reagendar_pedido_corpo": {
+        "pt": "Olá, {nome} 🤍\n\n{negocio} propôs uma alteração à sua marcação de {servico}.\n\n"
+              "Horário atual:\n{data_antiga} às {hora_antiga}\n\n"
+              "Novo horário proposto:\n{data_nova} às {hora_nova}\n\n"
+              "Pode confirmar abaixo.",
+        "de": "Hallo, {nome} 🤍\n\n{negocio} hat eine Änderung Ihres Termins für {servico} vorgeschlagen.\n\n"
+              "Aktuelle Zeit:\n{data_antiga} um {hora_antiga}\n\n"
+              "Neue vorgeschlagene Zeit:\n{data_nova} um {hora_nova}\n\n"
+              "Sie können unten bestätigen.",
+        "en": "Hi {nome} 🤍\n\n{negocio} proposed a change to your {servico} appointment.\n\n"
+              "Current time:\n{data_antiga} at {hora_antiga}\n\n"
+              "New proposed time:\n{data_nova} at {hora_nova}\n\n"
+              "You can confirm below."},
+    "reagendar_pedido_botao_confirmar": {"pt": "Confirmar novo horário", "de": "Neue Zeit bestätigen",
+                                         "en": "Confirm new time"},
+    "reagendar_pedido_botao_manter": {"pt": "Manter horário atual", "de": "Aktuelle Zeit behalten",
+                                      "en": "Keep current time"},
+    "reagendar_pedido_aceite_cliente": {
+        "pt": "✓ Combinado! A sua marcação #{id} passa a ser em {data} às {hora}.",
+        "de": "✓ Abgemacht! Ihre Buchung #{id} ist jetzt am {data} um {hora}.",
+        "en": "✓ All set! Your booking #{id} is now on {data} at {hora}."},
+    "reagendar_pedido_recusado_cliente": {
+        "pt": "Sem problema — mantemos a sua marcação original.",
+        "de": "Kein Problem — wir behalten Ihren ursprünglichen Termin bei.",
+        "en": "No problem — we'll keep your original appointment."},
+    "reagendar_pedido_falhou_cliente": {
+        "pt": "Entretanto esse horário deixou de estar disponível — a sua marcação original mantém-se. "
+              "Escreva GERIR para escolher outro horário.",
+        "de": "Diese Zeit ist inzwischen nicht mehr verfügbar — Ihr ursprünglicher Termin bleibt bestehen. "
+              "Schreiben Sie VERWALTEN, um eine andere Zeit zu wählen.",
+        "en": "That time is no longer available — your original appointment stays as is. "
+              "Type MANAGE to pick another time."},
+    "reagendar_pedido_ja_nao_valido_cliente": {
+        "pt": "Este pedido de reagendamento já não está válido.",
+        "de": "Diese Terminänderungsanfrage ist nicht mehr gültig.",
+        "en": "This reschedule request is no longer valid."},
     # Resposta ao tocar em "Confirmar" no reminder 24h (ver
     # notifications/reminders.py) — não muda estado nenhum, só agradece.
     "lembrete_confirmado": {
@@ -1958,11 +2003,12 @@ def conflitos_de_horario(id_agendamento, data_iso, hora):
     """Marcações OU reservas temporárias que ocupam o horário para onde se
     quer mover a marcação `id_agendamento` (a própria é sempre ignorada).
     Inclui as retenções para o painel não colidir com um horário que um
-    cliente está a confirmar no WhatsApp nesse instante."""
+    cliente está a confirmar no WhatsApp nesse instante, e os horários novos
+    de pedidos de reagendamento pendentes (P4.1)."""
     alvo = obter_agendamento(id_agendamento)
     if not alvo:
         return []
-    ocup = listar_agendamentos() + horarios_retidos(excluir_telefone=alvo.get("telefone"))
+    ocup = ocupacoes(excluir_telefone=alvo.get("telefone"))
     return conflitos_no_intervalo(
         ocup, data_iso, hora,
         alvo.get("servico"), alvo.get("duracao"), ignorar_id=id_agendamento)
@@ -2041,10 +2087,36 @@ def horarios_retidos(excluir_telefone=None, conn=None, tenant_id=1):
             for (tel, data, hora, servico, duracao) in linhas if tel != excluir_telefone]
 
 
+def holds_de_pedidos_reagendamento(conn=None, tenant_id=1):
+    """Horários NOVOS de pedidos de reagendamento ainda PENDENTES (P4.1 — ver
+    notifications/reschedule.py), no mesmo formato de uma marcação para a
+    verificação de conflitos os tratar exatamente como qualquer outra
+    ocupação — sem isto, duas propostas concorrentes (ou uma proposta e uma
+    marcação nova) podiam aterrar no mesmo horário. Usa sempre as colunas
+    ESTRUTURADAS (`data_iso`/`hora_hhmm`/`duracao_min`) da marcação de
+    origem, nunca texto — os pedidos não têm campos de duração próprios."""
+    def _ler(c):
+        return c.execute(
+            "SELECT r.new_date, r.new_time, a.duracao_min FROM reschedule_requests r "
+            "JOIN agendamentos a ON a.id = r.appointment_id "
+            "WHERE r.tenant_id = ? AND r.status = 'pending'", (tenant_id,)).fetchall()
+
+    if conn is not None:
+        linhas = _ler(conn)
+    else:
+        with obter_bd() as ligacao:
+            linhas = _ler(ligacao)
+    return [{"id": None, "telefone": None, "data_iso": data_iso, "hora_hhmm": hora_hhmm,
+             "duracao_min": duracao_min, "estado": estados.CONFIRMED, "bloqueia_horario": 1}
+            for (data_iso, hora_hhmm, duracao_min) in linhas if duracao_min]
+
+
 def ocupacoes(excluir_telefone=None, conn=None):
-    """Tudo o que ocupa horários: marcações gravadas + retenções em curso."""
+    """Tudo o que ocupa horários: marcações gravadas + retenções em curso +
+    horários novos de pedidos de reagendamento pendentes."""
     existentes = _agendamentos_da_conexao(conn) if conn is not None else listar_agendamentos()
-    return existentes + horarios_retidos(excluir_telefone, conn)
+    return (existentes + horarios_retidos(excluir_telefone, conn)
+            + holds_de_pedidos_reagendamento(conn))
 
 
 def horarios_livres_para_sessao(sessao, telefone=None):
@@ -2142,9 +2214,16 @@ def reagendar_agendamento(id_agendamento, data_iso, hora, origem="dashboard", av
         if not linha or chave_estado(linha[0]) not in estados.GERIVEIS_PELO_CLIENTE:
             raise EstadoInvalido(linha[0] if linha else "inexistente")
         # CONFLITO revalidado DENTRO da transação: marcações gravadas +
-        # reservas temporárias, exceto a própria marcação e a própria retenção.
+        # reservas temporárias (exceto a própria marcação e a própria
+        # retenção) + horários novos de OUTROS pedidos de reagendamento
+        # pendentes (P4.1). O pedido que está a ser aceite por ESTE
+        # reagendamento já não entra aqui: quem chama isto com
+        # origem="dashboard"/"dashboard_drag" a partir de um accept já
+        # marcou o próprio pedido como accepted (fora do 'pending') antes de
+        # chegar aqui — ver notifications/reschedule.py:aceitar.
         ocup = (_agendamentos_da_conexao(conn)
-                + horarios_retidos(excluir_telefone=alvo.get("telefone"), conn=conn))
+                + horarios_retidos(excluir_telefone=alvo.get("telefone"), conn=conn)
+                + holds_de_pedidos_reagendamento(conn=conn, tenant_id=alvo.get("tenant_id") or 1))
         if conflitos_no_intervalo(ocup, data_iso, hora, alvo.get("servico"),
                                   alvo.get("duracao"), ignorar_id=id_agendamento):
             raise HorarioOcupado(f"{data_iso} {hora}")
@@ -2626,6 +2705,10 @@ def api_agendamento_detalhe(id_agendamento):
     # completed ou o serviço não tem follow-up configurado.
     corpo["rebooking_followup"] = notif_followup.info_rebooking_para_ui(
         id_agendamento, tenant_id=ag.get("tenant_id") or 1)
+    # P4.1 — pedido de reagendamento pendente (ver notifications/reschedule.py).
+    # None quando não há nenhum: o drawer simplesmente não mostra a linha.
+    corpo["reschedule_pendente"] = notif_reschedule.pedido_pendente_para_ui(
+        id_agendamento, tenant_id=ag.get("tenant_id") or 1)
     return jsonify(corpo), 200
 
 
@@ -2830,6 +2913,72 @@ def api_agendamento_reagendar(id_agendamento):
         nomes = ", ".join(f"#{o['id']} {o.get('nome') or ''}".strip() for o in ocupados)
         return jsonify(erro=f"Esse horário já está ocupado ({nomes}).", conflitos=nomes), 409
     return _resposta_evento(id_agendamento, notificado)
+
+
+@app.route("/api/agendamentos/<int:id_agendamento>/reagendar-pedido", methods=["POST"])
+@requer_autenticacao
+def api_agendamento_reagendar_pedido(id_agendamento):
+    """P4.1 — inicia um PEDIDO de reagendamento a partir do painel: o
+    arrastar-e-largar da Agenda e o diálogo "Reagendar"/"Editar" passam a
+    usar SEMPRE este endpoint (nunca `/reagendar` diretamente) — uma única
+    semântica para as duas entradas do painel. A marcação original só muda
+    quando o cliente confirma o novo horário pelo WhatsApp (ver
+    notifications/reschedule.py). `/reagendar` continua a existir tal como
+    estava: é o motor de baixo nível que este fluxo usa por baixo assim que
+    o pedido é aceite."""
+    dados = request.get_json(force=True, silent=True) or {}
+    data_iso = str(dados.get("data") or "").strip()
+    hora = str(dados.get("hora") or "").strip()
+    origem = str(dados.get("origem") or "dashboard").strip()
+    if origem not in _ORIGENS_PAINEL_REAGENDAR:
+        origem = "dashboard"
+
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", data_iso):
+        return jsonify(erro="Data inválida (esperado YYYY-MM-DD)."), 400
+    try:
+        date.fromisoformat(data_iso)
+    except ValueError:
+        return jsonify(erro="Data inexistente no calendário."), 400
+    if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", hora):
+        return jsonify(erro="Hora inválida (esperado HH:MM entre 00:00 e 23:59)."), 400
+
+    try:
+        pedido, notificado = notif_reschedule.criar_pedido(id_agendamento, data_iso, hora, origin=origem)
+    except LookupError:
+        return jsonify(erro="Marcação não encontrada."), 404
+    except EstadoInvalido as e:
+        return jsonify(erro=f"Esta marcação já não está confirmada (estado atual: {e}).",
+                       estado=str(e)), 409
+    except OperacaoEmCurso as e:
+        rotulo = {"arrived": "a cliente já chegou", "in_progress": "o serviço já começou",
+                  "done": "o serviço já terminou"}.get(str(e), "o atendimento já está em curso")
+        return jsonify(erro=f"Não é possível reagendar: {rotulo}.", op_status=str(e)), 409
+    except HorarioNoPassado:
+        return jsonify(erro="Não é possível reagendar para uma data/hora já passada."), 409
+    except HorarioForaDoExpediente:
+        return jsonify(erro="Este serviço não cabe nesse horário "
+                            "(fora do expediente, em pausa, ou dia fechado)."), 409
+    except HorarioOcupado:
+        ocupados = conflitos_de_horario(id_agendamento, data_iso, hora)
+        nomes = ", ".join(f"#{o['id']} {o.get('nome') or ''}".strip() for o in ocupados)
+        return jsonify(erro=f"Esse horário já está ocupado ({nomes}).", conflitos=nomes), 409
+    except notif_reschedule.PedidoJaExistente:
+        return jsonify(erro="Já existe um pedido de reagendamento pendente para esta marcação."), 409
+    return jsonify(ok=True, pedido=pedido, cliente_notificado=notificado), 200
+
+
+@app.route("/api/agendamentos/<int:id_agendamento>/reagendar-pedido/cancelar", methods=["POST"])
+@requer_autenticacao
+def api_agendamento_reagendar_pedido_cancelar(id_agendamento):
+    """Cancela (a partir do painel) o pedido de reagendamento PENDENTE desta
+    marcação — a marcação original nunca foi tocada; só liberta o horário
+    novo reservado. Sem mensagem ao cliente (é a Daniela a desistir do
+    pedido — distinto de o cliente recusar pelo WhatsApp)."""
+    try:
+        pedido = notif_reschedule.cancelar_pedido_da_marcacao(id_agendamento)
+    except LookupError:
+        return jsonify(erro="Não há nenhum pedido de reagendamento pendente para esta marcação."), 404
+    return jsonify(ok=True, pedido=pedido), 200
 
 
 @app.route("/api/agendamentos/<int:id_agendamento>/editar", methods=["POST"])
@@ -6683,6 +6832,22 @@ def receber_mensagem():
                 sessao["lembrete_cancelar_ag_id"] = id_ag
                 guardar_sessao(de, sessao)
                 id_botao = f"cancelar_confirmar_{id_ag}"    # ecrã de confirmação já existente
+
+            # --- Botões do pedido de reagendamento do PAINEL (P4.1 — ver
+            # notifications/reschedule.py) -----------------------------------
+            # "Confirmar novo horário"/"Manter horário atual" trazem o id do
+            # PEDIDO, não o da marcação. As duas funções já validam que
+            # `de` é mesmo o telefone da marcação, aplicam (ou não) o
+            # reagendamento com o motor existente, e mandam elas próprias a
+            # mensagem final ao cliente — o dispatch aqui não precisa de
+            # inspecionar o resultado.
+            if id_botao.startswith("reagendar_pedido_confirmar_"):
+                notif_reschedule.aceitar(int(id_botao.rsplit("_", 1)[-1]), de)
+                return jsonify(status="ok"), 200
+
+            if id_botao.startswith("reagendar_pedido_manter_"):
+                notif_reschedule.recusar(int(id_botao.rsplit("_", 1)[-1]), de)
+                return jsonify(status="ok"), 200
 
             # --- Aliases dos IDs canónicos "acao_*" (ver constantes ACAO_*) -
             # Botões NOVOS usam sempre estes IDs; os antigos equivalentes
