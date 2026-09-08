@@ -52,6 +52,14 @@ WHATSAPP_REBOOKING_TEMPLATE_PT = _limpo("WHATSAPP_REBOOKING_TEMPLATE_PT")
 WHATSAPP_REBOOKING_TEMPLATE_DE = _limpo("WHATSAPP_REBOOKING_TEMPLATE_DE")
 WHATSAPP_REBOOKING_TEMPLATE_EN = _limpo("WHATSAPP_REBOOKING_TEMPLATE_EN")
 
+# Idem, para a proposta de reagendamento iniciada pelo painel FORA da janela
+# de 24h (P4.1, ver notifications/reschedule.py). Dentro da janela usa-se
+# sempre uma mensagem interativa normal (enviar_botoes) — o template só é
+# necessário quando o cliente não escreveu nas últimas 24h.
+WHATSAPP_RESCHEDULE_TEMPLATE_PT = _limpo("WHATSAPP_RESCHEDULE_TEMPLATE_PT")
+WHATSAPP_RESCHEDULE_TEMPLATE_DE = _limpo("WHATSAPP_RESCHEDULE_TEMPLATE_DE")
+WHATSAPP_RESCHEDULE_TEMPLATE_EN = _limpo("WHATSAPP_RESCHEDULE_TEMPLATE_EN")
+
 # --- Painel / dashboard (HTTP Basic) — SEM defaults ----------------------
 DASHBOARD_USER = _limpo("DASHBOARD_USER")
 DASHBOARD_PASSWORD = _limpo("DASHBOARD_PASSWORD")

@@ -723,6 +723,43 @@ def _m18_pos_atendimento(conn):
                  "ON automation_jobs (status, run_at)")
 
 
+def _m19_reschedule_requests(conn):
+    """P4.1 — reagendamento iniciado pelo painel COM confirmação do cliente.
+
+    Arrastar-e-largar (ou o diálogo "Reagendar"/"Editar") já NÃO move a
+    marcação de imediato: cria um PEDIDO pendente aqui, manda o novo horário
+    ao cliente por WhatsApp (ver notifications/reschedule.py) e só aplica o
+    reagendamento (com bot.reagendar_agendamento — o MESMO motor de sempre,
+    tal e qual) quando o cliente confirma. `/api/agendamentos/<id>/reagendar`
+    não muda nada aqui: continua a ser o endpoint de baixo nível que este
+    fluxo usa por baixo (e que o P4 antigo já usava diretamente).
+
+    `origin`: "dashboard" ou "dashboard_drag" — preserva, no pedido, a MESMA
+    distinção que `/reagendar` já fazia entre o diálogo e o arrastar, para o
+    evento `booking.rescheduled` (e a atribuição em Resultados/P3) nunca
+    perderem essa origem quando o reagendamento é finalmente aplicado.
+
+    `status`: pending / accepted / declined / cancelled. O índice único
+    parcial abaixo é a garantia, ao nível da BD (não só da aplicação), de
+    que nunca há dois pedidos pendentes para a mesma marcação — mesmo sob
+    concorrência."""
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS reschedule_requests ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "tenant_id INTEGER NOT NULL DEFAULT 1, "
+        "appointment_id INTEGER NOT NULL, "
+        "old_date TEXT NOT NULL, old_time TEXT NOT NULL, "
+        "new_date TEXT NOT NULL, new_time TEXT NOT NULL, "
+        "status TEXT NOT NULL DEFAULT 'pending', "
+        "origin TEXT NOT NULL DEFAULT 'dashboard', "
+        "created_at TEXT NOT NULL, responded_at TEXT)"
+    )
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS ix_reschedule_requests_pending "
+                 "ON reschedule_requests (tenant_id, appointment_id) WHERE status = 'pending'")
+    conn.execute("CREATE INDEX IF NOT EXISTS ix_reschedule_requests_appointment "
+                 "ON reschedule_requests (appointment_id)")
+
+
 MIGRACOES = [
     (1, "baseline", _m1_baseline),
     (2, "colunas_legadas", _m2_colunas_legadas),
@@ -742,6 +779,7 @@ MIGRACOES = [
     (16, "faturacao", _m16_faturacao),
     (17, "follow_up", _m17_follow_up),
     (18, "pos_atendimento", _m18_pos_atendimento),
+    (19, "reschedule_requests", _m19_reschedule_requests),
 ]
 
 
@@ -1138,8 +1176,15 @@ def falhar_mensagem(wamid):
 # ---------------------------------------------------------------------------
 def ocupacao_do_dia(data_iso: str, tenant_id: int = 1, conn=None) -> list[dict]:
     """Marcações que BLOQUEIAM o horário + reservas temporárias ativas nesse
-    dia. Cada item: {inicio_min, dur_min, buffer_before, buffer_after, id,
-    telefone}. `inicio_min` = minutos desde a meia-noite."""
+    dia + horários NOVOS de pedidos de reagendamento pendentes (P4.1 — ver
+    notifications/reschedule.py). Cada item: {inicio_min, dur_min,
+    buffer_before, buffer_after, id, telefone}. `inicio_min` = minutos desde
+    a meia-noite.
+
+    Um pedido de reagendamento pendente reserva o horário NOVO tal como uma
+    retenção normal (`reservas_temporarias`) reserva o escolhido a meio do
+    fluxo do WhatsApp — sem isto, `slots()` continuaria a oferecer ao
+    cliente A um horário que o cliente B já tem proposto e por confirmar."""
     import estados as _est
     import parsing as _p
 
@@ -1175,6 +1220,17 @@ def ocupacao_do_dia(data_iso: str, tenant_id: int = 1, conn=None) -> list[dict]:
                 continue
             itens.append({"id": None, "telefone": tel, "inicio_min": im, "dur_min": int(mins),
                           "buffer_before": 0, "buffer_after": 0, "retencao": True})
+        for (new_time, dmin, bb, ba) in c.execute(
+                "SELECT r.new_time, a.duracao_min, s.buffer_before_min, s.buffer_after_min "
+                "FROM reschedule_requests r JOIN agendamentos a ON a.id = r.appointment_id "
+                "LEFT JOIN servicos s ON s.id = a.servico_id "
+                "WHERE r.tenant_id = ? AND r.status = 'pending' AND r.new_date = ?",
+                (tenant_id, data_iso)).fetchall():
+            im = _hhmm_para_min(new_time)
+            if im is None or not dmin:
+                continue
+            itens.append({"id": None, "telefone": None, "inicio_min": im, "dur_min": int(dmin),
+                          "buffer_before": bb or 0, "buffer_after": ba or 0})
         return itens
 
     if conn is not None:
