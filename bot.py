@@ -1807,6 +1807,26 @@ class HorarioOcupado(Exception):
     """Já existe outra marcação confirmada nesse intervalo (409 no painel)."""
 
 
+class OperacaoEmCurso(Exception):
+    """O estado OPERACIONAL (op_status) já avançou — cliente chegou, o
+    serviço está em curso ou já terminou. Distinto de EstadoInvalido (que é
+    sobre o estado COMERCIAL): uma marcação pode continuar 'confirmed' e
+    ainda assim já não fazer sentido reagendar (409 no painel)."""
+
+
+class HorarioNoPassado(Exception):
+    """A nova data/hora já passou (Europe/Zurique) — nunca se reagenda para
+    o passado (409 no painel)."""
+
+
+class HorarioForaDoExpediente(Exception):
+    """O serviço (com a sua duração e buffers) não cabe no horário de
+    funcionamento desse dia — fora do expediente, dentro de uma pausa, ou o
+    dia está fechado (fim de semana/exceção). Distinto de HorarioOcupado:
+    aqui não há NENHUMA outra marcação a ocupar o horário, é o próprio
+    expediente que não permite (409 no painel)."""
+
+
 def marcar_agendamento_cancelado(id_agendamento, libertar=None, exigir_confirmado=True):
     """Passa uma marcação a CANCELADA e grava, na MESMA instrução, se o
     horário fica livre ou continua bloqueado.
@@ -2046,7 +2066,8 @@ def horarios_livres_para_sessao(sessao, telefone=None):
                         tenant_id=sessao.get("tenant_id", 1))
 
 
-def reagendar_agendamento(id_agendamento, data_iso, hora, origem="dashboard", avisar_cliente=True):
+def reagendar_agendamento(id_agendamento, data_iso, hora, origem="dashboard", avisar_cliente=True,
+                          validar_expediente=False):
     """Move uma marcação ATIVA (confirmed/pending) para nova data/hora,
     preservando serviço, duração, preço, cliente e histórico — a MESMA
     marcação, só `data`/`hora` (e as colunas estruturadas) mudam. Nunca cria
@@ -2057,15 +2078,51 @@ def reagendar_agendamento(id_agendamento, data_iso, hora, origem="dashboard", av
     temporárias: dois reagendamentos concorrentes para o mesmo horário nunca
     ganham os dois; se falhar, a marcação antiga fica intacta.
 
-    Levanta EstadoInvalido, HorarioOcupado ou LookupError. Devolve
+    `validar_expediente` (P4 — drag & drop / reagendar do painel): quando
+    True, valida ADICIONALMENTE que o novo horário cabe no motor real de
+    disponibilidade (scheduling.availability.slots — horário de
+    funcionamento, pausas, exceções, duração+buffers do serviço,
+    granularidade da grelha). Por omissão fica False para não alterar o
+    comportamento já existente do fluxo de WhatsApp (que só oferece slots já
+    filtrados por esse mesmo motor) nem dos chamadores internos/testes que
+    passam datas/horas soltas sem essa garantia prévia — o painel ativa-o
+    explicitamente (ver api_agendamento_reagendar).
+
+    O bloqueio por op_status (chegou/em curso/concluído) e a rejeição de
+    horário no passado aplicam-se sempre, a TODOS os chamadores — não há
+    origem legítima para reagendar uma marcação já em atendimento, ou para o
+    passado.
+
+    Levanta EstadoInvalido, OperacaoEmCurso, HorarioNoPassado,
+    HorarioForaDoExpediente, HorarioOcupado ou LookupError. Devolve
     (agendamento_atualizado, cliente_notificado)."""
     alvo = obter_agendamento(id_agendamento)
     if not alvo:
         raise LookupError("Marcação não encontrada.")
     if chave_estado(alvo.get("estado")) not in estados.GERIVEIS_PELO_CLIENTE:
         raise EstadoInvalido(alvo.get("estado"))
+    if (alvo.get("op_status") or "scheduled") in ("arrived", "in_progress", "done"):
+        raise OperacaoEmCurso(alvo.get("op_status"))
     if not data_iso or not hora:
         raise HorarioOcupado(f"{data_iso} {hora}")
+
+    novo_inicio = tempo.combinar_local(data_iso, hora)
+    if novo_inicio and novo_inicio <= tempo.agora_zurique():
+        raise HorarioNoPassado(f"{data_iso} {hora}")
+
+    if validar_expediente and alvo.get("servico_id"):
+        # slots() é o MESMO motor que decide o que o cliente vê no WhatsApp
+        # (expediente + pausas + exceções + duração/buffers do serviço +
+        # granularidade da grelha + conflitos + reservas temporárias) — não
+        # se reimplementam aqui essas regras. Se a hora pedida não está na
+        # lista mas TAMBÉM não há ninguém a ocupá-la, o motivo só pode ser o
+        # próprio expediente (fechado/pausa/fora de horas); se houver
+        # conflito real, a mensagem mais específica de HorarioOcupado abaixo
+        # tem preferência.
+        livres = av_mod.slots(alvo["servico_id"], data_iso, telefone=alvo.get("telefone"),
+                              ignorar_id=id_agendamento, tenant_id=alvo.get("tenant_id") or 1)
+        if hora not in livres and not conflitos_de_horario(id_agendamento, data_iso, hora):
+            raise HorarioForaDoExpediente(f"{data_iso} {hora}")
 
     d = date.fromisoformat(data_iso)
     dias = DIAS_SEMANA["pt"]
@@ -2718,15 +2775,29 @@ def api_agendamento_estado(id_agendamento):
     return _resposta_evento(id_agendamento, False)
 
 
+# Quem pode iniciar um reagendamento pelo painel — a origem NUNCA vem
+# "solta" do corpo do pedido, só um destes dois valores é aceite. Distingue,
+# na timeline e na atribuição (P3 — ver reports/results.py), um arrastar no
+# calendário de um reagendamento pelo diálogo tradicional; "cliente" e
+# "whatsapp_bot" continuam reservados aos fluxos que passam por lá.
+_ORIGENS_PAINEL_REAGENDAR = ("dashboard", "dashboard_drag")
+
+
 @app.route("/api/agendamentos/<int:id_agendamento>/reagendar", methods=["POST"])
 @requer_autenticacao
 def api_agendamento_reagendar(id_agendamento):
-    """Move uma marcação confirmada para outra data/hora. A data e a hora são
-    sempre revalidadas aqui, e os conflitos são verificados contando com a
-    duração — o que vier do frontend nunca é aceite sem validação."""
+    """Move uma marcação confirmada para outra data/hora — usado pelo diálogo
+    "Reagendar"/"Editar" E pelo arrastar-e-largar da Agenda (mesmo endpoint,
+    mesma transação, mesmos eventos: só a `origem` distingue os dois no
+    histórico). A data e a hora são sempre revalidadas aqui — incluindo
+    contra o motor real de disponibilidade (expediente, pausas, exceções,
+    duração/buffers) — o que vier do frontend nunca é aceite sem validação."""
     dados = request.get_json(force=True, silent=True) or {}
     data_iso = str(dados.get("data") or "").strip()
     hora = str(dados.get("hora") or "").strip()
+    origem = str(dados.get("origem") or "dashboard").strip()
+    if origem not in _ORIGENS_PAINEL_REAGENDAR:
+        origem = "dashboard"
 
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", data_iso):
         return jsonify(erro="Data inválida (esperado YYYY-MM-DD)."), 400
@@ -2738,12 +2809,22 @@ def api_agendamento_reagendar(id_agendamento):
         return jsonify(erro="Hora inválida (esperado HH:MM entre 00:00 e 23:59)."), 400
 
     try:
-        _, notificado = reagendar_agendamento(id_agendamento, data_iso, hora, origem="dashboard")
+        _, notificado = reagendar_agendamento(id_agendamento, data_iso, hora, origem=origem,
+                                              validar_expediente=True)
     except LookupError:
         return jsonify(erro="Marcação não encontrada."), 404
     except EstadoInvalido as e:
         return jsonify(erro=f"Esta marcação já não está confirmada (estado atual: {e}).",
                        estado=str(e)), 409
+    except OperacaoEmCurso as e:
+        rotulo = {"arrived": "a cliente já chegou", "in_progress": "o serviço já começou",
+                  "done": "o serviço já terminou"}.get(str(e), "o atendimento já está em curso")
+        return jsonify(erro=f"Não é possível reagendar: {rotulo}.", op_status=str(e)), 409
+    except HorarioNoPassado:
+        return jsonify(erro="Não é possível reagendar para uma data/hora já passada."), 409
+    except HorarioForaDoExpediente:
+        return jsonify(erro="Este serviço não cabe nesse horário "
+                            "(fora do expediente, em pausa, ou dia fechado)."), 409
     except HorarioOcupado:
         ocupados = conflitos_de_horario(id_agendamento, data_iso, hora)
         nomes = ", ".join(f"#{o['id']} {o.get('nome') or ''}".strip() for o in ocupados)
