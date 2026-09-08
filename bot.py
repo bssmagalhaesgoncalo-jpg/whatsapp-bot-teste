@@ -3429,6 +3429,27 @@ DEMO_PRECO_A_CONFIRMAR_CENTS = {
     "dermaplaning": 5000,
 }
 
+# Textos curtos e realistas para o feedback demo RECEBIDO (nunca sentiment
+# analysis, só o texto — ver notifications.postservice.tentar_guardar_feedback).
+DEMO_FEEDBACK_TEXTOS = [
+    "Adorei o resultado, super profissional!",
+    "Muito simpática e pontual, volto sempre 💕",
+    "Gostei bastante, recomendo a todas as amigas.",
+]
+
+
+def _demo_escolher_origem(rng):
+    """booking_source de uma marcação demo — só as 3 origens REAIS (ver
+    reports/results.py FONTES_BMS): a maioria continua a vir do bot de
+    WhatsApp, uma parte é a equipa a marcar no painel, e uma parte vem de um
+    rebooking automático aceite. Nunca inventa uma 4.ª origem."""
+    sorte = rng.random()
+    if sorte < 0.70:
+        return "whatsapp_bot"
+    if sorte < 0.88:
+        return "dashboard"
+    return "rebooking_followup"
+
 
 def _demo_telefone(indice_cliente):
     return f"{DEMO_TELEFONE_PREFIXO}{indice_cliente:04d}"
@@ -3470,8 +3491,11 @@ def _neutralizar_eventos_demo(agendamento_ids, customer_ids, invoice_ids=None):
                 (agora, *invoice_ids))
 
 
-def _demo_criar_marcacao(indice_cliente, servico, data_iso, hora):
+def _demo_criar_marcacao(indice_cliente, servico, data_iso, hora, origem=None):
     """Cria uma marcação demo com o MESMO motor de guardar_agendamento().
+    `origem`, quando indicado, fica como booking_source (ver
+    _demo_escolher_origem) — sem indicação, guardar_agendamento assume
+    'whatsapp_bot' tal como faria para uma marcação real do bot.
     Devolve (id_agendamento, customer_id)."""
     telefone = _demo_telefone(indice_cliente)
     nome = DEMO_NOMES[indice_cliente % len(DEMO_NOMES)]
@@ -3488,12 +3512,14 @@ def _demo_criar_marcacao(indice_cliente, servico, data_iso, hora):
         "carrinho": [],
         "tenant_id": _TENANT,
     }
+    if origem:
+        sessao["booking_source"] = origem
     id_ag = guardar_agendamento(telefone, sessao)
     ag = obter_agendamento(id_ag)
     return id_ag, (ag or {}).get("customer_id")
 
 
-def _demo_tentar_criar(rng, indice_cliente, servico, data_iso, candidatos):
+def _demo_tentar_criar(rng, indice_cliente, servico, data_iso, candidatos, origem=None):
     """Tenta criar a marcação em cada candidato (ordem baralhada), saltando
     os que entretanto ficaram ocupados por outra marcação demo do mesmo dia.
     Devolve (id_agendamento, customer_id) ou (None, None) se nenhum resultou."""
@@ -3501,7 +3527,7 @@ def _demo_tentar_criar(rng, indice_cliente, servico, data_iso, candidatos):
     rng.shuffle(ordem)
     for hora in ordem:
         try:
-            return _demo_criar_marcacao(indice_cliente, servico, data_iso, hora)
+            return _demo_criar_marcacao(indice_cliente, servico, data_iso, hora, origem=origem)
         except HorarioOcupado:
             continue
     return None, None
@@ -3535,7 +3561,9 @@ def _demo_seed_periodo(rng, servicos, dias_offset, ids_ag, ids_cust, historico):
             if not livres:
                 continue
             indice_cliente = rng.randrange(len(DEMO_NOMES))
-            id_ag, cust_id = _demo_tentar_criar(rng, indice_cliente, servico, data_iso, livres)
+            origem = _demo_escolher_origem(rng)
+            id_ag, cust_id = _demo_tentar_criar(rng, indice_cliente, servico, data_iso, livres,
+                                                origem=origem)
             if id_ag is None:
                 continue
             ids_ag.append(id_ag)
@@ -3622,7 +3650,9 @@ def _demo_seed_hoje(rng, servicos, ids_ag, ids_cust):
             if not candidatos:
                 continue
             indice_cliente = rng.randrange(len(DEMO_NOMES))
-            id_ag, cust_id = _demo_tentar_criar(rng, indice_cliente, servico, hoje_iso, candidatos)
+            origem = _demo_escolher_origem(rng)
+            id_ag, cust_id = _demo_tentar_criar(rng, indice_cliente, servico, hoje_iso, candidatos,
+                                                origem=origem)
             if id_ag is not None:
                 break
         if id_ag is None:
@@ -3732,6 +3762,205 @@ def _demo_seed_faturas(rng, ids_ag):
     return invoice_ids, contagem
 
 
+# ---------------------------------------------------------------------------
+# Automações DEMO (P1 reminder 24h / P0 pós-atendimento / P2 rebooking) —
+# reutilizam sempre os pontos de entrada REAIS dos módulos notifications/*
+# (os mesmos nomes de evento, os mesmos jobs em automation_jobs) e nunca
+# inventam um tipo de evento novo. O único desvio face ao fluxo real é que o
+# "envio" em si (que mandaria WhatsApp via messaging.whatsapp) é substituído
+# por um registo direto do evento correspondente — exatamente o que
+# executar_reminder_24h/executar_rebooking_followup/executar_post_service
+# fariam a seguir ao envio. `_neutralizar_eventos_demo` (chamado no fim de
+# `_semear_dados_demo`) marca todos estes eventos como processados, para
+# nenhum drain() futuro voltar a "enviar" nada.
+# ---------------------------------------------------------------------------
+def _demo_ids_por_estado(ids_ag, estado):
+    if not ids_ag:
+        return []
+    with obter_bd() as conn:
+        marcas = ", ".join("?" for _ in ids_ag)
+        linhas = conn.execute(
+            f"SELECT id FROM agendamentos WHERE id IN ({marcas}) AND LOWER(estado) = ? ORDER BY id",
+            (*ids_ag, estado)).fetchall()
+    return [r[0] for r in linhas]
+
+
+def _demo_futuras_confirmadas(ids_ag):
+    """Marcações demo confirmed, no futuro (candidatas ao reminder 24h) —
+    mais próximas primeiro, tal como sincronizar_reminder_24h as elegeria."""
+    if not ids_ag:
+        return []
+    hoje_iso = tempo.hoje_zurique().isoformat()
+    with obter_bd() as conn:
+        marcas = ", ".join("?" for _ in ids_ag)
+        linhas = conn.execute(
+            f"SELECT id FROM agendamentos WHERE id IN ({marcas}) AND LOWER(estado) = ? "
+            "AND data_iso > ? ORDER BY data_iso ASC, hora_hhmm ASC",
+            (*ids_ag, estados.CONFIRMED, hoje_iso)).fetchall()
+    return [r[0] for r in linhas]
+
+
+def _demo_marcar_job_concluido(job_id):
+    """Fecha diretamente um job DEMO já "processado" — equivalente ao que
+    process_due_jobs deixaria depois de um handler real terminar com
+    sucesso, sem passar pelo handler em si (que enviaria WhatsApp)."""
+    with obter_bd() as conn:
+        conn.execute("UPDATE automation_jobs SET status = 'done', processed_at = ? WHERE id = ?",
+                     (tempo.iso_utc(), job_id))
+
+
+def _demo_seed_reminders(ids_ag):
+    """Reminder 24h (P1): cria o job com sincronizar_reminder_24h (o MESMO
+    ponto real, chamado hoje por drain() a reagir a booking.created/
+    .approved/...) para até 4 marcações futuras confirmed — 3 já "enviadas"
+    (uma confirmada pelo cliente, uma sem resposta, uma com reagendamento
+    iniciado) e a 4.ª fica "agendada" (pending), para o drawer mostrar
+    também esse estado. Uma marcação cancelada fica com um reminder
+    "cancelado", via registar_cancelamento (reaproveitado tal como o botão
+    Cancelar do reminder o chamaria)."""
+    papeis = ["confirmado", "enviado", "reagendar"]
+    usados = 0
+    for appointment_id in _demo_futuras_confirmadas(ids_ag):
+        job = notif_reminders.sincronizar_reminder_24h(appointment_id, tenant_id=_TENANT)
+        if not job:
+            continue  # <24h de antecedência a partir de agora — nunca elegível
+        if usados >= len(papeis):
+            break  # esta fica "agendada" (pending) — não se toca mais nela
+        papel = papeis[usados]
+        usados += 1
+        with obter_bd() as conn:
+            telefone = conn.execute("SELECT telefone FROM agendamentos WHERE id = ?",
+                                    (appointment_id,)).fetchone()[0]
+            bd.registar_evento(conn, "reminder.sent", "appointment", appointment_id,
+                               {"job_id": job["id"]},
+                               dedupe_key=f"reminder.sent:{job['id']}:{job['run_at']}",
+                               tenant_id=_TENANT)
+        _demo_marcar_job_concluido(job["id"])
+        if papel == "confirmado":
+            notif_reminders.registar_confirmacao(job["id"], telefone, tenant_id=_TENANT)
+        elif papel == "reagendar":
+            notif_reminders.registar_reschedule_iniciado(job["id"], telefone, tenant_id=_TENANT)
+        # "enviado": fica só com o reminder.sent — sem resposta ainda.
+
+    canceladas = _demo_ids_por_estado(ids_ag, estados.CANCELLED)
+    if canceladas:
+        appointment_id = canceladas[0]
+        with obter_bd() as conn:
+            row = conn.execute("SELECT customer_id FROM agendamentos WHERE id = ?",
+                               (appointment_id,)).fetchone()
+        job = notif_jobs.enqueue_job(
+            notif_jobs.TYPE_REMINDER_24H, tempo.iso_utc(), tenant_id=_TENANT,
+            booking_id=appointment_id, customer_id=row[0] if row else None, payload={},
+            idempotency_key=f"reminder_24h:{appointment_id}")
+        _demo_marcar_job_concluido(job["id"])
+        notif_reminders.registar_cancelamento(job["id"], appointment_id, tenant_id=_TENANT)
+
+
+def _demo_seed_pos_atendimento(rng, ids_ag):
+    """Pós-atendimento (P0): job "post_service" pelo mesmo padrão de
+    handler_booking_completed (a fatura já foi tratada por
+    _demo_seed_faturas — este passo não mexe nela) para até 4 marcações
+    completed: agradecimento sempre, pedido de feedback em 3, resposta de
+    feedback (via tentar_guardar_feedback, reaproveitado) em 2."""
+    concluidas = _demo_ids_por_estado(ids_ag, estados.COMPLETED)
+    if not concluidas:
+        return
+    rng.shuffle(concluidas)
+    alvo = concluidas[:min(4, len(concluidas))]
+    for i, appointment_id in enumerate(alvo):
+        with obter_bd() as conn:
+            telefone, customer_id, completed_at = conn.execute(
+                "SELECT telefone, customer_id, completed_at FROM agendamentos WHERE id = ?",
+                (appointment_id,)).fetchone()
+        run_at = completed_at or tempo.iso_utc()
+        job = notif_jobs.enqueue_job(
+            notif_jobs.TYPE_POST_SERVICE, run_at, tenant_id=_TENANT, booking_id=appointment_id,
+            customer_id=customer_id, payload={},
+            idempotency_key=f"post_service:booking:{appointment_id}")
+        with obter_bd() as conn:
+            bd.registar_evento(conn, "post_service.scheduled", "appointment", appointment_id,
+                               {"job_id": job["id"], "run_at": run_at},
+                               dedupe_key=f"post_service.scheduled:{appointment_id}", tenant_id=_TENANT)
+        _demo_marcar_job_concluido(job["id"])
+        with obter_bd() as conn:
+            conn.execute(
+                "UPDATE agendamentos SET post_service_thanks_sent_at = "
+                "COALESCE(post_service_thanks_sent_at, ?) WHERE id = ?",
+                (tempo.iso_utc(), appointment_id))
+            bd.registar_evento(conn, "post_service.sent", "appointment", appointment_id, {},
+                               dedupe_key=f"post_service.sent:{appointment_id}", tenant_id=_TENANT)
+
+        if i >= 3:
+            continue  # a 4.ª marcação fica só com o agradecimento — nem todas pedem feedback
+        with obter_bd() as conn:
+            conn.execute(
+                "UPDATE agendamentos SET feedback_requested_at = "
+                "COALESCE(feedback_requested_at, ?) WHERE id = ?",
+                (tempo.iso_utc(), appointment_id))
+            bd.registar_evento(conn, "feedback.requested", "appointment", appointment_id, {},
+                               dedupe_key=f"feedback.requested:{appointment_id}", tenant_id=_TENANT)
+        if i < 2:  # das que pediram feedback, só uma parte respondeu — realista
+            texto = DEMO_FEEDBACK_TEXTOS[i % len(DEMO_FEEDBACK_TEXTOS)]
+            notif_postservice.tentar_guardar_feedback(telefone, texto, tenant_id=_TENANT)
+
+
+def _demo_seed_rebooking(ids_ag):
+    """Rebooking automático (P2): job "rebooking_followup" pelo mesmo padrão
+    de agendar_rebooking_followup, sem depender de follow_up_enabled no
+    catálogo (a config real do negócio nunca é tocada por dados demo) — até
+    3 marcações completed, uma fica "mais tarde" (marcar_follow_up_recusado,
+    reaproveitado — regista o próprio evento snoozed) e as restantes
+    "enviadas" (marcar_follow_up_enviado + registo direto do sent, tal como
+    executar_rebooking_followup o deixaria depois do envio)."""
+    concluidas = _demo_ids_por_estado(ids_ag, estados.COMPLETED)
+    if not concluidas:
+        return
+    alvo = concluidas[-3:] if len(concluidas) >= 3 else concluidas
+    for i, appointment_id in enumerate(alvo):
+        with obter_bd() as conn:
+            customer_id, servico_id, completed_at = conn.execute(
+                "SELECT customer_id, servico_id, completed_at FROM agendamentos WHERE id = ?",
+                (appointment_id,)).fetchone()
+        run_at = completed_at or tempo.iso_utc()
+        job = notif_jobs.enqueue_job(
+            notif_jobs.TYPE_REBOOKING_FOLLOWUP, run_at, tenant_id=_TENANT,
+            booking_id=appointment_id, customer_id=customer_id, payload={"servico_id": servico_id},
+            idempotency_key=f"rebooking_followup:{appointment_id}")
+        with obter_bd() as conn:
+            bd.registar_evento(conn, "rebooking_followup.scheduled", "appointment", appointment_id,
+                               {"job_id": job["id"], "run_at": run_at, "rebook_days": 30},
+                               dedupe_key=f"rebooking_followup.scheduled:{appointment_id}",
+                               tenant_id=_TENANT)
+        _demo_marcar_job_concluido(job["id"])
+        if i == 0:
+            notif_followup.marcar_follow_up_recusado(appointment_id, tenant_id=_TENANT)
+            continue
+        notif_followup.marcar_follow_up_enviado(appointment_id)
+        with obter_bd() as conn:
+            bd.registar_evento(conn, "rebooking_followup.sent", "appointment", appointment_id,
+                               {"job_id": job["id"]}, dedupe_key=f"rebooking_followup.sent:{job['id']}",
+                               tenant_id=_TENANT)
+
+
+def _demo_seed_pdfs_enviados(rng, ids_fat):
+    """Marca o PDF como enviado numa parte das faturas PAGAS demo —
+    reaproveita billing.engine.marcar_pdf_enviado (o mesmo ponto usado pelo
+    pós-atendimento/painel), nunca escreve pdf_sent_at à mão."""
+    if not ids_fat:
+        return
+    from billing import engine as _bi_pdf
+    with obter_bd() as conn:
+        marcas = ", ".join("?" for _ in ids_fat)
+        pagas = [r[0] for r in conn.execute(
+            f"SELECT id FROM invoices WHERE id IN ({marcas}) AND status = 'paid' ORDER BY id",
+            ids_fat).fetchall()]
+    if not pagas:
+        return
+    rng.shuffle(pagas)
+    for invoice_id in pagas[:max(1, len(pagas) // 2)]:
+        _bi_pdf.marcar_pdf_enviado(invoice_id, tenant_id=_TENANT)
+
+
 def _semear_dados_demo():
     rng = random.Random("dashboard-demo-seed-v1")
     servicos = bd.listar_servicos()
@@ -3741,6 +3970,10 @@ def _semear_dados_demo():
     _demo_seed_periodo(rng, servicos, range(1, 22), ids_ag, ids_cust, historico=False)
     _demo_definir_perfis(rng, ids_cust)
     ids_fat, faturas_contagem = _demo_seed_faturas(rng, ids_ag)
+    _demo_seed_reminders(ids_ag)
+    _demo_seed_pos_atendimento(rng, ids_ag)
+    _demo_seed_rebooking(ids_ag)
+    _demo_seed_pdfs_enviados(rng, ids_fat)
     _neutralizar_eventos_demo(ids_ag, ids_cust, ids_fat)
     return ids_ag, ids_cust, ids_fat, faturas_contagem
 
@@ -3785,6 +4018,14 @@ def api_dev_seed_dashboard():
                 "DELETE FROM events WHERE entity_type = 'customer' AND entity_id IN "
                 "(SELECT id FROM customers WHERE phone LIKE ?)",
                 (f"{DEMO_TELEFONE_PREFIXO}%",))
+            # Jobs de automação (reminder_24h/post_service/rebooking_followup)
+            # criados pelo seed para as marcações demo — sem isto ficariam
+            # órfãos em automation_jobs depois do DELETE.
+            conn.execute(
+                "DELETE FROM automation_jobs WHERE booking_id IN "
+                "(SELECT id FROM agendamentos WHERE telefone LIKE ?) "
+                "OR customer_id IN (SELECT id FROM customers WHERE phone LIKE ?)",
+                (f"{DEMO_TELEFONE_PREFIXO}%", f"{DEMO_TELEFONE_PREFIXO}%"))
             cur = conn.execute("DELETE FROM agendamentos WHERE telefone LIKE ?",
                               (f"{DEMO_TELEFONE_PREFIXO}%",))
             apagados_ag = cur.rowcount

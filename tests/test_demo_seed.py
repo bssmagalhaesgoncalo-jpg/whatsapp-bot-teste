@@ -317,3 +317,164 @@ def test_zero_whatsapp_mesmo_apos_drain_explicito(cliente_http, base_dados, monk
     cliente_http.post("/api/dev/seed-dashboard", headers=AUTH)
     eventos.drain()
     assert enviados == []
+
+
+def test_booking_source_variado(cliente_http, base_dados, monkeypatch):
+    """As marcações demo não vêm todas da mesma origem — as 3 fontes reais
+    (ver reports.results.FONTES_BMS) aparecem todas, com o bot a dominar."""
+    monkeypatch.setattr(bot, "ENABLE_DEMO_SEED", True)
+    _sem_whatsapp(monkeypatch)
+    cliente_http.post("/api/dev/seed-dashboard", headers=AUTH)
+
+    with db.ligacao() as conn:
+        linhas = conn.execute(
+            "SELECT booking_source, COUNT(*) FROM agendamentos WHERE telefone LIKE ? GROUP BY 1",
+            (f"{PREFIXO}%",)).fetchall()
+    por_origem = dict(linhas)
+    assert {"whatsapp_bot", "dashboard", "rebooking_followup"} <= set(por_origem)
+    assert por_origem["whatsapp_bot"] > por_origem["dashboard"]
+    assert por_origem["whatsapp_bot"] > por_origem["rebooking_followup"]
+
+
+def test_no_show_existe(cliente_http, base_dados, monkeypatch):
+    monkeypatch.setattr(bot, "ENABLE_DEMO_SEED", True)
+    _sem_whatsapp(monkeypatch)
+    cliente_http.post("/api/dev/seed-dashboard", headers=AUTH)
+
+    with db.ligacao() as conn:
+        no_show = conn.execute(
+            "SELECT COUNT(*) FROM agendamentos WHERE telefone LIKE ? AND estado = ?",
+            (f"{PREFIXO}%", estados.NO_SHOW)).fetchone()[0]
+    assert no_show >= 1
+
+
+def test_reminder_e_feedback_demo_aparecem(cliente_http, base_dados, monkeypatch):
+    """P1 (reminder 24h) e P0 (pós-atendimento/feedback) ficam com exemplos
+    dos MESMOS eventos que o fluxo real geraria — cobrindo os vários papéis
+    (confirmado/enviado/reagendar/cancelado, pedido/recebido)."""
+    monkeypatch.setattr(bot, "ENABLE_DEMO_SEED", True)
+    _sem_whatsapp(monkeypatch)
+    cliente_http.post("/api/dev/seed-dashboard", headers=AUTH)
+
+    with db.ligacao() as conn:
+        tipos = conn.execute(
+            "SELECT type, COUNT(*) FROM events WHERE entity_type = 'appointment' AND entity_id IN "
+            "(SELECT id FROM agendamentos WHERE telefone LIKE ?) GROUP BY 1",
+            (f"{PREFIXO}%",)).fetchall()
+    por_tipo = dict(tipos)
+    assert por_tipo.get("reminder.sent", 0) >= 1
+    assert any(t == "booking.confirmed" for t in por_tipo)
+    assert por_tipo.get("reminder.reschedule_started", 0) >= 1
+    assert por_tipo.get("reminder.cancelled", 0) >= 1
+    assert por_tipo.get("post_service.sent", 0) >= 1
+    assert por_tipo.get("feedback.requested", 0) >= 1
+    assert por_tipo.get("feedback.received", 0) >= 1
+
+
+def test_rebooking_demo_e_atribuivel(cliente_http, base_dados, monkeypatch):
+    """P2: pelo menos um rebooking_followup "enviado" e um "mais tarde", e a
+    marcação de origem rebooking_followup fica atribuível na receita/no
+    /api/resultados (mesma origem usada por reports.results.FONTES_BMS)."""
+    monkeypatch.setattr(bot, "ENABLE_DEMO_SEED", True)
+    _sem_whatsapp(monkeypatch)
+    cliente_http.post("/api/dev/seed-dashboard", headers=AUTH)
+
+    with db.ligacao() as conn:
+        tipos = conn.execute(
+            "SELECT type, COUNT(*) FROM events WHERE entity_type = 'appointment' AND entity_id IN "
+            "(SELECT id FROM agendamentos WHERE telefone LIKE ?) "
+            "AND type LIKE 'rebooking_followup.%' GROUP BY 1",
+            (f"{PREFIXO}%",)).fetchall()
+    por_tipo = dict(tipos)
+    assert por_tipo.get("rebooking_followup.sent", 0) >= 1
+    assert por_tipo.get("rebooking_followup.snoozed", 0) >= 1
+
+    with db.ligacao() as conn:
+        via_rebooking = conn.execute(
+            "SELECT COUNT(*) FROM agendamentos WHERE telefone LIKE ? AND booking_source = 'rebooking_followup'",
+            (f"{PREFIXO}%",)).fetchone()[0]
+    assert via_rebooking >= 1
+
+
+def test_resultados_depois_do_seed_tem_metricas(cliente_http, base_dados, monkeypatch):
+    """/api/resultados (P3) fica com números > 0 nos KPIs que o seed alimenta
+    — nunca métricas fabricadas fora do DEMO, só o que o seed criou de facto
+    via os motores reais."""
+    monkeypatch.setattr(bot, "ENABLE_DEMO_SEED", True)
+    _sem_whatsapp(monkeypatch)
+    cliente_http.post("/api/dev/seed-dashboard", headers=AUTH)
+
+    r = cliente_http.get("/api/resultados?periodo=90d", headers=AUTH)
+    assert r.status_code == 200
+    j = r.get_json()
+
+    assert j["bookings"]["bms"] > 0
+    assert j["bookings"]["whatsapp_bot"] > 0
+    assert j["bookings"]["rebooking_followup"] > 0
+    assert j["revenue"]["total_paid_cents"] > 0
+    assert j["revenue"]["bms_cents"] > 0
+    assert j["revenue"]["whatsapp_bot_cents"] > 0
+    assert j["revenue"]["ticket_medio_cents"] > 0
+    assert j["customers"]["novos"] > 0
+    assert j["customers"]["recorrentes"] > 0
+    assert j["no_show"]["no_shows"] > 0
+    assert j["cancellations"]["cancelamentos"] > 0
+    assert j["reminders"]["enviados"] > 0
+    assert j["feedback"]["pedidos"] > 0
+    assert j["feedback"]["recebidos"] > 0
+    assert j["rebooking"]["seguimentos_enviados"] > 0
+    assert j["time_saved"]["minutos_estimados"] > 0
+
+
+def test_segunda_chamada_nao_duplica_automacoes(cliente_http, base_dados, monkeypatch):
+    """A idempotência do seed (via _demo_ja_semeado) também cobre os eventos
+    de automação novos — uma segunda chamada não gera um segundo lote de
+    reminders/feedback/rebooking."""
+    monkeypatch.setattr(bot, "ENABLE_DEMO_SEED", True)
+    _sem_whatsapp(monkeypatch)
+
+    cliente_http.post("/api/dev/seed-dashboard", headers=AUTH)
+    with db.ligacao() as conn:
+        antes = conn.execute(
+            "SELECT COUNT(*) FROM events WHERE entity_type = 'appointment' AND entity_id IN "
+            "(SELECT id FROM agendamentos WHERE telefone LIKE ?)", (f"{PREFIXO}%",)).fetchone()[0]
+        jobs_antes = conn.execute("SELECT COUNT(*) FROM automation_jobs "
+                                  "WHERE booking_id IN (SELECT id FROM agendamentos WHERE telefone LIKE ?)",
+                                  (f"{PREFIXO}%",)).fetchone()[0]
+
+    cliente_http.post("/api/dev/seed-dashboard", headers=AUTH)
+    with db.ligacao() as conn:
+        depois = conn.execute(
+            "SELECT COUNT(*) FROM events WHERE entity_type = 'appointment' AND entity_id IN "
+            "(SELECT id FROM agendamentos WHERE telefone LIKE ?)", (f"{PREFIXO}%",)).fetchone()[0]
+        jobs_depois = conn.execute("SELECT COUNT(*) FROM automation_jobs "
+                                   "WHERE booking_id IN (SELECT id FROM agendamentos WHERE telefone LIKE ?)",
+                                   (f"{PREFIXO}%",)).fetchone()[0]
+    assert depois == antes
+    assert jobs_depois == jobs_antes
+
+
+def test_delete_limpa_tambem_automation_jobs(cliente_http, base_dados, monkeypatch):
+    """DELETE continua a limpar só dados demo — agora incluindo os jobs de
+    automação (reminder_24h/post_service/rebooking_followup) que o seed cria,
+    para não ficarem órfãos em automation_jobs."""
+    monkeypatch.setattr(bot, "ENABLE_DEMO_SEED", True)
+    _sem_whatsapp(monkeypatch)
+
+    cliente_http.post("/api/dev/seed-dashboard", headers=AUTH)
+    with db.ligacao() as conn:
+        ids_demo = [r[0] for r in conn.execute(
+            "SELECT id FROM agendamentos WHERE telefone LIKE ?", (f"{PREFIXO}%",)).fetchall()]
+        marcas = ", ".join("?" for _ in ids_demo)
+        jobs_antes = conn.execute(
+            f"SELECT COUNT(*) FROM automation_jobs WHERE booking_id IN ({marcas})",
+            ids_demo).fetchone()[0]
+    assert jobs_antes > 0
+
+    cliente_http.delete("/api/dev/seed-dashboard", headers=AUTH)
+    with db.ligacao() as conn:
+        marcas = ", ".join("?" for _ in ids_demo)
+        jobs_depois = conn.execute(
+            f"SELECT COUNT(*) FROM automation_jobs WHERE booking_id IN ({marcas})",
+            ids_demo).fetchone()[0]
+    assert jobs_depois == 0
