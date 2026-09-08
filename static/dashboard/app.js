@@ -193,6 +193,18 @@ function renderAppointment(ag) {
       ag.rebooking_followup
         ? h("dd", {}, REBOOKING_LABEL[ag.rebooking_followup.estado] || ag.rebooking_followup.estado || "Não configurado")
         : null),
+    // P4.1 — pedido de reagendamento pendente (ver notifications/reschedule.py):
+    // a marcação acima continua a mostrar a data/hora ORIGINAL — só muda
+    // quando o cliente confirmar. Nunca aparece um segundo cartão na Agenda.
+    ag.reschedule_pendente ? h("div", { class: "att sev-info", style: "margin-top:14px" },
+      icon("clock"),
+      h("div", { class: "a-body" },
+        h("div", { class: "a-title" }, "Reagendamento pendente"),
+        h("div", { class: "a-desc" },
+          `Proposto: ${fmtDataPt(ag.reschedule_pendente.new_date)} · ${ag.reschedule_pendente.new_time}`),
+        h("div", { class: "a-desc" }, "Aguarda confirmação do cliente")),
+      h("button", { class: "btn btn--sm", onclick: () => cancelarPedidoReagendamentoPrompt(ag) },
+        "Cancelar pedido")) : null,
     cli ? h("div", { class: "card card--pad", style: "margin-top:8px" },
       h("div", { class: "eyebrow", style: "margin:0 0 8px" }, "Cliente"),
       h("dl", { class: "dl" },
@@ -224,7 +236,10 @@ function renderAppointment(ag) {
     // Reagendar (atalho, igual ao drag & drop da Agenda) só faz sentido
     // antes de qualquer atendimento em curso — a mesma regra que o backend
     // aplica (OperacaoEmCurso): "arrived"/"in_progress" já não se reagenda.
-    if (op === "scheduled")
+    // Escondido enquanto há um pedido pendente: o painel só deixa UM pedido
+    // de cada vez por marcação (a mesma regra do backend) — "Cancelar
+    // pedido", acima, é o único caminho até o pedido atual ser decidido.
+    if (op === "scheduled" && !ag.reschedule_pendente)
       foot.append(h("button", { class: "btn", onclick: () => openReagendarRapido(ag) }, icon("clock"), "Reagendar"));
     foot.append(h("button", { class: "btn", onclick: () => openEditAppointment(ag) }, "Editar"));
     foot.append(h("button", { class: "btn btn--danger", onclick: () => cancelarPrompt(ag) }, "Cancelar"));
@@ -281,6 +296,16 @@ async function cancelarPrompt(ag) {
   if (!confirm(`Cancelar a marcação de ${ag.nome || "cliente"}?`)) return;
   try { await jpost(`/api/agendamentos/${ag.id}/cancelar`, {}); toast("Cancelada."); Drawer.close(); Router.reload(); }
   catch (e) { toast(e.message, "err"); }
+}
+// P4.1 — desiste do pedido de reagendamento pendente (nunca da marcação em
+// si, que nunca chegou a mudar): liberta o horário novo reservado.
+async function cancelarPedidoReagendamentoPrompt(ag) {
+  if (!confirm("Cancelar o pedido de reagendamento? A marcação mantém-se no horário atual.")) return;
+  try {
+    await jpost(`/api/agendamentos/${ag.id}/reagendar-pedido/cancelar`, {});
+    toast("Pedido de reagendamento cancelado.");
+    Drawer.close(); Router.reload();
+  } catch (e) { toast(e.message, "err"); }
 }
 async function naoCompareceuPrompt(ag) {
   if (!confirm(`Marcar ${ag.nome || "cliente"} como Não compareceu?`)) return;
@@ -401,11 +426,13 @@ async function openCreateAppointment(prefill = {}) {
 }
 
 /* ===================================================================
-   REAGENDAR (atalho rápido) — só data/hora, via /reagendar. O MESMO caminho
-   do arrastar-e-largar da Agenda (mesmo endpoint, mesma validação real de
-   disponibilidade), só que por formulário — o caminho principal em
-   mobile/tablet e para quem prefere não arrastar (drag & drop é atalho,
-   nunca a única forma de reagendar).
+   REAGENDAR (atalho rápido) — P4.1: já NÃO chama /reagendar diretamente.
+   Cria um PEDIDO de reagendamento (POST /reagendar-pedido — o MESMO
+   endpoint do drag & drop da Agenda, uma única semântica para as duas
+   entradas do painel) e propõe o novo horário ao cliente por WhatsApp; a
+   marcação original só muda quando ele confirmar (ver
+   notifications/reschedule.py). Continua a ser o caminho principal em
+   mobile/tablet e para quem prefere não arrastar.
    =================================================================== */
 function openReagendarRapido(ag) {
   const f = (label, node) => h("div", { class: "field" }, h("label", {}, label), node);
@@ -414,22 +441,26 @@ function openReagendarRapido(ag) {
 
   const body = h("div", { class: "drawer-body" },
     h("div", { style: "color:var(--text-3);font-size:12.5px;margin-bottom:12px" },
-      `${ag.servico || "Serviço"} · ${ag.duracao_min ? fmtMin(ag.duracao_min) : ag.duracao || ""} — a duração mantém-se, só a data/hora mudam.`),
+      `${ag.servico || "Serviço"} · ${ag.duracao_min ? fmtMin(ag.duracao_min) : ag.duracao || ""} — a duração mantém-se, só a data/hora mudam. `
+      + "A marcação atual mantém-se até o cliente confirmar o novo horário."),
     h("div", { style: "display:flex;gap:12px" }, f("Nova data", iData), f("Nova hora", iHora)));
 
-  const btnGuardar = h("button", { class: "btn btn--primary" }, icon("clock"), "Reagendar");
+  const btnEnviar = h("button", { class: "btn btn--primary" }, icon("clock"), "Enviar para confirmação");
   const foot = h("div", { class: "drawer-foot" },
-    h("button", { class: "btn", onclick: () => renderAppointment(ag) }, "Voltar"), btnGuardar);
+    h("button", { class: "btn", onclick: () => renderAppointment(ag) }, "Voltar"), btnEnviar);
 
-  btnGuardar.addEventListener("click", async () => {
+  btnEnviar.addEventListener("click", async () => {
     if (!iData.value || !HORA_RE.test(iHora.value)) { toast("Data e hora são obrigatórias.", "err"); return; }
     if (iData.value === ag.data_iso && iHora.value === ag.hora_hhmm) { Drawer.close(); return; } // no-op
-    btnGuardar.disabled = true;
+    btnEnviar.disabled = true;
     try {
-      await jpost(`/api/agendamentos/${ag.id}/reagendar`, { data: iData.value, hora: iHora.value, origem: "dashboard" });
-      toast("Marcação reagendada.");
+      const r = await jpost(`/api/agendamentos/${ag.id}/reagendar-pedido`,
+        { data: iData.value, hora: iHora.value, origem: "dashboard" });
+      toast(r.cliente_notificado
+        ? "Pedido enviado — a aguardar confirmação do cliente."
+        : "Pedido criado — não foi possível avisar o cliente automaticamente.");
       Drawer.close(); Router.reload();
-    } catch (e) { toast(e.message, "err"); btnGuardar.disabled = false; }
+    } catch (e) { toast(e.message, "err"); btnEnviar.disabled = false; }
   });
 
   Drawer.open(h("div", { style: "display:flex;flex-direction:column;height:100%" },
@@ -494,9 +525,18 @@ async function openEditAppointment(ag) {
     btnGuardar.disabled = true;
     try {
       if (Object.keys(patch).length) await jpost(`/api/agendamentos/${ag.id}/editar`, patch);
-      if (iData.value !== ag.data_iso || iHora.value !== ag.hora_hhmm)
-        await jpost(`/api/agendamentos/${ag.id}/reagendar`, { data: iData.value, hora: iHora.value });
-      toast("Marcação atualizada.");
+      // P4.1: uma mudança de data/hora aqui é a MESMA coisa que o diálogo
+      // "Reagendar" ou o drag & drop — cria um pedido, nunca reagenda de
+      // imediato (uma única semântica para as três entradas do painel).
+      let pedidoEnviado = null;
+      if (iData.value !== ag.data_iso || iHora.value !== ag.hora_hhmm) {
+        const r = await jpost(`/api/agendamentos/${ag.id}/reagendar-pedido`,
+          { data: iData.value, hora: iHora.value, origem: "dashboard" });
+        pedidoEnviado = r.cliente_notificado;
+      }
+      toast(pedidoEnviado == null ? "Marcação atualizada."
+        : pedidoEnviado ? "Marcação atualizada. Pedido de reagendamento enviado para confirmação do cliente."
+        : "Marcação atualizada. Pedido de reagendamento criado — não foi possível avisar o cliente automaticamente.");
       Drawer.close(); Router.reload();
     } catch (e) { toast(e.message, "err"); btnGuardar.disabled = false; }
   });
@@ -831,27 +871,38 @@ function faixaHora(i) {
 }
 let _dragEv = null;
 let _dragEmCurso = false;   // 1 pedido de cada vez — um segundo drop durante o 1º é ignorado
-// Reagenda por drag & drop. Passa SEMPRE por /reagendar — o MESMO endpoint,
-// a MESMA transação e os MESMOS eventos do diálogo "Editar"/"Reagendar" (ver
-// bot.py:api_agendamento_reagendar); só a `origem` muda, para a timeline e a
-// atribuição em Resultados (P3) distinguirem os dois. O backend é sempre a
-// fonte da verdade: nada aqui decide disponibilidade, só mostra o resultado.
-async function reagendarDrag(id, data, hora, el) {
+// P4.1 — arrastar já NÃO reagenda de imediato: cria um PEDIDO de
+// reagendamento (POST /reagendar-pedido, o MESMO endpoint do diálogo
+// "Reagendar"/"Editar" — uma única semântica para as duas entradas do
+// painel) e propõe o novo horário ao cliente por WhatsApp. A marcação
+// original fica exatamente onde estava até o cliente confirmar — ver
+// notifications/reschedule.py. `/reagendar` (o endpoint antigo) continua a
+// existir tal e qual: é o motor que este pedido usa por baixo quando aceite.
+async function reagendarDrag(id, data, hora, el, info = {}) {
   if (_dragEmCurso) return;
+  const diaTxt = dateOf(data).toLocaleDateString("pt-PT", { weekday: "long", day: "numeric", month: "long" });
+  const deTxt = info.dia
+    ? `${dateOf(info.dia).toLocaleDateString("pt-PT", { day: "2-digit", month: "2-digit", year: "numeric" })} ${info.hora || ""}`
+    : "—";
+  const paraTxt = `${dateOf(data).toLocaleDateString("pt-PT", { day: "2-digit", month: "2-digit", year: "numeric" })} ${hora}`;
+  const pergunta = `Reagendar ${info.nome || "cliente"}?\n\nDe: ${deTxt}\nPara: ${paraTxt}\n\n`
+    + "A marcação atual mantém-se até o cliente confirmar o novo horário pelo WhatsApp. Enviar pedido?";
+  if (!confirm(pergunta)) return;
+
   _dragEmCurso = true;
   if (el) el.classList.add("ag-ev--pending");
   try {
-    await jpost(`/api/agendamentos/${id}/reagendar`, { data, hora, origem: "dashboard_drag" });
-    const diaTxt = dateOf(data).toLocaleDateString("pt-PT", { weekday: "long", day: "numeric", month: "long" });
-    toast(`Marcação reagendada para ${diaTxt}, ${hora}.`);
+    const r = await jpost(`/api/agendamentos/${id}/reagendar-pedido`, { data, hora, origem: "dashboard_drag" });
+    toast(r.cliente_notificado
+      ? `Pedido enviado — a aguardar confirmação do cliente para ${diaTxt}, ${hora}.`
+      : `Pedido criado para ${diaTxt}, ${hora} — não foi possível avisar o cliente automaticamente.`);
     Router.reload();
   } catch (e) {
-    // Falhou: NADA foi persistido (o backend só grava depois de validar), a
-    // única reposição necessária é tirar o estado "a processar" — o cartão
-    // nunca chegou a sair do sítio, porque este drag & drop não move o DOM
-    // otimisticamente, só pede ao servidor e volta a desenhar a partir dele.
+    // Falhou: NADA foi persistido, a única reposição necessária é tirar o
+    // estado "a processar" — o cartão nunca chegou a sair do sítio, este
+    // drag & drop não move o DOM otimisticamente, só pede ao servidor.
     if (el) el.classList.remove("ag-ev--pending");
-    toast(e.message || "Não foi possível reagendar.", "err");
+    toast(e.message || "Não foi possível criar o pedido de reagendamento.", "err");
   } finally {
     _dragEmCurso = false;
   }
@@ -882,7 +933,7 @@ function makeFaixa(i, dia) {
     const novaHora = faixaHora(i);
     // Mesmo slot solto de volta -> no-op, sem pedido nenhum ao servidor.
     if (dia === _dragEv.dia && novaHora === _dragEv.hora) { _dragEv = null; return; }
-    reagendarDrag(_dragEv.id, dia, novaHora, _dragEv.el);
+    reagendarDrag(_dragEv.id, dia, novaHora, _dragEv.el, _dragEv);
     _dragEv = null;
   });
   return el;
@@ -997,7 +1048,7 @@ function agEventCard(p, todayCol) {
     statusBadge(ev.estado, op, ev.bloqueia_horario));
   if (podeArrastar) {
     el.addEventListener("dragstart", (e) => {
-      _dragEv = { id: ev.id, dia: ev.dia, hora: ev.hora_hhmm, el };
+      _dragEv = { id: ev.id, dia: ev.dia, hora: ev.hora_hhmm, el, nome: ev.nome || ev.primeiro_nome };
       e.dataTransfer.effectAllowed = "move";
       e.dataTransfer.setData("text/plain", String(ev.id));
       el.classList.add("dragging");
