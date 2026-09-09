@@ -2,16 +2,32 @@
 falhado mantém a marcação original."""
 
 import threading
+from datetime import timedelta
 
 import pytest
 
 import bot
 import db
+import tempo
 from conftest import marcar, data_pt
 
-DIA = "2026-09-08"
+# Datas relativas a "hoje" (nunca fixas — ver skill-observations #5: uma
+# data ISO hardcoded acaba sempre por coincidir com "hoje" ou o passado,
+# fazendo bot.reagendar_agendamento rejeitar com HorarioNoPassado sem
+# nenhuma mudança de código de produção). +7/+8 dias fica bem dentro da
+# janela normal (min_notice_min=120min, max_notice_days=60 — ver migração
+# 12) e nunca cai num domingo (fechado no horário-tipo semeado).
+def _dia_util(d):
+    while d.weekday() == 6:            # domingo
+        d += timedelta(days=1)
+    return d
+
+
+_DIA1 = _dia_util(tempo.hoje_zurique() + timedelta(days=7))
+_DIA2 = _dia_util(_DIA1 + timedelta(days=1))
+DIA = _DIA1.isoformat()
 DIA_TXT = data_pt(DIA)
-DIA2 = "2026-09-09"
+DIA2 = _DIA2.isoformat()
 DIA2_TXT = data_pt(DIA2)
 
 
@@ -100,7 +116,7 @@ def test_10b_reagendamento_bem_sucedido_e_a_mesma_marcacao(base_dados):
     assert ag2["data_iso"] == DIA2 and ag2["hora_hhmm"] == "13:00"
     assert bot.chave_estado(ag2["estado"]) == "confirmed"
     hist = bot.historico_agendamento(a)
-    assert len(hist) == 1 and hist[0]["data_nova"].startswith("09.09.2026")
+    assert len(hist) == 1 and hist[0]["data_nova"].startswith(_DIA2.strftime("%d.%m.%Y"))
     # o horário antigo ficou livre
     s = db.obter_servico("pestanas")
     ocup = bot.ocupacoes()
