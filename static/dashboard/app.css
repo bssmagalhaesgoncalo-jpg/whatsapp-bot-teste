@@ -834,6 +834,68 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 
 .drawer-body { padding: var(--space-5); overflow-y: auto; overscroll-behavior: contain; flex: 1; }
 .drawer-foot { padding: var(--space-4) var(--space-5); border-top: 1px solid var(--border); display: flex; flex-wrap: wrap; gap: var(--space-2); }
 
+/* ---------- modal (P4.1 — confirmação de reagendamento) ----------
+   Substitui window.confirm()/alert() nativos: mesma UI para drag & drop,
+   "Reagendar" no drawer e a mudança de data/hora em "Editar" — nunca um
+   popup de sistema. Centrada, com scrim + blur próprios (não reaproveita
+   o .scrim/#drawer, que ficam por baixo e continuam operáveis pelo
+   teclado só depois desta fechar — ver Modal em app.js). */
+.modal-root {
+  position: fixed; inset: 0; z-index: 70;
+  display: flex; align-items: center; justify-content: center;
+  padding: var(--space-6);
+  background: rgba(8, 8, 12, .55);
+  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  opacity: 0; pointer-events: none;
+  transition: opacity .2s ease;
+}
+.modal-root.open { opacity: 1; pointer-events: auto; }
+.modal {
+  position: relative;
+  width: min(520px, 100%);
+  max-height: calc(100vh - var(--space-8));
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: var(--shadow-lg);
+  padding: var(--space-6) var(--space-6) var(--space-5);
+  transform: scale(.96) translateY(6px);
+  transition: transform .22s cubic-bezier(.32, .72, 0, 1);
+}
+.modal-root.open .modal { transform: none; }
+.modal:focus { outline: none; }
+.modal-close { position: absolute; top: var(--space-3); right: var(--space-3); }
+
+.resched-icon {
+  width: 44px; height: 44px; margin: 0 auto var(--space-4);
+  border-radius: var(--radius-full);
+  display: flex; align-items: center; justify-content: center;
+  background: var(--brand-weak); color: var(--brand);
+}
+.resched-icon svg { width: 22px; height: 22px; }
+.resched-title { text-align: center; font-size: var(--fs-xl); font-weight: var(--fw-bold); letter-spacing: -.01em; margin: 0 0 var(--space-2); }
+.resched-copy { text-align: center; color: var(--text-2); font-size: var(--fs-base); line-height: var(--lh-base); margin: 0 0 var(--space-6); }
+.resched-meta { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-4); margin-bottom: var(--space-5); }
+.resched-meta-lbl { font-size: var(--fs-2xs); color: var(--text-3); text-transform: uppercase; letter-spacing: .05em; font-weight: 600; margin-bottom: 4px; }
+.resched-meta-val { font-size: var(--fs-md); font-weight: var(--fw-semibold); }
+.resched-swap { display: flex; align-items: center; gap: var(--space-3); margin-bottom: var(--space-6); }
+.resched-box { flex: 1; min-width: 0; border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-3) var(--space-4); background: var(--surface-2); }
+.resched-box-lbl { font-size: var(--fs-2xs); color: var(--text-3); text-transform: uppercase; letter-spacing: .05em; font-weight: 600; margin-bottom: 6px; }
+.resched-box-data { font-size: var(--fs-base); color: var(--text-2); }
+.resched-box-hora { font-size: var(--fs-lg); font-weight: var(--fw-bold); }
+.resched-arrow { flex: 0 0 auto; color: var(--text-3); }
+.resched-arrow svg { width: 18px; height: 18px; }
+.resched-actions { display: flex; justify-content: flex-end; gap: var(--space-2); }
+.resched-actions .btn { min-width: 128px; justify-content: center; }
+@media (max-width: 480px) {
+  .resched-meta { grid-template-columns: 1fr; gap: var(--space-2); }
+  .resched-swap { flex-direction: column; }
+  .resched-arrow { transform: rotate(90deg); align-self: center; }
+  .resched-actions { flex-direction: column-reverse; }
+  .resched-actions .btn { width: 100%; }
+}
+
 .field { margin-bottom: 16px; }
 .field label { display: block; font-size: 10.5px; color: var(--text-3); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 6px; font-weight: 600; }
 .field .val { font-size: 14px; }
