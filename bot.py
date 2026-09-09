@@ -49,6 +49,7 @@ from notifications import postservice as notif_postservice
 from notifications import reminders as notif_reminders
 from notifications import reschedule as notif_reschedule
 from notifications import jobs as notif_jobs
+from campaigns import engine as campaigns
 from scheduling import business_hours as bh_mod
 from scheduling import availability as av_mod
 
@@ -141,6 +142,14 @@ notif_jobs.registar_handler(notif_jobs.TYPE_REBOOKING_FOLLOWUP, notif_followup.e
 # pedido pendente nunca deve sobreviver à marcação a que pertence, senão o
 # horário novo ficava reservado para sempre (ver notifications/reschedule.py).
 eventos.registar("booking.cancelled", notif_reschedule.handler_evento)
+
+# P5 — campanhas WhatsApp de reativação: booking.created/.pending fecha o
+# funil (recipient "converted") quando a marcação trouxer campaign_id (ver
+# campaigns/engine.py); o envio em si corre pelo MESMO executor genérico
+# (automation_jobs), sem scheduler paralelo.
+eventos.registar("booking.created", campaigns.handler_evento_conversao)
+eventos.registar("booking.pending", campaigns.handler_evento_conversao)
+notif_jobs.registar_handler(campaigns.TYPE_CAMPAIGN_SEND, campaigns.executar_envio_campanha)
 
 
 def disparar_automacoes():
@@ -756,7 +765,11 @@ CAMPOS_AGENDAMENTO = ["id", "telefone", "nome", "categoria", "servico", "extra",
                       # P0 — pós-atendimento + instrumentação (migração 18, ver
                       # notifications/postservice.py e notifications/jobs.py)
                       "booking_source", "post_service_thanks_sent_at",
-                      "feedback_requested_at", "feedback_text", "feedback_at"]
+                      "feedback_requested_at", "feedback_text", "feedback_at",
+                      # P5 — atribuição a uma campanha WhatsApp (migração 20, ver
+                      # campaigns/engine.py); só preenchido quando booking_source
+                      # == "whatsapp_campaign".
+                      "campaign_id"]
 SQL_COLUNAS_AGENDAMENTO = ", ".join(CAMPOS_AGENDAMENTO)
 
 
@@ -803,12 +816,16 @@ def guardar_agendamento(telefone, sessao):
         # sem indicação nenhuma, assume-se o chamador principal desta função:
         # o próprio fluxo de marcação do bot no WhatsApp.
         booking_source = sessao.get("booking_source") or "whatsapp_bot"
+        # P5 — atribuição à campanha que originou esta marcação (só presente
+        # quando booking_source == "whatsapp_campaign"; ver bot.py, id_botao
+        # "campanha_marcar_" e campaigns/engine.py:registar_clique).
+        campaign_id = sessao.get("campaign_id")
         cur = conn.execute(
             "INSERT INTO agendamentos "
             "(telefone, nome, categoria, servico, extra, data, hora, preco, duracao, estado, criado_em, "
             "carrinho_json, bloqueia_horario, servico_id, data_iso, hora_hhmm, duracao_min, preco_cents, "
-            "tenant_id, customer_id, op_status, booking_source) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, 'scheduled', ?)",
+            "tenant_id, customer_id, op_status, booking_source, campaign_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, ?)",
             (
                 telefone, sessao.get("nome"), sessao.get("categoria"),
                 sessao.get("servico"), sessao.get("extra"),
@@ -818,7 +835,7 @@ def guardar_agendamento(telefone, sessao):
                 tempo.iso_utc(),
                 json.dumps(sessao.get("carrinho", [])),
                 servico_id, data_iso, hora, duracao_min, preco_cents,
-                tenant_id, cust["id"], booking_source,
+                tenant_id, cust["id"], booking_source, campaign_id,
             ),
         )
         id_ag = cur.lastrowid
@@ -3314,6 +3331,12 @@ def api_cliente(customer_id):
             campos.append("vip = ?"); vals.append(1 if d["vip"] else 0)
         if "tags" in d and isinstance(d["tags"], list):
             campos.append("tags = ?"); vals.append(json.dumps(d["tags"], ensure_ascii=False))
+        if "marketing_opt_in" in d:
+            # P5 — consentimento CANÓNICO de marketing (ver migração 20):
+            # não existe hoje nenhuma recolha automática, por isso este
+            # toggle manual no Client Manager é o único caminho para tornar
+            # um cliente elegível a uma campanha (ver campaigns/engine.py).
+            campos.append("marketing_opt_in = ?"); vals.append(1 if d["marketing_opt_in"] else 0)
         if campos:
             campos.append("updated_at = ?"); vals.append(tempo.iso_utc()); vals.append(customer_id)
             with obter_bd() as c:
@@ -3391,6 +3414,109 @@ def api_cliente_mensagem(customer_id):
                             {"texto": texto[:200]})
 
     return jsonify(ok=True, demo=demo), 200
+
+
+# --- Campanhas WhatsApp (P5) -------------------------------------------------
+_CAMPANHA_ERRO_HTTP = {"CampanhaNaoEncontrada": 404, "EstadoInvalido": 409}
+
+
+def _resp_erro_campanha(e):
+    codigo = _CAMPANHA_ERRO_HTTP.get(type(e).__name__, 400)
+    return jsonify(erro=str(e)), codigo
+
+
+@app.route("/api/campanhas/segmentar", methods=["POST"])
+@requer_autenticacao
+def api_campanhas_segmentar():
+    """Contador em tempo real (§6 do patch) — leitura pura, nunca persiste
+    nada. Usado enquanto a Daniela ainda está a compor os filtros, antes de
+    "Guardar rascunho"."""
+    d = request.get_json(silent=True) or {}
+    resultado = campaigns.elegiveis_e_excluidos(_TENANT, d.get("filtros"))
+    resultado["preview"] = campaigns.render_preview(None, d.get("idioma") or "pt")
+    return jsonify(resultado), 200
+
+
+@app.route("/api/campanhas", methods=["GET", "POST"])
+@requer_autenticacao
+def api_campanhas():
+    if request.method == "GET":
+        return jsonify(campanhas=campaigns.listar_campanhas(_TENANT)), 200
+    d = request.get_json(silent=True) or {}
+    try:
+        camp = campaigns.criar_rascunho(_TENANT, d.get("name"), d.get("filtros"))
+    except campaigns.CampanhaErro as e:
+        return _resp_erro_campanha(e)
+    except ValueError as e:
+        return jsonify(erro=str(e)), 400
+    return jsonify(camp), 201
+
+
+@app.route("/api/campanhas/<int:campaign_id>", methods=["GET", "PATCH", "DELETE"])
+@requer_autenticacao
+def api_campanha(campaign_id):
+    if request.method == "GET":
+        camp = campaigns.obter_campanha(campaign_id, _TENANT)
+        if not camp:
+            return jsonify(erro="Campanha não encontrada."), 404
+        camp["preview"] = campaigns.render_preview(None, "pt")
+        return jsonify(camp), 200
+    if request.method == "DELETE":
+        try:
+            campaigns.apagar_rascunho(campaign_id, _TENANT)
+        except campaigns.CampanhaErro as e:
+            return _resp_erro_campanha(e)
+        return jsonify(ok=True), 200
+    d = request.get_json(silent=True) or {}
+    try:
+        camp = campaigns.atualizar_rascunho(campaign_id, _TENANT, d)
+    except campaigns.CampanhaErro as e:
+        return _resp_erro_campanha(e)
+    except ValueError as e:
+        return jsonify(erro=str(e)), 400
+    return jsonify(camp), 200
+
+
+@app.route("/api/campanhas/<int:campaign_id>/destinatarios", methods=["GET"])
+@requer_autenticacao
+def api_campanha_destinatarios(campaign_id):
+    recipientes = campaigns.detalhe_recipientes(campaign_id, _TENANT)
+    if recipientes is None:
+        return jsonify(erro="Campanha não encontrada."), 404
+    return jsonify(destinatarios=recipientes), 200
+
+
+@app.route("/api/campanhas/<int:campaign_id>/agendar", methods=["POST"])
+@requer_autenticacao
+def api_campanha_agendar(campaign_id):
+    d = request.get_json(silent=True) or {}
+    try:
+        camp = campaigns.agendar(campaign_id, _TENANT, d.get("data"), d.get("hora"))
+    except campaigns.CampanhaErro as e:
+        return _resp_erro_campanha(e)
+    except ValueError as e:
+        return jsonify(erro=str(e)), 400
+    return jsonify(camp), 200
+
+
+@app.route("/api/campanhas/<int:campaign_id>/enviar-agora", methods=["POST"])
+@requer_autenticacao
+def api_campanha_enviar_agora(campaign_id):
+    try:
+        camp = campaigns.enviar_agora(campaign_id, _TENANT)
+    except campaigns.CampanhaErro as e:
+        return _resp_erro_campanha(e)
+    return jsonify(camp), 200
+
+
+@app.route("/api/campanhas/<int:campaign_id>/cancelar", methods=["POST"])
+@requer_autenticacao
+def api_campanha_cancelar(campaign_id):
+    try:
+        camp = campaigns.cancelar(campaign_id, _TENANT)
+    except campaigns.CampanhaErro as e:
+        return _resp_erro_campanha(e)
+    return jsonify(camp), 200
 
 
 # --- Faturação --------------------------------------------------------------
@@ -4185,6 +4311,25 @@ def api_dev_seed_dashboard():
                 "DELETE FROM events WHERE entity_type = 'customer' AND entity_id IN "
                 "(SELECT id FROM customers WHERE phone LIKE ?)",
                 (f"{DEMO_TELEFONE_PREFIXO}%",))
+            # P5 — campanhas demo (ver campaigns.engine.seed_demo): uma
+            # campanha é "demo" quando TODOS os seus destinatários são
+            # clientes demo (nunca acontece com uma campanha real — a
+            # segmentação já exclui telefones DEMO, ver §7 do patch) — o
+            # heurístico mais seguro sem introduzir uma coluna "is_demo" só
+            # para este endpoint temporário.
+            camps_demo = [r[0] for r in conn.execute(
+                "SELECT campaign_id FROM campaign_recipients GROUP BY campaign_id "
+                "HAVING COUNT(*) > 0 AND SUM(CASE WHEN phone NOT LIKE ? THEN 1 ELSE 0 END) = 0",
+                (f"{DEMO_TELEFONE_PREFIXO}%",)).fetchall()]
+            if camps_demo:
+                marcas = ", ".join("?" for _ in camps_demo)
+                conn.execute(f"DELETE FROM campaign_recipients WHERE campaign_id IN ({marcas})", camps_demo)
+                conn.execute(f"DELETE FROM events WHERE entity_type = 'campaign' AND entity_id IN ({marcas})",
+                             camps_demo)
+                for cid in camps_demo:
+                    conn.execute("DELETE FROM automation_jobs WHERE type = ? AND idempotency_key LIKE ?",
+                                 (campaigns.TYPE_CAMPAIGN_SEND, f"campaign_send:{cid}:%"))
+                conn.execute(f"DELETE FROM campaigns WHERE id IN ({marcas})", camps_demo)
             # Jobs de automação (reminder_24h/post_service/rebooking_followup)
             # criados pelo seed para as marcações demo — sem isto ficariam
             # órfãos em automation_jobs depois do DELETE.
@@ -4207,6 +4352,10 @@ def api_dev_seed_dashboard():
         return jsonify(ok=True, already_seeded=True, appointments=ja), 200
 
     ids_ag, ids_cust, ids_fat, faturas_contagem = _semear_dados_demo()
+    # P5 — 1 campanha concluída + 1 agendada, com destinatários em estados
+    # variados (ver campaigns.engine.seed_demo, §23 do patch). Nunca envia
+    # WhatsApp real — os estados são escritos diretamente.
+    campanhas_demo = campaigns.seed_demo(_TENANT, sorted(ids_cust))
     hoje_iso = tempo.hoje_zurique().isoformat()
     with obter_bd() as conn:
         hoje_count = conn.execute(
@@ -4214,7 +4363,7 @@ def api_dev_seed_dashboard():
             (f"{DEMO_TELEFONE_PREFIXO}%", hoje_iso)).fetchone()[0]
     return jsonify(ok=True, created=len(ids_ag), customers=len(ids_cust),
                    today=hoje_count, invoices=len(ids_fat),
-                   invoices_breakdown=faturas_contagem), 201
+                   invoices_breakdown=faturas_contagem, campaigns=campanhas_demo), 201
 
 
 @app.route("/painel", methods=["GET"])
@@ -6990,6 +7139,33 @@ def receber_mensagem():
                 except (ValueError, LookupError):
                     pass
                 enviar_texto(de, t("followup_agora_nao_resposta", idioma))
+                return jsonify(status="ok"), 200
+
+            # --- Entrada da mensagem de CAMPANHA (ver campaigns/engine.py, P5) ---
+            # "Marcar agora" reaproveita o MESMO fluxo de marcação normal —
+            # nunca cria uma marcação diretamente — mas marca a ORIGEM
+            # comercial como "whatsapp_campaign" (com o campaign_id) antes de
+            # entrar nele, exatamente como o rebooking automático já faz para
+            # "rebooking_followup" acima.
+            if id_botao.startswith("campanha_marcar_"):
+                resto = id_botao[len("campanha_marcar_"):]
+                campanha_id_str, _, recipiente_id_str = resto.partition("_")
+                if campanha_id_str.isdigit() and recipiente_id_str.isdigit():
+                    info = campaigns.registar_clique(
+                        int(campanha_id_str), int(recipiente_id_str), de, tenant_id=_TENANT)
+                    if info:
+                        sessao["booking_source"] = "whatsapp_campaign"
+                        sessao["campaign_id"] = info["campaign_id"]
+                        if info.get("servico_id"):
+                            escolher_servico(de, idioma, sessao, info["servico_id"])
+                        else:
+                            # enviar_menu_principal() só LÊ a sessão (para a
+                            # saudação) — nunca a persiste, ao contrário de
+                            # escolher_servico(). Sem isto, booking_source/
+                            # campaign_id perdiam-se assim que o cliente
+                            # tocasse num serviço no menu.
+                            guardar_sessao(de, sessao)
+                            enviar_menu_principal(de, idioma, sessao=sessao)
                 return jsonify(status="ok"), 200
 
             if id_botao == "confirmar":
