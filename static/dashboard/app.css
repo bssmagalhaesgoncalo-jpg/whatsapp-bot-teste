@@ -1051,6 +1051,48 @@ input.inp:focus, select.inp:focus, textarea.inp:focus {
   input.inp, select.inp, textarea.inp { min-height: 44px; }
 }
 
+/* ===================================================================
+   CAMPANHAS (P5) — mesmos tokens/cartões/modals do resto do painel,
+   nunca uma paleta ou espaçamento próprio.
+   =================================================================== */
+.campaign-card {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-4);
+  padding: var(--space-4) var(--space-5); border-radius: var(--radius-md);
+  border: 1px solid var(--border); background: var(--surface); margin-bottom: var(--space-3);
+  cursor: pointer; transition: border-color .15s, box-shadow .15s;
+}
+.campaign-card:hover { border-color: var(--border-strong); box-shadow: var(--shadow-xs); }
+.campaign-card .cc-name { font-weight: var(--fw-semibold); font-size: var(--fs-md); }
+.campaign-card .cc-meta { color: var(--text-3); font-size: var(--fs-sm); margin-top: 2px; }
+.campaign-card .cc-stats { display: flex; gap: var(--space-6); text-align: right; flex-shrink: 0; }
+.campaign-card .cc-stat-val { font-size: var(--fs-lg); font-weight: var(--fw-bold); }
+.campaign-card .cc-stat-lbl { font-size: var(--fs-2xs); color: var(--text-3); text-transform: uppercase; letter-spacing: .05em; }
+
+.seg-filters { display: flex; flex-direction: column; gap: var(--space-4); }
+.seg-check { display: flex; align-items: center; gap: 8px; font-size: var(--fs-base); }
+.seg-counter {
+  display: flex; align-items: baseline; gap: var(--space-3); padding: var(--space-4);
+  border-radius: var(--radius-md); background: var(--brand-weak); color: var(--brand);
+  font-weight: var(--fw-semibold); margin: var(--space-4) 0;
+}
+.seg-counter .seg-counter-n { font-size: var(--fs-2xl); font-weight: 800; }
+.seg-counter .seg-counter-excl { color: var(--text-3); font-weight: 500; font-size: var(--fs-sm); }
+
+.wa-preview { border-radius: var(--radius-lg); background: var(--surface-2); border: 1px solid var(--border); padding: var(--space-4); }
+.wa-preview-bubble {
+  background: var(--surface); border-radius: var(--radius-md); padding: var(--space-4);
+  box-shadow: var(--shadow-xs); white-space: pre-wrap; font-size: var(--fs-base); line-height: var(--lh-base);
+}
+.wa-preview-btn {
+  margin-top: var(--space-3); text-align: center; padding: 10px; border-radius: var(--radius-sm);
+  border: 1px solid var(--border); color: var(--brand); font-weight: var(--fw-semibold);
+  font-size: var(--fs-sm); background: var(--surface);
+}
+@media (max-width: 560px) {
+  .campaign-card { flex-direction: column; align-items: flex-start; gap: var(--space-3); }
+  .campaign-card .cc-stats { width: 100%; justify-content: space-between; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: .001ms !important;

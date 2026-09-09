@@ -1650,6 +1650,17 @@ async function openCliente(id, foco) {
 
   const body = h("div", { class: "drawer-body" },
     clientTagsRow(c),
+    // P5 — consentimento CANÓNICO de marketing (ver migração 20): não existe
+    // nenhuma recolha automática, por isso este toggle manual é o único
+    // caminho para tornar um cliente elegível a uma campanha (ver
+    // #/campanhas). Nunca ligado por omissão.
+    h("div", { style: "margin-top:10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap" },
+      h("span", { class: "badge " + (c.marketing_opt_in ? "badge--info" : "") },
+        icon("megaphone"), c.marketing_opt_in ? "Consentimento de marketing: sim" : "Sem consentimento de marketing"),
+      h("button", { class: "btn btn--sm", onclick: async () => {
+        try { await jpatch(`/api/clientes/${c.id}`, { marketing_opt_in: !c.marketing_opt_in }); refresh(); }
+        catch (e) { toast(e.message, "err"); }
+      } }, c.marketing_opt_in ? "Revogar" : "Marcar como consentido")),
     h("div", { class: "metrics", style: "margin-top:14px" },
       metric(c.visits_count ?? 0, "Visitas"),
       metric(chf(c.spend_cents), "Gasto total"),
@@ -2095,12 +2106,341 @@ async function viewDefinicoes(mount) {
 }
 
 /* ===================================================================
+   VIEW: CAMPANHAS (P5) — reativação de clientes por WhatsApp.
+   Segmentação em tempo real (POST /api/campanhas/segmentar, nunca persiste)
+   -> rascunho -> agendar/enviar agora (snapshot no backend) -> executor
+   processa em lote (ver campaigns/engine.py) -> clique -> fluxo de marcação
+   normal -> conversão. "Enviar agora" usa sempre a modal premium (§11 do
+   patch) — nunca window.confirm.
+   =================================================================== */
+const CAMPANHA_STATUS_LABEL = {
+  draft: "Rascunho", scheduled: "Agendada", running: "A decorrer",
+  completed: "Concluída", cancelled: "Cancelada",
+};
+const CAMPANHA_STATUS_BADGE = {
+  draft: "", scheduled: "badge--info", running: "badge--warning",
+  completed: "badge--success", cancelled: "badge--danger",
+};
+function campanhaBadge(status) {
+  return h("span", { class: "badge " + (CAMPANHA_STATUS_BADGE[status] || "") },
+    CAMPANHA_STATUS_LABEL[status] || status);
+}
+const CAMPANHA_RECIPIENT_LABEL = {
+  pending: ["Pendente", ""], sent: ["Enviada", "badge--info"], failed: ["Falhou", "badge--danger"],
+  clicked: ["Clicou", "badge--warning"], converted: ["Marcou", "badge--success"], skipped: ["Ignorado", ""],
+};
+function campanhaRecipientBadge(status) {
+  const [label, cls] = CAMPANHA_RECIPIENT_LABEL[status] || [status, ""];
+  return h("span", { class: "badge " + cls }, label);
+}
+function segmentoResumo(filtros) {
+  filtros = filtros || {};
+  const partes = [];
+  if (filtros.no_visit_days) partes.push(`Sem visita há ${filtros.no_visit_days}d`);
+  if (filtros.service_id) partes.push("Serviço anterior");
+  if (filtros.no_future_booking) partes.push("Sem marcação futura");
+  if (filtros.recurring) partes.push("Recorrentes");
+  if (filtros.last_visit_from || filtros.last_visit_to) partes.push("Última visita em intervalo");
+  return partes.length ? partes.join(" · ") : "Todos os clientes elegíveis";
+}
+
+async function viewCampanhas(mount) {
+  setTitle("Campanhas", "Reative clientes e preencha a agenda.");
+  const btnNova = h("button", { class: "btn btn--primary", onclick: () => openCampanhaBuilder() },
+    icon("megaphone"), "Nova campanha");
+  mount.append(h("div", { style: "display:flex;justify-content:flex-end;margin-bottom:16px" }, btnNova));
+  mount.append(skeletonCard());
+  let d;
+  try { d = await api("/api/campanhas"); }
+  catch (e) { mount.lastChild.remove(); mount.append(emptyState("Não foi possível carregar: " + e.message)); return; }
+  mount.lastChild.remove();
+  const lista = d.campanhas || [];
+
+  const rascunhos = lista.filter((c) => c.status === "draft").length;
+  const agendadas = lista.filter((c) => c.status === "scheduled").length;
+  const enviadas = lista.filter((c) => c.status === "running" || c.status === "completed").length;
+  const conversoes = lista.reduce((s, c) => s + (c.recipients_converted || 0), 0);
+  mount.append(h("div", { class: "metrics metrics--5" },
+    metric(rascunhos, "Rascunhos"), metric(agendadas, "Agendadas"),
+    metric(enviadas, "Enviadas"), metric(conversoes, "Conversões", true)));
+
+  if (!lista.length) {
+    mount.append(h("div", { style: "margin-top:20px" },
+      emptyState("Ainda não há campanhas — crie a primeira para reativar clientes sem marcação recente.")));
+    return;
+  }
+
+  const wrap = h("div", { style: "margin-top:20px" });
+  lista.forEach((c) => wrap.append(
+    h("div", { class: "campaign-card", onclick: () => openCampanha(c.id) },
+      h("div", {},
+        h("div", { class: "cc-name" }, c.name),
+        h("div", { class: "cc-meta" }, segmentoResumo(c.segment_json),
+          c.scheduled_at ? " · " + fmtDataHoraPt(c.scheduled_at) : ""),
+        h("div", { style: "margin-top:8px" }, campanhaBadge(c.status))),
+      h("div", { class: "cc-stats" },
+        h("div", {}, h("div", { class: "cc-stat-val tnum" }, String(c.recipients_total)),
+          h("div", { class: "cc-stat-lbl" }, "Destinatários")),
+        h("div", {}, h("div", { class: "cc-stat-val tnum" }, String(c.recipients_sent)),
+          h("div", { class: "cc-stat-lbl" }, "Enviadas")),
+        h("div", {}, h("div", { class: "cc-stat-val tnum" }, String(c.recipients_clicked)),
+          h("div", { class: "cc-stat-lbl" }, "Cliques")),
+        h("div", {}, h("div", { class: "cc-stat-val tnum" }, String(c.recipients_converted)),
+          h("div", { class: "cc-stat-lbl" }, "Marcações"))))));
+  mount.append(wrap);
+}
+
+/* ---------- detalhe de UMA campanha ---------- */
+async function openCampanha(id) {
+  Drawer.open(h("div", { class: "drawer-body" }, h("div", { class: "skel", style: "height:160px" })));
+  let c, dest;
+  try {
+    c = await api(`/api/campanhas/${id}`);
+    dest = (await api(`/api/campanhas/${id}/destinatarios`)).destinatarios || [];
+  } catch (e) { toast(e.message, "err"); Drawer.close(); return; }
+
+  const conversao = c.recipients_sent ? Math.round((c.recipients_converted / c.recipients_sent) * 1000) / 10 : null;
+
+  const head = h("div", { class: "drawer-head" },
+    icon("megaphone"), h("h3", {}, c.name),
+    h("span", { style: "flex:1" }),
+    h("button", { class: "icon-btn", onclick: () => Drawer.close(), "aria-label": "Fechar" }, icon("x")));
+
+  const body = h("div", { class: "drawer-body" },
+    h("div", { style: "display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap" },
+      campanhaBadge(c.status),
+      h("span", { style: "color:var(--text-3);font-size:12.5px" }, segmentoResumo(c.segment_json))),
+    h("div", { class: "metrics" },
+      metric(c.recipients_sent, "Enviadas"), metric(c.recipients_failed, "Falhadas"),
+      metric(c.recipients_clicked, "Cliques"), metric(c.recipients_converted, "Marcações", true)),
+    conversao != null
+      ? h("div", { class: "res-note" }, `Taxa de conversão: ${conversao}% (marcações / enviadas).`)
+      : null,
+    h("div", { class: "eyebrow", style: "margin-top:20px" }, "Pré-visualização WhatsApp"),
+    h("div", { class: "wa-preview" },
+      h("div", { class: "wa-preview-bubble" }, c.preview.texto),
+      h("div", { class: "wa-preview-btn" }, c.preview.botao)),
+    h("div", { class: "eyebrow", style: "margin-top:20px" }, `Destinatários (${dest.length})`),
+    dest.length
+      ? h("div", { class: "tbl-wrap" }, h("table", { class: "tbl" },
+          h("thead", {}, h("tr", {}, h("th", {}, "Cliente"), h("th", {}, "Telefone"),
+            h("th", {}, "Estado"), h("th", {}, "Enviado"))),
+          h("tbody", {}, dest.slice(0, 300).map((r) => h("tr", {},
+            h("td", {}, r.name || "Cliente"), h("td", { class: "tnum" }, r.phone),
+            h("td", {}, campanhaRecipientBadge(r.status)),
+            h("td", {}, r.sent_at ? fmtDataHoraPt(r.sent_at) : "—"))))))
+      : emptyState("Sem destinatários — esta campanha ainda não foi agendada nem enviada."));
+
+  const foot = h("div", { class: "drawer-foot" });
+  if (c.status === "draft") {
+    foot.append(h("button", { class: "btn", onclick: () => openCampanhaBuilder(c) }, "Editar"));
+    foot.append(h("button", { class: "btn", onclick: () => openAgendarCampanha(c) }, icon("clock"), "Agendar"));
+    foot.append(h("button", { class: "btn btn--primary", onclick: () => enviarCampanhaAgora(c) }, icon("send"), "Enviar agora"));
+    foot.append(h("button", { class: "btn btn--danger", onclick: () => apagarCampanhaPrompt(c) }, "Apagar"));
+  } else if (c.status === "scheduled") {
+    foot.append(h("button", { class: "btn btn--primary", onclick: () => enviarCampanhaAgora(c) }, icon("send"), "Enviar agora"));
+    foot.append(h("button", { class: "btn btn--danger", onclick: () => cancelarCampanhaPrompt(c) }, "Cancelar"));
+  } else if (c.status === "running") {
+    foot.append(h("button", { class: "btn btn--danger", onclick: () => cancelarCampanhaPrompt(c) }, "Cancelar"));
+  }
+
+  Drawer.open(h("div", { style: "display:flex;flex-direction:column;height:100%" }, head, body, foot));
+}
+
+async function apagarCampanhaPrompt(c) {
+  if (!confirm(`Apagar o rascunho "${c.name}"? Esta ação não pode ser desfeita.`)) return;
+  try {
+    await api(`/api/campanhas/${c.id}`, { method: "DELETE" });
+    toast("Rascunho apagado."); Drawer.close(); Router.reload();
+  } catch (e) { toast(e.message, "err"); }
+}
+
+async function cancelarCampanhaPrompt(c) {
+  if (!confirm(`Cancelar a campanha "${c.name}"? Mensagens já enviadas não são desfeitas — só os `
+    + "destinatários ainda pendentes deixam de receber.")) return;
+  try {
+    await jpost(`/api/campanhas/${c.id}/cancelar`, {});
+    toast("Campanha cancelada."); Drawer.close(); Router.reload();
+  } catch (e) { toast(e.message, "err"); }
+}
+
+/* ---------- "Agendar" — data/hora, modal simples ---------- */
+function openAgendarCampanha(c) {
+  const iData = h("input", { class: "inp", type: "date", min: ymdOf(new Date()) });
+  const iHora = h("input", { class: "inp", type: "time", value: "09:00" });
+  const btnCancelar = h("button", { class: "btn", onclick: () => Modal.close() }, "Cancelar");
+  const btnAgendar = h("button", { class: "btn btn--primary" }, icon("clock"), "Agendar campanha");
+  btnAgendar.addEventListener("click", async () => {
+    if (!iData.value || !HORA_RE.test(iHora.value)) { toast("Data e hora são obrigatórias.", "err"); return; }
+    btnAgendar.disabled = true;
+    try {
+      await jpost(`/api/campanhas/${c.id}/agendar`, { data: iData.value, hora: iHora.value });
+      toast("Campanha agendada.");
+      Modal.close(); Drawer.close(); Router.reload();
+    } catch (e) { btnAgendar.disabled = false; toast(e.message, "err"); }
+  });
+  const titleId = "campanha-agendar-" + c.id;
+  const panel = h("div", { class: "modal" },
+    h("button", { class: "icon-btn modal-close", onclick: () => Modal.close(), "aria-label": "Fechar" }, icon("x")),
+    h("div", { class: "resched-icon" }, icon("clock")),
+    h("h3", { id: titleId, class: "resched-title" }, "Agendar campanha"),
+    h("p", { class: "resched-copy" }, `"${c.name}" será enviada automaticamente na data/hora escolhida.`),
+    h("div", { style: "display:flex;gap:12px;margin-bottom:20px" },
+      h("div", { class: "field", style: "flex:1;margin:0" }, h("label", {}, "Data"), iData),
+      h("div", { class: "field", style: "flex:1;margin:0" }, h("label", {}, "Hora"), iHora)),
+    h("div", { class: "resched-actions" }, btnCancelar, btnAgendar));
+  Modal.open(panel, { labelledby: titleId });
+}
+
+/* ---------- "Enviar agora" — SEMPRE a modal premium, nunca window.confirm ---------- */
+async function enviarCampanhaAgora(c) {
+  let preview;
+  try { preview = await jpost("/api/campanhas/segmentar", { filtros: c.segment_json || {} }); }
+  catch (e) { toast(e.message, "err"); return; }
+  const elegiveis = c.status === "draft" ? preview.elegiveis : c.recipients_total;
+
+  const btnCancelar = h("button", { class: "btn", onclick: () => Modal.close() }, "Cancelar");
+  const btnEnviar = h("button", { class: "btn btn--primary" }, icon("send"), "Enviar campanha");
+  const setEnviando = (on) => {
+    btnEnviar.disabled = on; btnCancelar.disabled = on; Modal.setClosable(!on);
+    btnEnviar.innerHTML = ""; btnEnviar.append(icon("send"), on ? "A enviar…" : "Enviar campanha");
+  };
+  btnEnviar.addEventListener("click", async () => {
+    if (btnEnviar.disabled) return;
+    setEnviando(true);
+    try {
+      await jpost(`/api/campanhas/${c.id}/enviar-agora`, {});
+      toast("Campanha a ser enviada.");
+      Modal.close(); Drawer.close(); Router.reload();
+    } catch (e) {
+      setEnviando(false);
+      toast(e.message || "Não foi possível enviar a campanha.", "err");
+    }
+  });
+  const titleId = "campanha-enviar-" + c.id;
+  const panel = h("div", { class: "modal" },
+    h("button", { class: "icon-btn modal-close", onclick: () => Modal.close(), "aria-label": "Fechar" }, icon("x")),
+    h("div", { class: "resched-icon" }, icon("megaphone")),
+    h("h3", { id: titleId, class: "resched-title" }, "Enviar campanha?"),
+    h("p", { class: "resched-copy" },
+      `${elegiveis} clientes elegíveis · Template: Reativação de clientes.`),
+    h("p", { class: "resched-copy" },
+      "Este envio utiliza mensagens template do WhatsApp — fora da janela de 24h de atendimento, "
+      + "é o único tipo de mensagem permitido para um contacto proativo."),
+    h("div", { class: "resched-actions" }, btnCancelar, btnEnviar));
+  Modal.open(panel, { labelledby: titleId });
+}
+
+/* ---------- "Nova campanha" / "Editar" — segmentação em tempo real ---------- */
+function openCampanhaBuilder(existing) {
+  const isEdit = !!existing;
+  let filtros = isEdit ? { ...(existing.segment_json || {}) } : {};
+  let campaignId = isEdit ? existing.id : null;
+
+  const iNome = h("input", { class: "inp", value: isEdit ? existing.name : "",
+    placeholder: "Ex.: Reativação setembro" });
+
+  const selVisita = h("select", { class: "inp" },
+    h("option", { value: "" }, "— Nenhum —"),
+    [30, 60, 90, 180].map((n) =>
+      h("option", { value: n, selected: filtros.no_visit_days === n || undefined }, `${n} dias`)));
+
+  const selServico = h("select", { class: "inp" }, h("option", { value: "" }, "— Nenhum —"));
+  getServicos().then((servicos) => {
+    servicos.filter((s) => s.ativo).forEach((s) => selServico.append(
+      h("option", { value: s.id, selected: filtros.service_id === s.id || undefined }, s.nome_pt)));
+  }).catch(() => {});
+
+  const chkFutura = h("input", { type: "checkbox", checked: !!filtros.no_future_booking || undefined });
+  const chkRecorrente = h("input", { type: "checkbox", checked: !!filtros.recurring || undefined });
+
+  const contadorN = h("span", { class: "seg-counter-n" }, "…");
+  const contadorExcl = h("span", { class: "seg-counter-excl" }, "");
+  const previewBubble = h("div", { class: "wa-preview-bubble" }, "…");
+  const previewBtn = h("div", { class: "wa-preview-btn" }, "…");
+
+  const lerFiltros = () => {
+    const f = {};
+    if (selVisita.value) f.no_visit_days = Number(selVisita.value);
+    if (selServico.value) f.service_id = selServico.value;
+    if (chkFutura.checked) f.no_future_booking = true;
+    if (chkRecorrente.checked) f.recurring = true;
+    return f;
+  };
+
+  let debounceTimer = null;
+  const atualizarContador = async () => {
+    filtros = lerFiltros();
+    try {
+      const r = await jpost("/api/campanhas/segmentar", { filtros });
+      contadorN.textContent = `${r.elegiveis} clientes elegíveis`;
+      contadorExcl.textContent = r.excluidos ? `· ${r.excluidos} excluídos` : "";
+      previewBubble.textContent = r.preview.texto;
+      previewBtn.textContent = r.preview.botao;
+    } catch (e) { contadorN.textContent = "—"; }
+  };
+  const agendarContador = () => { clearTimeout(debounceTimer); debounceTimer = setTimeout(atualizarContador, 150); };
+  [selVisita, selServico].forEach((el) => el.addEventListener("change", agendarContador));
+  [chkFutura, chkRecorrente].forEach((el) => el.addEventListener("change", agendarContador));
+  atualizarContador();
+
+  const body = h("div", { class: "drawer-body" },
+    h("div", { class: "field" }, h("label", {}, "Nome da campanha"), iNome),
+    h("div", { class: "eyebrow", style: "margin-top:20px" }, "Público"),
+    h("div", { class: "seg-filters" },
+      h("div", { class: "field", style: "margin:0" }, h("label", {}, "Sem visita há"), selVisita),
+      h("div", { class: "field", style: "margin:0" }, h("label", {}, "Serviço anterior"), selServico),
+      h("label", { class: "seg-check" }, chkFutura, "Sem marcação futura"),
+      h("label", { class: "seg-check" }, chkRecorrente, "Cliente recorrente (2+ visitas)")),
+    h("div", { class: "seg-counter" }, contadorN, contadorExcl),
+    h("div", { class: "eyebrow" }, "Pré-visualização WhatsApp"),
+    h("div", { class: "wa-preview" }, previewBubble, previewBtn),
+    h("div", { class: "res-note" },
+      "Template: Reativação de clientes. O idioma da mensagem é escolhido automaticamente pelo idioma do cliente."));
+
+  const btnGuardar = h("button", { class: "btn" }, "Guardar rascunho");
+  const foot = h("div", { class: "drawer-foot" }, btnGuardar);
+  if (isEdit) {
+    const btnAgendar = h("button", { class: "btn" }, icon("clock"), "Agendar");
+    const btnEnviar = h("button", { class: "btn btn--primary" }, icon("send"), "Enviar agora");
+    btnAgendar.addEventListener("click", () => openAgendarCampanha({ id: campaignId, name: iNome.value }));
+    btnEnviar.addEventListener("click", () =>
+      enviarCampanhaAgora({ id: campaignId, name: iNome.value, status: "draft", segment_json: filtros }));
+    foot.append(btnAgendar, btnEnviar);
+  }
+
+  btnGuardar.addEventListener("click", async () => {
+    const nome = iNome.value.trim();
+    if (!nome) { toast("Escreva um nome para a campanha.", "err"); return; }
+    filtros = lerFiltros();
+    btnGuardar.disabled = true;
+    try {
+      const camp = campaignId
+        ? await jpatch(`/api/campanhas/${campaignId}`, { name: nome, filtros })
+        : await jpost("/api/campanhas", { name: nome, filtros });
+      campaignId = camp.id;
+      toast("Rascunho guardado.");
+      openCampanha(campaignId);   // reabre já como detalhe, com Agendar/Enviar/Apagar
+      Router.reload();
+    } catch (e) { toast(e.message, "err"); }
+    finally { btnGuardar.disabled = false; }
+  });
+
+  Drawer.open(h("div", { style: "display:flex;flex-direction:column;height:100%" },
+    h("div", { class: "drawer-head" }, icon("megaphone"),
+      h("h3", {}, isEdit ? "Editar campanha" : "Nova campanha"),
+      h("span", { style: "flex:1" }),
+      h("button", { class: "icon-btn", onclick: () => Drawer.close(), "aria-label": "Fechar" }, icon("x"))),
+    body, foot));
+}
+
+/* ===================================================================
    ROUTER
    =================================================================== */
 const ROUTES = {
   hoje: viewHoje, agenda: viewAgenda, clientes: viewClientes,
   servicos: viewServicos, horarios: viewHorarios, faturas: viewFaturas,
-  resultados: viewResultados, definicoes: viewDefinicoes,
+  campanhas: viewCampanhas, resultados: viewResultados, definicoes: viewDefinicoes,
 };
 const Router = {
   current: "hoje",
