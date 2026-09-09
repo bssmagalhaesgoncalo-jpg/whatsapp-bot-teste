@@ -60,6 +60,21 @@ WHATSAPP_RESCHEDULE_TEMPLATE_PT = _limpo("WHATSAPP_RESCHEDULE_TEMPLATE_PT")
 WHATSAPP_RESCHEDULE_TEMPLATE_DE = _limpo("WHATSAPP_RESCHEDULE_TEMPLATE_DE")
 WHATSAPP_RESCHEDULE_TEMPLATE_EN = _limpo("WHATSAPP_RESCHEDULE_TEMPLATE_EN")
 
+# Idem, para a campanha "Reativação de clientes" (P5, ver campaigns/engine.py)
+# — a ÚNICA campanha lógica desta primeira versão. Sem o nome do template
+# aqui, o envio nunca finge sucesso: cada destinatário fica "failed" (ver
+# campaigns.engine.executar_envio_campanha) até o template ser aprovado e
+# configurado — a mesma regra do reminder 24h e do rebooking automático.
+WHATSAPP_CAMPAIGN_TEMPLATE_PT = _limpo("WHATSAPP_CAMPAIGN_TEMPLATE_PT")
+WHATSAPP_CAMPAIGN_TEMPLATE_DE = _limpo("WHATSAPP_CAMPAIGN_TEMPLATE_DE")
+WHATSAPP_CAMPAIGN_TEMPLATE_EN = _limpo("WHATSAPP_CAMPAIGN_TEMPLATE_EN")
+
+# Quantos destinatários (no máximo) um ÚNICO ciclo do executor
+# (notifications/jobs.py:process_due_jobs, chamado por /api/automacoes/correr)
+# processa por campanha antes de reagendar o resto para um novo lote — nunca
+# um disparo de centenas em simultâneo (ver campaigns/engine.py, throttling).
+CAMPAIGN_SEND_BATCH_SIZE = int(_limpo("CAMPAIGN_SEND_BATCH_SIZE") or "40")
+
 # --- Painel / dashboard (HTTP Basic) — SEM defaults ----------------------
 DASHBOARD_USER = _limpo("DASHBOARD_USER")
 DASHBOARD_PASSWORD = _limpo("DASHBOARD_PASSWORD")

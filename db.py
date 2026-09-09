@@ -760,6 +760,72 @@ def _m19_reschedule_requests(conn):
                  "ON reschedule_requests (appointment_id)")
 
 
+def _m20_campanhas(conn):
+    """P5 — campanhas WhatsApp de reativação de clientes (ver campaigns/engine.py).
+
+    - customers.marketing_opt_in: consentimento CANÓNICO para contacto de
+      MARKETING/campanha — distinto de `follow_up_opt_out` (que é sobre o
+      rebooking automático pós-serviço, uma automação transacional ligada a
+      UMA marcação concluída, não "marketing" no sentido da Meta). Default 0
+      (seguro): não existe hoje nenhuma recolha real de consentimento de
+      marketing, por isso esta migração NUNCA marca nenhum cliente existente
+      como opt-in — ver resposta final, secção "elegibilidade/consent", para
+      o que isto implica (0 clientes elegíveis em produção até a Daniela
+      marcar opt-in manualmente no Client Manager, ou até existir uma
+      recolha real). O seed DEMO ativa isto só nos clientes DEMO, nunca em
+      clientes reais.
+    - agendamentos.campaign_id: atribuição de uma marcação a uma campanha —
+      nunca inferida; só gravada quando o cliente entra no fluxo de marcação
+      a partir do botão [Marcar agora] de uma campanha (ver
+      campaigns/engine.py:registar_clique + bot.py, id_botao "campanha_marcar_").
+    - campaigns: uma linha por campanha (rascunho/agendada/a decorrer/
+      concluída/cancelada). `segment_json` grava os filtros escolhidos (só
+      para mostrar "Público: ..." no detalhe — nunca é re-executado depois
+      do snapshot). `eligible_count`/`excluded_count` são o snapshot da
+      contagem no momento em que a campanha foi agendada/enviada (fica
+      estável mesmo que a base de clientes mude depois).
+    - campaign_recipients: o snapshot em si — uma linha por destinatário,
+      gravada no momento em que a campanha é agendada ou enviada (nunca
+      antes, nunca recalculada a meio de um envio). O índice único
+      (campaign_id, customer_id) é a garantia, ao nível da BD, de que a
+      MESMA campanha nunca tem dois destinatários para o mesmo cliente —
+      chave da idempotência do envio (ver executar_envio_campanha)."""
+    _add_coluna_se_falta(conn, "customers", "marketing_opt_in", "INTEGER NOT NULL DEFAULT 0")
+    _add_coluna_se_falta(conn, "agendamentos", "campaign_id", "INTEGER")
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS campaigns ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "tenant_id INTEGER NOT NULL DEFAULT 1, "
+        "name TEXT NOT NULL, "
+        "status TEXT NOT NULL DEFAULT 'draft', "
+        "template_key TEXT NOT NULL DEFAULT 'client_reactivation', "
+        "segment_json TEXT NOT NULL DEFAULT '{}', "
+        "eligible_count INTEGER, excluded_count INTEGER, "
+        "scheduled_at TEXT, "
+        "created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT, cancelled_at TEXT)"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS ix_campaigns_tenant_status "
+                 "ON campaigns (tenant_id, status)")
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS campaign_recipients ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "campaign_id INTEGER NOT NULL, "
+        "tenant_id INTEGER NOT NULL DEFAULT 1, "
+        "customer_id INTEGER NOT NULL, "
+        "phone TEXT NOT NULL, locale TEXT, "
+        "status TEXT NOT NULL DEFAULT 'pending', "
+        "sent_at TEXT, failed_at TEXT, clicked_at TEXT, converted_at TEXT, "
+        "booking_id INTEGER, last_error TEXT, "
+        "created_at TEXT NOT NULL)"
+    )
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS ix_campaign_recipients_unico "
+                 "ON campaign_recipients (campaign_id, customer_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS ix_campaign_recipients_status "
+                 "ON campaign_recipients (campaign_id, status)")
+
+
 MIGRACOES = [
     (1, "baseline", _m1_baseline),
     (2, "colunas_legadas", _m2_colunas_legadas),
@@ -780,6 +846,7 @@ MIGRACOES = [
     (17, "follow_up", _m17_follow_up),
     (18, "pos_atendimento", _m18_pos_atendimento),
     (19, "reschedule_requests", _m19_reschedule_requests),
+    (20, "campanhas", _m20_campanhas),
 ]
 
 
@@ -936,7 +1003,7 @@ def atualizar_servico(servico_id: str, dados: dict):
 _CAMPOS_CUSTOMER = ("id", "tenant_id", "phone", "name", "locale", "first_seen", "last_visit",
                     "next_visit", "visits_count", "spend_cents", "no_show_count",
                     "cancel_count", "tags", "vip", "blocked", "notes_internal",
-                    "created_at", "updated_at")
+                    "created_at", "updated_at", "marketing_opt_in")
 
 
 def _linha_customer(row) -> dict:
@@ -944,6 +1011,7 @@ def _linha_customer(row) -> dict:
     d = dict(zip(_CAMPOS_CUSTOMER, row))
     d["vip"] = bool(d["vip"])
     d["blocked"] = bool(d["blocked"])
+    d["marketing_opt_in"] = bool(d["marketing_opt_in"])
     try:
         d["tags"] = _j.loads(d["tags"] or "[]")
     except (ValueError, TypeError):
