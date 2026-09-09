@@ -937,22 +937,41 @@ async function viewAgenda(mount) {
   mount.lastChild.remove();
   if (d.grelha) agGrelha = { hora_inicio: d.grelha.hora_inicio ?? 8, hora_fim: d.grelha.hora_fim ?? 19, intervalo_min: d.grelha.intervalo_min ?? 30 };
 
-  const listMount = h("div", {});
+  const listMount = h("div", { class: "ag-list" });
   mount.append(listMount);
 
   function renderList() {
-    listMount.innerHTML = "";
     const q = agendaBusca.trim().toLowerCase();
     const filtrados = (d.eventos || []).filter((e) => matchFiltroAg(e, agendaFiltro) && matchBuscaAg(e, q));
-    if (isWeek) {
-      const evs = filtrados.filter((e) => e.dia >= anchor && e.dia <= fim);
-      listMount.append(renderSemana(evs));
-    } else {
-      const evs = filtrados.filter((e) => e.dia === anchor).sort((a, b) => (a.hora_hhmm || "").localeCompare(b.hora_hhmm || ""));
-      listMount.append(renderDiaGrid(evs, anchor));
+    const build = () => isWeek
+      ? renderSemana(filtrados.filter((e) => e.dia >= anchor && e.dia <= fim))
+      : renderDiaGrid(filtrados.filter((e) => e.dia === anchor).sort((a, b) => (a.hora_hhmm || "").localeCompare(b.hora_hhmm || "")), anchor);
+
+    listMount.innerHTML = "";
+    listMount.append(build());
+    // Altura de banda dinâmica: a 1ª passagem usa o AG_FAIXA da vez anterior
+    // só para medir o "chrome" já desenhado por cima da grelha (toolbar,
+    // filtros, legenda, cabeçalho de dias em vista semana) — nunca depende
+    // das próprias bandas (ver computeAgFaixa). Se o valor ideal para ESTE
+    // viewport for diferente, refaz-se a grelha uma única vez já com o
+    // valor final, para .ag-hora/.ag-faixa (CSS, var(--ag-faixa)) e
+    // agTop()/agH() (JS, cartões posicionados a pixel) nunca desalinharem.
+    const weekScroll = listMount.querySelector(".ag-week-scroll");
+    if (weekScroll) {
+      const ideal = computeAgFaixa(weekScroll);
+      if (ideal !== AG_FAIXA) {
+        AG_FAIXA = ideal;
+        mount.style.setProperty("--ag-faixa", AG_FAIXA + "px");
+        listMount.innerHTML = "";
+        listMount.append(build());
+      }
     }
   }
   renderList();
+  // Resize da janela (não é um Router.reload — não refaz o pedido à API):
+  // o único propósito é recalcular AG_FAIXA e reconstruir a grelha para o
+  // novo viewport. Só ativo enquanto a vista atual continuar a ser Agenda.
+  _agendaRelayout = renderList;
 }
 
 function setAgendaVista(v) {
@@ -1151,7 +1170,38 @@ function renderDiaGrid(evs, anchor) {
 }
 
 /* ---- vista SEMANA (grelha horária com 7 dias) ---- */
-const AG_FAIXA = 34;   // altura (px) de uma banda de intervalo
+// Altura de banda — deixou de ser um número universal fixo por ecrã
+// (§correção de geometria): recalculada por computeAgFaixa() para o
+// calendário caber exatamente na altura disponível do viewport, sem
+// scroll da página. .ag-hora/.ag-faixa (CSS) leem o mesmo valor via
+// var(--ag-faixa) — nunca podem desalinhar do agTop()/agH() (JS).
+let AG_FAIXA = 34;
+const AG_FAIXA_MIN = 18;   // abaixo disto as horas deixam de ser legíveis
+const AG_FAIXA_MAX = 56;   // não esticar mais do que isto em ecrãs muito altos
+const AG_BOTTOM_SAFETY = 12; // pequena folga para não colar ao fundo do viewport
+// Ponto de entrada do resize da janela (ver viewAgenda) — só recalcula
+// layout, nunca refaz o pedido à API.
+let _agendaRelayout = null;
+
+// Altura de banda que faz a grelha (cabeçalho + N bandas) caber exatamente
+// dentro de .ag-week-scroll, sem scroll interno. weekScroll.clientHeight já
+// é o espaço REAL disponível (é um flex child de altura fixa — overflow:auto
+// nunca deixa o conteúdo esticá-lo, ver .ag-week-scroll em app.css), por
+// isso não depende de somar/adivinhar alturas de toolbar/filtros/legenda:
+// só descontar o que fica DENTRO do próprio scroll container e não é banda
+// (o padding-bottom dele, a borda do .ag-grid e — em vista semana — o
+// cabeçalho .ag-hd).
+function computeAgFaixa(weekScroll) {
+  const bandas = agBands();
+  const cs = getComputedStyle(weekScroll);
+  const hd = weekScroll.querySelector(".ag-hd");
+  const reservado = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0)
+    + 2 // borda superior + inferior do .ag-grid (1px cada)
+    + (hd ? hd.getBoundingClientRect().height : 0);
+  const disponivel = weekScroll.clientHeight - reservado - AG_BOTTOM_SAFETY;
+  const alvo = Math.floor(disponivel / bandas);
+  return Math.max(AG_FAIXA_MIN, Math.min(AG_FAIXA_MAX, alvo));
+}
 function agBands() {
   const { hora_inicio, hora_fim, intervalo_min } = agGrelha;
   return Math.max(1, Math.round(((hora_fim - hora_inicio) * 60) / (intervalo_min || 30)));
@@ -2063,6 +2113,11 @@ const Router = {
     // Agenda precisa de (quase) toda a largura — as outras vistas ficam
     // no teto de leitura confortável (980px) de .view. Ver .view-wide.
     view.classList.toggle("view-wide", ["agenda"].includes(name));
+    // Só a Agenda é um "workspace" de altura fixa ao viewport (zero scroll
+    // da página, ver .main.is-agenda) — Clientes/Faturas/Definições… mantêm
+    // o scroll normal da página, exatamente como antes.
+    $(".main").classList.toggle("is-agenda", ["agenda"].includes(name));
+    if (!["agenda"].includes(name)) _agendaRelayout = null;
     $$(".nav-item").forEach((a) => a.classList.toggle("is-active", a.getAttribute("href") === "#/" + name));
     (ROUTES[name] || viewHoje)(view).catch((e) => { view.innerHTML = ""; view.append(emptyState(e.message)); });
     $("#sidebar").classList.remove("open");
@@ -2076,6 +2131,18 @@ function parseHash() {
   return ROUTES[m] ? m : "hoje";
 }
 window.addEventListener("hashchange", () => Router.render(parseHash()));
+
+// Resize da janela: só interessa à Agenda (a única vista com altura/largura
+// dinâmicas, ver AG_FAIXA/computeAgFaixa). Nunca refaz o pedido à API —
+// _agendaRelayout (definido em viewAgenda) só recalcula e redesenha a
+// grelha já carregada. Debounce simples: um resize a arrastar a janela
+// dispara dezenas de eventos, um redesenho por evento seria desperdício.
+let _resizeTimer = null;
+window.addEventListener("resize", () => {
+  if (!_agendaRelayout) return;
+  clearTimeout(_resizeTimer);
+  _resizeTimer = setTimeout(_agendaRelayout, 120);
+});
 
 /* ---------- boot ---------- */
 function initNovoMenu() {

@@ -270,6 +270,14 @@ button, a, [role="button"], .tl-row, .tab {
 }
 
 .main { min-width: 0; display: flex; flex-direction: column; }
+/* Agenda é a única vista que precisa de se comportar como um workspace de
+   altura FIXA ao viewport — zero scroll da PÁGINA, só (no limite) um
+   scroll interno da própria grelha (.ag-week-scroll). Clientes/Faturas/
+   Definições… continuam com o scroll normal da página (a .sidebar, com
+   position:sticky + height:100vh, já lida bem com esse caso). Classe
+   aplicada só pelo Router (ver Router.render em app.js), nunca por CSS
+   condicional — evita qualquer ambiguidade sobre que vista está ativa. */
+.main.is-agenda { height: 100vh; min-height: 0; overflow: hidden; }
 .topbar {
   position: sticky; top: 0; z-index: 20;
   display: flex; align-items: center; gap: var(--space-4);
@@ -282,11 +290,26 @@ button, a, [role="button"], .tl-row, .tab {
 .topbar-actions { margin-left: auto; display: flex; gap: var(--space-2); align-items: center; }
 .view { padding: var(--space-7) var(--space-7) 80px; max-width: 980px; width: 100%; }
 .view-narrow { max-width: 560px; }
-/* Agenda: a grelha semanal precisa de (quase) toda a largura disponível —
-   980px era um teto pensado para listas/formulários, não para 7 colunas de
-   calendário. Regra à parte em vez de subir o max-width geral: as outras
-   vistas (Clientes, Faturas, Definições…) continuam confortáveis a 980px. */
-.view-wide { max-width: 1600px; }
+/* Agenda: a grelha semanal precisa de (quase) toda a largura E ALTURA
+   disponíveis — 980px (e um teto qualquer de largura) era pensado para
+   listas/formulários, não para 7 colunas de calendário. Regra à parte em
+   vez de subir o max-width geral: as outras vistas (Clientes, Faturas,
+   Definições…) continuam confortáveis a 980px, com scroll de página normal.
+   max-width:none (não só um número maior) — em ecrãs muito largos (2560px+)
+   qualquer teto fixo volta a sobrar espaço morto à direita.
+   flex column + min-height:0 (dentro de .main.is-agenda, altura 100vh):
+   os filhos que não devem crescer (.ag-toolbar/.ag-filterbar/.ag-legend)
+   ficam com a altura natural deles, só .ag-list (a grelha) ocupa o resto —
+   ver AG_FAIXA/computeAgFaixa em app.js para a altura de banda dinâmica. */
+.view-wide {
+  max-width: none;
+  padding: var(--space-6) var(--space-5) var(--space-4);
+  display: flex; flex-direction: column;
+  flex: 1 1 auto; min-width: 0; min-height: 0;
+  overflow: hidden;
+}
+.view-wide > .ag-toolbar, .view-wide > .ag-filterbar, .view-wide > .ag-legend { flex: 0 0 auto; }
+.view-wide > .ag-list { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
 
 /* ---------- section label ---------- */
 .eyebrow {
@@ -608,15 +631,27 @@ button, a, [role="button"], .tl-row, .tab {
 .ag-legend-title { font-size: 12.5px; font-weight: 650; color: var(--text); line-height: 1.3; }
 .ag-legend-desc { font-size: 11.5px; color: var(--text-3); line-height: 1.3; }
 
-/* container de scroll INTERNO da semana — a página nunca transborda */
-.ag-week-scroll { overflow-x: auto; overscroll-behavior-x: contain; padding-bottom: 4px; }
+/* container de scroll INTERNO da semana — a página nunca transborda.
+   overflow-y:auto é só a rede de segurança para viewports muito baixos
+   (ver AG_FAIXA_MIN em app.js): em desktop normal a altura de banda é
+   calculada para a grelha caber inteira, sem esta barra chegar a aparecer. */
+.ag-week-scroll {
+  overflow-x: auto; overflow-y: auto; overscroll-behavior: contain; padding-bottom: 4px;
+  flex: 1 1 auto; min-height: 0;
+}
 .ag-grid {
   display: grid; grid-template-columns: 1fr;
-  min-width: 760px;                 /* dias nunca esmagados abaixo do legível */
+  width: 100%; min-width: 0;        /* cresce até à largura disponível — nunca um teto fixo em desktop */
   border: 1px solid var(--border); border-radius: var(--radius-lg);
   background: var(--surface); box-shadow: var(--shadow-md); overflow: hidden;
 }
-.ag-grid--dia { min-width: 0; }
+/* Só abaixo do breakpoint em que 7 colunas ficariam ilegíveis é que a
+   grelha semanal volta a ter um piso mínimo — nessa faixa .ag-week-scroll
+   é que ganha scroll horizontal, nunca a página (ver comentário acima). A
+   vista Dia (uma só coluna) nunca precisa deste piso. */
+@media (max-width: 1199px) {
+  .ag-grid:not(.ag-grid--dia) { min-width: 760px; }
+}
 .ag-bd.ag-bd--dia { display: grid; grid-template-columns: var(--ag-hcol-w, 64px) 1fr; }
 .ag-hd { display: grid; grid-template-columns: var(--ag-hcol-w, 64px) repeat(7, 1fr); border-bottom: 1px solid var(--border); }
 .ag-hd-corner { border-right: 1px solid var(--border); background: var(--surface-2); }
