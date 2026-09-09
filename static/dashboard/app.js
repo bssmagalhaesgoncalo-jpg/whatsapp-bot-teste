@@ -1495,18 +1495,56 @@ function clientNotesSection(c, refresh) {
   return box;
 }
 
-async function reagendarClientePrompt(ag, id) {
-  const novaData = prompt(`Nova data para ${ag.servico} (AAAA-MM-DD):`, ag.data_iso || "");
-  if (!novaData) return;
-  const novaHora = prompt("Nova hora (HH:MM):", ag.hora_hhmm || "");
-  if (!novaHora) return;
-  try {
-    await jpost(`/api/agendamentos/${ag.id}/reagendar`, { data: novaData, hora: novaHora });
-    toast("Marcação reagendada.");
-    invalidateClientesCache();
-    Drawer.close();
-    Router.reload();
-  } catch (e) { toast(e.message, "err"); }
+// P4.1 — Reagendar a partir do Client Manager. Antes chamava /reagendar
+// diretamente (via dois prompt() nativos) e mudava a marcação de imediato,
+// contornando o pedido de confirmação por WhatsApp — inconsistente com o
+// drag & drop e o "Reagendar" da Agenda. Agora é a MESMA semântica: só
+// recolhe a nova data/hora (UI mínima própria, um drawer simples — nada de
+// prompt()), depois abre a MESMA modal de confirmação (confirmarReagendamento,
+// já usada pela Agenda) e cria o MESMO pedido (POST /reagendar-pedido).
+// Nenhuma modal nova, nenhum endpoint novo.
+function reagendarClienteDrawer(cliente, ag) {
+  const f = (label, node) => h("div", { class: "field" }, h("label", {}, label), node);
+  const iData = h("input", { class: "inp", type: "date", value: ag.data_iso || "", min: ymdOf(new Date()) });
+  const iHora = h("input", { class: "inp", type: "time", value: ag.hora_hhmm || "" });
+  const voltar = () => openCliente(cliente.id);
+
+  const body = h("div", { class: "drawer-body" },
+    h("div", { style: "color:var(--text-3);font-size:12.5px;margin-bottom:12px" },
+      `${ag.servico || "Serviço"} — a duração mantém-se, só a data/hora mudam. `
+      + "A marcação atual mantém-se até o cliente confirmar o novo horário."),
+    h("div", { style: "display:flex;gap:12px" }, f("Nova data", iData), f("Nova hora", iHora)));
+
+  const btnEnviar = h("button", { class: "btn btn--primary" }, icon("clock"), "Enviar para confirmação");
+  const foot = h("div", { class: "drawer-foot" },
+    h("button", { class: "btn", onclick: voltar }, "Voltar"), btnEnviar);
+
+  btnEnviar.addEventListener("click", async () => {
+    if (!iData.value || !HORA_RE.test(iHora.value)) { toast("Data e hora são obrigatórias.", "err"); return; }
+    if (iData.value === ag.data_iso && iHora.value === ag.hora_hhmm) { voltar(); return; } // no-op
+    btnEnviar.disabled = true;
+    try {
+      const r = await confirmarReagendamento({
+        id: ag.id, nome: cliente.name, servico: ag.servico,
+        dataAtualIso: ag.data_iso, horaAtual: ag.hora_hhmm,
+        dataNovaIso: iData.value, horaNova: iHora.value,
+        origem: "dashboard",
+      });
+      toast(r.cliente_notificado
+        ? "Pedido de reagendamento enviado."
+        : "Pedido criado — não foi possível avisar o cliente automaticamente.");
+      invalidateClientesCache();
+      voltar(); // reabre o Client Manager já com "Reagendamento pendente"
+    } catch (e) {
+      btnEnviar.disabled = false;
+      if (!e.cancelado) toast(e.message, "err"); // desistiu na modal: fica aqui para ajustar
+    }
+  });
+
+  Drawer.open(h("div", { style: "display:flex;flex-direction:column;height:100%" },
+    h("div", { class: "drawer-head" }, icon("clock"), h("h3", {}, `Reagendar marcação #${ag.id}`),
+      h("span", { style: "flex:1" }), h("button", { class: "icon-btn", onclick: voltar }, icon("x"))),
+    body, foot));
 }
 
 function clientQuickActions(c, proxima, composerNode) {
@@ -1522,7 +1560,12 @@ function clientQuickActions(c, proxima, composerNode) {
 
   if (proxima) {
     const op = proxima.op_status || "scheduled";
-    foot.append(h("button", { class: "btn", onclick: () => reagendarClientePrompt(proxima, c.id) }, icon("clock"), "Reagendar"));
+    // Mesma regra do backend (OperacaoEmCurso) e da Agenda: só se reagenda
+    // uma marcação "scheduled" sem já ter um pedido pendente — "Cancelar
+    // pedido", no bloco acima, é o único caminho até o pedido atual ser
+    // decidido.
+    if (op === "scheduled" && !proxima.reschedule_pendente)
+      foot.append(h("button", { class: "btn", onclick: () => reagendarClienteDrawer(c, proxima) }, icon("clock"), "Reagendar"));
     foot.append(h("button", { class: "btn btn--danger",
       onclick: () => act(() => jpost(`/api/agendamentos/${proxima.id}/cancelar`, {})) }, icon("x"), "Cancelar"));
     if (op === "scheduled")
@@ -1569,6 +1612,19 @@ async function openCliente(id, foco) {
         h("div", { class: "a-title" }, proxima.servico),
         h("div", { class: "a-desc" }, `${fmtDataPt(proxima.data_iso)} · ${proxima.hora_hhmm || proxima.hora} · ${OP_LABEL[proxima.op_status || "scheduled"]}`)),
       h("button", { class: "btn btn--sm", onclick: () => openAppointment(proxima.id) }, "Abrir")) : null,
+
+    // P4.1 — mesmo bloco "Reagendamento pendente" da marcação (ver
+    // renderAppointment): a próxima marcação continua a mostrar a data/hora
+    // ORIGINAL aqui em cima — só muda quando o cliente confirmar.
+    proxima && proxima.reschedule_pendente ? h("div", { class: "att sev-pending-reschedule", style: "margin-top:14px" },
+      icon("clock"),
+      h("div", { class: "a-body" },
+        h("div", { class: "a-title" }, "Reagendamento pendente ",
+          h("span", { class: "badge badge--progress", style: "margin-left:4px" }, "Aguarda cliente")),
+        h("div", { class: "a-desc" },
+          `Proposto: ${fmtDataPt(proxima.reschedule_pendente.new_date)} · ${proxima.reschedule_pendente.new_time}`)),
+      h("button", { class: "btn btn--sm", onclick: () => cancelarPedidoReagendamentoPrompt(proxima) },
+        "Cancelar pedido")) : null,
 
     historico[0] && historico[0].servico_id ? h("button", {
       class: "btn btn--sm", style: "margin-top:12px",

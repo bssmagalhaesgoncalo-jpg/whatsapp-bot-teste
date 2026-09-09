@@ -3337,12 +3337,18 @@ def api_cliente(customer_id):
     from billing import engine as _bi
     faturas = _bi.faturas_do_cliente(customer_id, _TENANT)
     faturas_por_marcacao = {f["appointment_id"]: f for f in faturas if f.get("appointment_id")}
+    # P4.1 — mesma anotação em lote de bot.eventos_calendario(): o Client
+    # Manager (botão "Reagendar" do cliente) precisa de saber se a próxima
+    # marcação já tem um pedido de reagendamento pendente, para esconder o
+    # botão e mostrar "Aguarda cliente" — só apresentação, uma única query.
+    pendentes = notif_reschedule.pendentes_por_marcacoes([m["id"] for m in historico])
     for visita in historico:
         fatura = faturas_por_marcacao.get(visita["id"])
         visita["fatura"] = None if not fatura else {
             "id": fatura["id"], "invoice_number": fatura["invoice_number"],
             "status": fatura["status"], "total_cents": fatura["total_cents"],
             "payment_method": fatura["payment_method"], "pdf_sent_at": fatura["pdf_sent_at"]}
+        visita["reschedule_pendente"] = pendentes.get(visita["id"])
     eventos_cliente = bd.eventos_da_entidade("customer", customer_id, _TENANT)
     return jsonify(cliente=cust, historico=historico, faturas=faturas, eventos=eventos_cliente), 200
 
