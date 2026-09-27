@@ -4627,6 +4627,16 @@ def api_dev_seed_dashboard():
                    invoices_breakdown=faturas_contagem, campaigns=campanhas_demo), 201
 
 
+@app.route("/", methods=["GET"])
+def raiz():
+    """A raiz não tem página própria — devolvia 404 e quem abria o domínio
+    à mão (a Daniela, a partir do histórico do browser) pensava que o site
+    estava em baixo. Redireciona para o painel vivo. SEM autenticação antes
+    de propósito: a raiz não expõe nada, só aponta o caminho, e o /app é
+    que pede as credenciais."""
+    return redirect("/app", code=302)
+
+
 @app.route("/painel", methods=["GET"])
 @app.route("/painel/hoje", methods=["GET"])
 @requer_autenticacao

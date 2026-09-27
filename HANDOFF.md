@@ -1,5 +1,5 @@
 # HANDOFF — whatsapp-bot-render
-Última sessão: 17-09-2026 · Próximo passo: **bloco 2 (limpeza do painel)**
+Última sessão: 27-09-2026 · Próximo passo: **bloco 3 (fotos e notas por atendimento)**
 
 Se estás a retomar este projecto, lê isto e depois `.serena/memories/`.
 
@@ -76,3 +76,17 @@ coisas que nenhum teste apanha.
 - `.env.backup-local-cleanup` — segredos reais no disco
 - `_audit-export.tar.gz` — temporário desta sessão
 - `graphify-out/` é de **4 de Setembro**, anterior a tudo isto — regenerar
+
+---
+
+## Sessão 27-09-2026 — bloco 2 fechado
+
+- Verificado que 2.1–2.7 já estavam feitos nos commits de 17/09 (redirects,
+  "e mais N", mobile, atraso real, fuso Zurique, altura mínima, seguranca.py).
+- Novo: raiz `/` → 302 `/app` (dava 404 e parecia o site em baixo) + teste.
+- 2.8: os 3 testes do seed falhavam ao domingo/madrugada — não eram datas
+  hardcoded, era o relógio real: fixture autouse em test_demo_seed.py congela
+  agora_zurique() na próxima terça às 13h. **Suite: 517 passed, 0 failed.**
+- Deploy live: https://whatsapp-bot-teste-ch2c.onrender.com (plano Free, SEM
+  disco → dados apagam-se em cada deploy; passar a Starter antes da Daniela).
+- Limpar do repo: `bmsalgo-src.tgz` (400 KB, entrou por engano no commit 34fa500).

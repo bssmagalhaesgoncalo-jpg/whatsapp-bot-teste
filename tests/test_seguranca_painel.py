@@ -126,3 +126,11 @@ def test_uis_antigas_continuam_a_exigir_credenciais(cliente_http, caminho):
     """O redirect não pode ser uma porta aberta: sem credenciais, 401 —
     nunca um encaminhamento."""
     assert cliente_http.get(caminho).status_code == 401
+
+
+def test_raiz_redireciona_para_app_sem_pedir_credenciais(cliente_http):
+    """A raiz não tem dados: aponta para /app, que é quem autentica.
+    Sem isto, abrir o domínio à mão dava 404 e parecia o site em baixo."""
+    r = cliente_http.get("/")
+    assert r.status_code == 302
+    assert r.headers["Location"].endswith("/app")

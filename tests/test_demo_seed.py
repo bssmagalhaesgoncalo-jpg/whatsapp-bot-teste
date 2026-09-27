@@ -7,15 +7,41 @@ DELETE só apaga o prefixo demo (incluindo faturas), e zero envios de
 WhatsApp (mesmo depois de um drain() explícito do outbox)."""
 
 import base64
+from datetime import datetime, timedelta
+
+import pytest
 
 import bot
 import db
 import estados
+import tempo
 from core import events as eventos
 from conftest import marcar, data_pt
 
 AUTH = {"Authorization": "Basic " + base64.b64encode(b"painel:painel-pw").decode()}
 PREFIXO = bot.DEMO_TELEFONE_PREFIXO
+
+
+@pytest.fixture(autouse=True)
+def relogio_num_dia_aberto(monkeypatch):
+    """Congela o relógio de Zurique numa terça-feira às 13h00.
+
+    O seed (bem) não cria marcações de "hoje" quando o negócio está fechado
+    — mas os testes deste ficheiro assumem um dia aberto a meio do dia
+    (papéis completed/in_progress/scheduled precisam de manhã E de tarde).
+    Corridos num domingo ou de madrugada, falhavam sem haver bug nenhum:
+    eram as 3 "datas hardcoded" da auditoria. O dia é calculado (próxima
+    terça-feira real), não fixado, para os dados demo nunca envelhecerem.
+    Só se congela o relógio DE NEGÓCIO (agora_zurique/hoje_zurique);
+    agora_utc fica real, porque os carimbos de gravação não são o que está
+    em teste."""
+    agora_real = tempo.agora_zurique()
+    dias_ate_terca = (1 - agora_real.weekday()) % 7 or 7   # sempre no futuro
+    terca = (agora_real + timedelta(days=dias_ate_terca)).date()
+    congelado = datetime(terca.year, terca.month, terca.day,
+                         13, 0, tzinfo=tempo.FUSO_ZURIQUE)
+    monkeypatch.setattr(tempo, "agora_zurique", lambda: congelado)
+    yield congelado
 
 
 def _sem_whatsapp(monkeypatch):
