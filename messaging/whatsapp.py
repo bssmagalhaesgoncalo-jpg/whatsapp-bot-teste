@@ -277,3 +277,40 @@ def enviar_template(destinatario: str, template_name: str, idioma_meta: str,
         "type": "template",
         "template": template,
     })
+
+
+# ---------------------------------------------------------------------------
+# Download de media RECEBIDA (fotos que a cliente envia — bloco 3)
+# ---------------------------------------------------------------------------
+def descarregar_media(media_id: str) -> tuple[bytes, str] | None:
+    """Vai buscar o conteúdo de uma imagem recebida à Graph API.
+
+    Dois passos, como a Meta exige: GET /<media_id> devolve um URL
+    temporário (~5 min) e o download desse URL precisa do MESMO token no
+    header. Devolve (bytes, mime) ou None — nunca levanta: uma foto que não
+    se consegue descarregar não pode partir o webhook, o fluxo trata None
+    como "não veio nada". O limite de tamanho fica para quem grava
+    (crm/registos.py), que é quem conhece a política."""
+    token = config.WHATSAPP_TOKEN
+    if not token or not media_id:
+        return None
+    headers = {"Authorization": f"Bearer {token}"}
+    base = f"https://graph.facebook.com/{config.GRAPH_API_VERSION}"
+    try:
+        meta = requests.get(f"{base}/{media_id}", headers=headers, timeout=10)
+        if meta.status_code >= 400:
+            log.warning("media %s: Meta devolveu %s ao pedir o URL", media_id, meta.status_code)
+            return None
+        info = meta.json()
+        url = info.get("url")
+        if not url:
+            return None
+        ficheiro = requests.get(url, headers=headers, timeout=30)
+        if ficheiro.status_code >= 400:
+            log.warning("media %s: download devolveu %s", media_id, ficheiro.status_code)
+            return None
+        mime = info.get("mime_type") or ficheiro.headers.get("Content-Type", "")
+        return ficheiro.content, mime
+    except requests.RequestException as e:
+        log.warning("media %s: falha de rede (%s)", media_id, e.__class__.__name__)
+        return None

@@ -347,7 +347,88 @@ function renderAppointment(ag) {
     foot.append(h("button", { class: "btn", onclick: () => openCliente(ag.customer_id) }, "Abrir cliente"));
   }
 
+  // Registos do atendimento (bloco 3): a secção carrega DEPOIS de o drawer
+  // abrir — nunca atrasa o essencial (estado, ações) por causa das fotos.
+  const registosSlot = h("div", { class: "reg-slot" });
+  body.append(registosSlot);
+
   Drawer.open(h("div", { style: "display:flex;flex-direction:column;height:100%" }, head, body, foot));
+  montarRegistos(ag.id, registosSlot);
+}
+
+/* ---------- registos do atendimento: notas + fotos antes/depois ---------- */
+const mediaAtendimento = (nome) => `/media/atendimentos/${encodeURIComponent(nome)}`;
+
+async function montarRegistos(agId, slot) {
+  let reg;
+  try { reg = await api(`/api/agendamentos/${agId}/registos`); }
+  catch { slot.replaceChildren(); return; }   // sem registos não se bloqueia o drawer
+  renderRegistos(agId, slot, reg);
+}
+
+function renderRegistos(agId, slot, reg) {
+  const recarregar = async () => {
+    try { renderRegistos(agId, slot, await api(`/api/agendamentos/${agId}/registos`)); }
+    catch (e) { toast(e.message, "err"); }
+  };
+
+  const grupoFotos = (tipo, rotulo) => {
+    const fotos = (reg.fotos && reg.fotos[tipo]) || [];
+    const grid = h("div", { class: "reg-fotos" },
+      ...fotos.map((f) => h("figure", { class: "reg-foto" },
+        h("img", { src: mediaAtendimento(f.thumb || f.ficheiro), alt: `${rotulo} #${f.ordem + 1}`,
+                   loading: "lazy", onclick: () => window.open(mediaAtendimento(f.ficheiro), "_blank") }),
+        h("button", { class: "reg-foto-x", "aria-label": "Apagar foto",
+          onclick: async (ev) => {
+            ev.stopPropagation();
+            if (!confirm("Apagar esta foto? Não há volta atrás.")) return;
+            try { await jdel(`/api/fotos/${f.id}`); recarregar(); }
+            catch (e) { toast(e.message, "err"); }
+          } }, "×"))));
+    const input = h("input", { type: "file", accept: "image/jpeg,image/png,image/webp",
+                               style: "display:none",
+      onchange: async () => {
+        const ficheiro = input.files && input.files[0];
+        if (!ficheiro) return;
+        const fd = new FormData();
+        fd.append("tipo", tipo); fd.append("foto", ficheiro);
+        try { await api(`/api/agendamentos/${agId}/fotos`, { method: "POST", body: fd }); recarregar(); }
+        catch (e) { toast(e.message, "err"); }
+      } });
+    grid.append(h("button", { class: "reg-foto-add", onclick: () => input.click() },
+                  "+ ", rotulo), input);
+    return h("div", { class: "reg-grupo" },
+      h("div", { class: "reg-grupo-titulo" }, rotulo,
+        fotos.length ? h("span", { class: "reg-count" }, String(fotos.length)) : null),
+      grid);
+  };
+
+  const notas = (reg.notas || []).map((n) => h("div", { class: "reg-nota" },
+    h("div", { class: "reg-nota-texto" }, n.texto),
+    h("div", { class: "reg-nota-meta" },
+      fmtDataHoraPt(n.criado_em) + (n.atualizado_em ? " · editada" : ""),
+      h("button", { class: "reg-nota-x", "aria-label": "Apagar nota",
+        onclick: async () => {
+          if (!confirm("Apagar esta nota?")) return;
+          try { await jdel(`/api/notas/${n.id}`); recarregar(); }
+          catch (e) { toast(e.message, "err"); }
+        } }, "Apagar"))));
+
+  const campo = h("textarea", { class: "inp", rows: 2,
+                                placeholder: "Nota deste atendimento (produtos, reações, observações)…" });
+  const adicionar = h("button", { class: "btn btn--sm", onclick: async () => {
+    const texto = campo.value.trim();
+    if (!texto) return;
+    try { await jpost(`/api/agendamentos/${agId}/notas`, { texto }); campo.value = ""; recarregar(); }
+    catch (e) { toast(e.message, "err"); }
+  } }, "Adicionar nota");
+
+  slot.replaceChildren(h("div", { class: "card card--pad", style: "margin-top:14px" },
+    h("div", { class: "eyebrow", style: "margin:0 0 10px" }, "Registos do atendimento"),
+    grupoFotos("antes", "Antes"),
+    grupoFotos("depois", "Depois"),
+    h("div", { class: "reg-notas" }, ...notas),
+    h("div", { class: "reg-nova-nota" }, campo, adicionar)));
 }
 
 async function opTransition(id, op, confirmar) {
@@ -1514,6 +1595,24 @@ function timelineDoCliente(historico, eventos) {
   const itens = [];
   (historico || []).forEach((m) => {
     const checklist = checklistPosAtendimento(m);
+    // Bloco 3 — o antes/depois na ficha, visita a visita. As miniaturas
+    // vêm lado a lado (antes | depois) e um clique abre o drawer da
+    // marcação, onde se gerem fotos e notas.
+    const reg = m.registos || {};
+    const fotos = reg.fotos || {};
+    const strip = (tipo, rotulo) => {
+      const lista = fotos[tipo] || [];
+      if (!lista.length) return null;
+      return h("div", { class: "tl-fotos-grupo" },
+        h("span", { class: "tl-fotos-rotulo" }, rotulo),
+        ...lista.slice(0, 4).map((f) => h("img", {
+          class: "tl-foto", src: mediaAtendimento(f.thumb || f.ficheiro),
+          alt: `${rotulo} #${f.ordem + 1}`, loading: "lazy" })),
+        lista.length > 4 ? h("span", { class: "tl-fotos-mais" }, `+${lista.length - 4}`) : null);
+    };
+    const antes = strip("antes", "Antes");
+    const depois = strip("depois", "Depois");
+    const notas = reg.notas || [];
     itens.push({
       chave: (m.data_iso || "0000-00-00") + "T" + (m.hora_hhmm || "00:00"),
       node: h("div", { class: "tl-row", style: "grid-template-columns:70px 1fr auto", onclick: () => openAppointment(m.id) },
@@ -1522,7 +1621,11 @@ function timelineDoCliente(historico, eventos) {
           h("div", { class: "tl-name" }, m.servico),
           h("div", { class: "tl-svc" }, m.hora || ""),
           checklist ? h("div", { class: "tl-svc", style: "margin-top:2px" }, checklist.join(" · ")) : null,
-          m.feedback_text ? h("div", { class: "tl-svc", style: "font-style:italic" }, `Feedback: "${m.feedback_text}"`) : null),
+          m.feedback_text ? h("div", { class: "tl-svc", style: "font-style:italic" }, `Feedback: "${m.feedback_text}"`) : null,
+          (antes || depois) ? h("div", { class: "tl-fotos" }, antes, depois) : null,
+          notas.length ? h("div", { class: "tl-svc tl-nota" },
+            `📝 ${notas[notas.length - 1].texto.slice(0, 80)}${notas[notas.length - 1].texto.length > 80 ? "…" : ""}`
+            + (notas.length > 1 ? ` (e mais ${notas.length - 1})` : "")) : null),
         statusBadge(m.estado, m.op_status)),
     });
   });

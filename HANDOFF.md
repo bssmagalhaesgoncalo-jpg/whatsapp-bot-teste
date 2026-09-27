@@ -1,5 +1,5 @@
 # HANDOFF — whatsapp-bot-render
-Última sessão: 27-09-2026 · Próximo passo: **bloco 3 (fotos e notas por atendimento)**
+Última sessão: 27-09-2026 · Próximo passo: **bloco 4 (relatórios)**
 
 Se estás a retomar este projecto, lê isto e depois `.serena/memories/`.
 
@@ -90,3 +90,22 @@ coisas que nenhum teste apanha.
 - Deploy live: https://whatsapp-bot-teste-ch2c.onrender.com (plano Free, SEM
   disco → dados apagam-se em cada deploy; passar a Starter antes da Daniela).
 - Limpar do repo: `bmsalgo-src.tgz` (400 KB, entrou por engano no commit 34fa500).
+
+## Sessão 27-09-2026 (2) — bloco 3 fechado
+
+Fotos antes/depois + notas por atendimento, completos e testados (12 testes
+novos; suite: 529 passed):
+- Migração 26: `service_notes` + `service_photos` (tipo antes|depois, ordem,
+  origem painel|whatsapp). Ficheiros em `MEDIA_DIR/atendimentos`; miniaturas
+  JPEG 480px geradas no upload (Pillow, novo em requirements.txt).
+- Camada única em `crm/registos.py`; rotas finas em bot.py:
+  GET registos · POST/PATCH/DELETE notas · POST/DELETE fotos ·
+  GET /media/atendimentos/<f> (autenticado, anti-path-traversal).
+- WhatsApp: mensagem `image` → `messaging/whatsapp.descarregar_media` +
+  `bot.receber_foto_de_atendimento`: anexa à marcação mais próxima (±7 dias,
+  'antes' se ainda não começou, senão 'depois') e agradece; sem marcação,
+  avisa e não grava.
+- UI: secção "Registos do atendimento" no drawer da marcação (upload,
+  apagar, notas) e antes/depois lado a lado na timeline da ficha do cliente.
+- Render: precisa do disco persistente para MEDIA_DIR (plano Starter) —
+  em Free as fotos morrem em cada deploy.

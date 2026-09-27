@@ -1006,6 +1006,47 @@ def _m25_registo_de_conversas(conn):
                  "ON mensagens_conversa (criado_em)")
 
 
+def _m26_fotos_e_notas_do_atendimento(conn):
+    """Registo clínico-estético de cada VISITA: notas e fotos antes/depois.
+
+    Para estética, o antes/depois é o argumento de venda mais forte do
+    painel (bloco 3 do plano). Nada disto reutiliza a tabela `fotografias`
+    do baseline: essa pertence aos PEDIDOS DE ORÇAMENTO do fluxo antigo de
+    wrap e tem outro ciclo de vida. Aqui a unidade é o ATENDIMENTO
+    (agendamentos.id) — a ficha da cliente conta a história visita a visita.
+
+    Os ficheiros vivem em config.MEDIA_DIR/atendimentos (no Render:
+    /var/data, o disco persistente); a BD guarda só o NOME do ficheiro e da
+    miniatura, nunca o caminho completo — o diretório pode mudar de máquina
+    para máquina (ver crm/registos.py, que é quem escreve e apaga)."""
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS service_notes ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "tenant_id INTEGER NOT NULL DEFAULT 1, "
+        "appointment_id INTEGER NOT NULL, "
+        "texto TEXT NOT NULL, "
+        "criado_em TEXT NOT NULL, "
+        "atualizado_em TEXT)"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS ix_service_notes_ag "
+                 "ON service_notes (appointment_id, criado_em)")
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS service_photos ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "tenant_id INTEGER NOT NULL DEFAULT 1, "
+        "appointment_id INTEGER NOT NULL, "
+        "tipo TEXT NOT NULL CHECK (tipo IN ('antes','depois')), "
+        "ficheiro TEXT NOT NULL, "                  # nome em MEDIA_DIR/atendimentos
+        "thumb TEXT, "                              # miniatura (mesma pasta)
+        "mime TEXT, "
+        "ordem INTEGER NOT NULL DEFAULT 0, "
+        "origem TEXT NOT NULL DEFAULT 'painel', "   # 'painel' | 'whatsapp'
+        "criado_em TEXT NOT NULL)"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS ix_service_photos_ag "
+                 "ON service_photos (appointment_id, tipo, ordem)")
+
+
 MIGRACOES = [
     (1, "baseline", _m1_baseline),
     (2, "colunas_legadas", _m2_colunas_legadas),
@@ -1032,6 +1073,7 @@ MIGRACOES = [
     (23, "saude_do_sistema", _m23_saude_do_sistema),
     (24, "consentimento_de_marketing", _m24_consentimento_de_marketing),
     (25, "registo_de_conversas", _m25_registo_de_conversas),
+    (26, "fotos_e_notas_do_atendimento", _m26_fotos_e_notas_do_atendimento),
 ]
 
 

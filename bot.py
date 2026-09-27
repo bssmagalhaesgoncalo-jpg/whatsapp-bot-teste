@@ -33,7 +33,7 @@ import hashlib
 import logging
 from functools import wraps
 from datetime import date, timedelta, datetime
-from flask import Flask, request, jsonify, Response, redirect
+from flask import Flask, request, jsonify, Response, redirect, send_file
 
 import config
 import db as bd
@@ -53,6 +53,7 @@ from notifications import reschedule as notif_reschedule
 from notifications import jobs as notif_jobs
 from campaigns import engine as campaigns
 from crm import consent
+from crm import registos
 from scheduling import business_hours as bh_mod
 from scheduling import availability as av_mod
 
@@ -259,6 +260,18 @@ TEXTOS = {
                    "de": "Wie kann ich helfen?",
                    "en": "How can I help?"},
     "menu_titulo_lista": {"pt": "Menu principal", "de": "Hauptmenü", "en": "Main menu"},
+    # --- Fotos enviadas pela cliente (bloco 3) ---------------------------
+    "foto_guardada": {
+        "pt": "📸 Obrigada! Guardei a tua foto junto da marcação de {data} às {hora}.",
+        "de": "📸 Danke! Ich habe dein Foto beim Termin am {data} um {hora} gespeichert.",
+        "en": "📸 Thank you! I saved your photo with your appointment on {data} at {hora}."},
+    "foto_sem_marcacao": {
+        "pt": "Recebi a tua foto, mas não encontrei nenhuma marcação recente para a guardar. "
+              "Se precisares de ajuda, escreve *AJUDA*.",
+        "de": "Ich habe dein Foto erhalten, aber keinen aktuellen Termin gefunden, um es zu "
+              "speichern. Wenn du Hilfe brauchst, schreib *HILFE*.",
+        "en": "I received your photo but couldn't find a recent appointment to attach it to. "
+              "If you need help, type *HELP*."},
     "menu_botao": {"pt": "Ver opções", "de": "Optionen ansehen", "en": "View options"},
 
 
@@ -898,6 +911,67 @@ def obter_agendamento(id_agendamento):
             (id_agendamento,),
         ).fetchone()
     return dict(zip(CAMPOS_AGENDAMENTO, linha)) if linha else None
+
+
+def marcacao_para_anexar_foto(telefone, janela_dias=7):
+    """A marcação a que uma foto enviada pelo WhatsApp deve ficar ligada
+    (bloco 3): a mais PRÓXIMA de hoje, ativa ou concluída, dentro de
+    ±janela_dias. Devolve (marcacao, tipo) com tipo 'antes' se a marcação
+    ainda não começou, 'depois' caso contrário — ou (None, None).
+
+    Uma foto fora desta janela fica sem destino de propósito: anexá-la a
+    uma marcação de há um mês criaria registos errados na ficha, que é
+    exatamente o que este bloco quer evitar."""
+    hoje = tempo.hoje_zurique()
+    candidatos = []
+    with obter_bd() as conn:
+        linhas = conn.execute(
+            f"SELECT {SQL_COLUNAS_AGENDAMENTO} FROM agendamentos "
+            "WHERE telefone = ? AND estado IN ("
+            + estados.sql_lista(*estados.ATIVOS, estados.COMPLETED) + ")",
+            (telefone,)).fetchall()
+    for linha in linhas:
+        ag = dict(zip(CAMPOS_AGENDAMENTO, linha))
+        data_iso = ag.get("data_iso") or data_iso_de_texto(ag.get("data") or "")
+        if not data_iso:
+            continue
+        try:
+            dias = abs((date.fromisoformat(data_iso) - hoje).days)
+        except ValueError:
+            continue
+        if dias <= janela_dias:
+            candidatos.append((dias, ag, data_iso))
+    if not candidatos:
+        return None, None
+    candidatos.sort(key=lambda c: (c[0], -(c[1]["id"])))
+    _, ag, data_iso = candidatos[0]
+    inicio = tempo.combinar_local(data_iso, ag.get("hora_hhmm") or "")
+    tipo = "antes" if (inicio and inicio > tempo.agora_zurique()) else "depois"
+    return ag, tipo
+
+
+def receber_foto_de_atendimento(de, idioma, msg):
+    """Trata uma mensagem de tipo 'image' recebida no webhook. Devolve True
+    se a foto ficou guardada (e a cliente avisada); False para o webhook
+    seguir para o fallback normal."""
+    media_id = (msg.get("image") or {}).get("id")
+    if not media_id:
+        return False
+    ag, tipo = marcacao_para_anexar_foto(de)
+    if not ag:
+        enviar_texto(de, t("foto_sem_marcacao", idioma))
+        return True
+    conteudo = _wa.descarregar_media(media_id)
+    if not conteudo:
+        return False
+    try:
+        registos.guardar_foto(ag["id"], conteudo[0], conteudo[1], tipo, origem="whatsapp")
+    except registos.RegistoInvalido:
+        return False
+    enviar_texto(de, t("foto_guardada", idioma,
+                       data=ag.get("data") or ag.get("data_iso") or "",
+                       hora=ag.get("hora") or ag.get("hora_hhmm") or ""))
+    return True
 
 
 def agendamentos_confirmados_por_telefone(telefone):
@@ -3449,7 +3523,10 @@ def api_cliente(customer_id):
     # marcação já tem um pedido de reagendamento pendente, para esconder o
     # botão e mostrar "Aguarda cliente" — só apresentação, uma única query.
     pendentes = notif_reschedule.pendentes_por_marcacoes([m["id"] for m in historico])
+    registos_por_visita = registos.registos_por_marcacoes([m["id"] for m in historico])
     for visita in historico:
+        visita["registos"] = registos_por_visita.get(
+            visita["id"], {"notas": [], "fotos": {"antes": [], "depois": []}})
         fatura = faturas_por_marcacao.get(visita["id"])
         visita["fatura"] = None if not fatura else {
             "id": fatura["id"], "invoice_number": fatura["invoice_number"],
@@ -3458,6 +3535,96 @@ def api_cliente(customer_id):
         visita["reschedule_pendente"] = pendentes.get(visita["id"])
     eventos_cliente = bd.eventos_da_entidade("customer", customer_id, _TENANT)
     return jsonify(cliente=cust, historico=historico, faturas=faturas, eventos=eventos_cliente), 200
+
+
+# ---------------------------------------------------------------------------
+# Registos do atendimento — notas e fotos antes/depois (bloco 3).
+# Rotas finas: validação HTTP aqui, o resto em crm/registos.py.
+# ---------------------------------------------------------------------------
+def _marcacao_do_tenant_ou_404(id_agendamento):
+    ag = obter_agendamento(id_agendamento)
+    if not ag:
+        return None, (jsonify(erro="Marcação não encontrada."), 404)
+    return ag, None
+
+
+@app.route("/api/agendamentos/<int:id_agendamento>/registos", methods=["GET"])
+@requer_autenticacao
+def api_registos(id_agendamento):
+    _, erro = _marcacao_do_tenant_ou_404(id_agendamento)
+    if erro:
+        return erro
+    return jsonify(registos.registos_da_marcacao(id_agendamento)), 200
+
+
+@app.route("/api/agendamentos/<int:id_agendamento>/notas", methods=["POST"])
+@requer_autenticacao
+def api_nota_criar(id_agendamento):
+    _, erro = _marcacao_do_tenant_ou_404(id_agendamento)
+    if erro:
+        return erro
+    d = request.get_json(silent=True) or {}
+    try:
+        return jsonify(registos.criar_nota(id_agendamento, d.get("texto"))), 201
+    except registos.RegistoInvalido as e:
+        return jsonify(erro=str(e)), 400
+
+
+@app.route("/api/notas/<int:nota_id>", methods=["PATCH", "DELETE"])
+@requer_autenticacao
+def api_nota(nota_id):
+    if request.method == "DELETE":
+        if not registos.apagar_nota(nota_id):
+            return jsonify(erro="Nota não encontrada."), 404
+        return jsonify(ok=True), 200
+    d = request.get_json(silent=True) or {}
+    try:
+        nota = registos.editar_nota(nota_id, d.get("texto"))
+    except registos.RegistoInvalido as e:
+        return jsonify(erro=str(e)), 400
+    if not nota:
+        return jsonify(erro="Nota não encontrada."), 404
+    return jsonify(nota), 200
+
+
+@app.route("/api/agendamentos/<int:id_agendamento>/fotos", methods=["POST"])
+@requer_autenticacao
+def api_foto_criar(id_agendamento):
+    _, erro = _marcacao_do_tenant_ou_404(id_agendamento)
+    if erro:
+        return erro
+    ficheiro = request.files.get("foto")
+    if not ficheiro:
+        return jsonify(erro="Falta o ficheiro 'foto' (multipart/form-data)."), 400
+    tipo = (request.form.get("tipo") or "").strip().lower()
+    try:
+        foto = registos.guardar_foto(
+            id_agendamento, ficheiro.read(), ficheiro.mimetype, tipo, origem="painel")
+    except registos.RegistoInvalido as e:
+        return jsonify(erro=str(e)), 400
+    return jsonify(foto), 201
+
+
+@app.route("/api/fotos/<int:foto_id>", methods=["DELETE"])
+@requer_autenticacao
+def api_foto_apagar(foto_id):
+    if not registos.apagar_foto(foto_id):
+        return jsonify(erro="Foto não encontrada."), 404
+    return jsonify(ok=True), 200
+
+
+@app.route("/media/atendimentos/<nome_ficheiro>", methods=["GET"])
+@requer_autenticacao
+def media_atendimento(nome_ficheiro):
+    """Serve uma foto de atendimento — SEMPRE autenticado (são fotos de
+    clientes reais) e só nomes com a forma exata que nós geramos: o
+    caminho_seguro() rejeita qualquer tentativa de path traversal."""
+    caminho = registos.caminho_seguro(nome_ficheiro)
+    if not caminho:
+        return jsonify(erro="Ficheiro não encontrado."), 404
+    resposta = send_file(caminho, max_age=31536000)  # nomes são únicos: cache à vontade
+    resposta.headers["X-Content-Type-Options"] = "nosniff"
+    return resposta
 
 
 _MENSAGEM_MAX_CHARS = 1000
@@ -7210,6 +7377,15 @@ def receber_mensagem():
             return jsonify(status="ok"), 200
 
         idioma = sessao["idioma"]
+
+        # --- Fotos (bloco 3): antes/depois enviadas pela cliente -----------
+        # Antes do tratamento de sessão: uma foto é sempre uma foto, esteja a
+        # cliente a meio de um fluxo ou não — nunca deve rebentar um passo.
+        if tipo == "image":
+            if receber_foto_de_atendimento(de, idioma, msg):
+                return jsonify(status="ok"), 200
+            nao_entendi_com_opcoes(de, idioma, sessao)
+            return jsonify(status="ok"), 200
 
         # --- Texto livre: comandos permanentes, retomar sessão, ou 1ª msg ---
         if tipo == "text":
