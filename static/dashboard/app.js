@@ -61,6 +61,7 @@ const jput = (url, data) =>
   api(url, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data || {}) });
 const jpatch = (url, data) =>
   api(url, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data || {}) });
+const jdel = (url) => api(url, { method: "DELETE" });
 
 function toast(msg, kind = "") {
   const t = h("div", { class: "toast " + (kind === "err" ? "err" : "") }, msg);
@@ -71,6 +72,22 @@ function toast(msg, kind = "") {
 /* ---------- formatters ---------- */
 const chf = (cents) =>
   cents == null ? "—" : "CHF " + (cents / 100).toFixed(2).replace(".", ",");
+/* ---- relógio do NEGÓCIO (Europe/Zurich), nunca o do browser ------------
+   O servidor trabalha sempre em Europe/Zurich (TZ no render.yaml) e a
+   agenda que chega da API está nessa hora. A linha "Agora" usava
+   `new Date().getHours()` — o relógio de QUEM está a olhar. Basta um
+   telemóvel em roaming, ou o portátil com o fuso errado, para a linha
+   aparecer uma hora ao lado das marcações. Intl faz a conversão sem
+   dependência nenhuma. */
+const TZ_NEGOCIO = "Europe/Zurich";
+const _horaNegocio = new Intl.DateTimeFormat("pt-PT", {
+  timeZone: TZ_NEGOCIO, hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+const _dataNegocio = new Intl.DateTimeFormat("en-CA", {
+  timeZone: TZ_NEGOCIO, year: "numeric", month: "2-digit", day: "2-digit" });
+function horaAgora() { return _horaNegocio.format(new Date()); }           // "14:05"
+function minutosAgora() { const [hh, mm] = horaAgora().split(":"); return (+hh) * 60 + (+mm); }
+function hojeYmdNegocio() { return _dataNegocio.format(new Date()); }      // "2026-09-17"
+
 function fmtMin(m) {
   m = Math.round(m || 0);
   if (m < 60) return m + " min";
@@ -274,7 +291,8 @@ function renderAppointment(ag) {
       h("div", { class: "eyebrow", style: "margin:0 0 8px" }, "Cliente"),
       h("dl", { class: "dl" },
         h("dt", {}, "Visitas"), h("dd", { class: "tnum" }, String(cli.visits_count ?? 0)),
-        h("dt", {}, "Gasto total"), h("dd", { class: "tnum" }, chf(cli.spend_cents)),
+        h("dt", {}, "Facturado"), h("dd", { class: "tnum" }, chf(cli.billed_cents)),
+        h("dt", {}, "Recebido"), h("dd", { class: "tnum" }, chf(cli.paid_cents)),
         h("dt", {}, "Última visita"), h("dd", {}, cli.last_visit ? fmtDataPt(cli.last_visit) : "—"),
         cli.no_show_count ? h("dt", {}, "Faltas") : null,
         cli.no_show_count ? h("dd", { class: "tnum", style: "color:var(--danger)" }, String(cli.no_show_count)) : null)) : null,
@@ -501,7 +519,7 @@ async function openCreateAppointment(prefill = {}) {
    =================================================================== */
 function openReagendarRapido(ag) {
   const f = (label, node) => h("div", { class: "field" }, h("label", {}, label), node);
-  const iData = h("input", { class: "inp", type: "date", value: ag.data_iso || "", min: ymdOf(new Date()) });
+  const iData = h("input", { class: "inp", type: "date", value: ag.data_iso || "", min: hojeYmdNegocio() });
   const iHora = h("input", { class: "inp", type: "time", value: ag.hora_hhmm || "" });
 
   const body = h("div", { class: "drawer-body" },
@@ -640,7 +658,7 @@ async function openEditAppointment(ag) {
    VIEW: HOJE
    =================================================================== */
 async function viewHoje(mount) {
-  setTitle("Hoje", new Date().toLocaleDateString("pt-PT", { weekday: "long", day: "numeric", month: "long" }));
+  setTitle("Hoje", new Date().toLocaleDateString("pt-PT", { timeZone: TZ_NEGOCIO, weekday: "long", day: "numeric", month: "long" }));
   mount.append(skeletonCard());
   let d;
   try { d = await api("/api/painel/hoje"); }
@@ -654,6 +672,9 @@ async function viewHoje(mount) {
   const att = d.atencao || [];
   $("#nav-att").hidden = !att.length;
   $("#nav-att").textContent = att.length;
+  const pedidosHumano = att.filter((a) => a.tipo === "needs_human").length;
+  $("#nav-humano").hidden = !pedidosHumano;
+  $("#nav-humano").textContent = pedidosHumano;
   mount.append(h("div", { class: "eyebrow" }, "Precisa da tua atenção"));
   if (!att.length) {
     mount.append(h("div", { class: "att-list" },
@@ -685,7 +706,7 @@ async function viewHoje(mount) {
   // 3 — agenda de hoje (timeline)
   mount.append(h("div", { style: "display:flex;align-items:center;justify-content:space-between;gap:8px;margin:32px 2px 12px" },
     h("div", { class: "eyebrow", style: "margin:0" }, "Agenda de hoje"),
-    h("button", { class: "btn btn--sm", onclick: () => openCreateAppointment({ data: ymdOf(new Date()) }) }, icon("calendar"), "Nova marcação")));
+    h("button", { class: "btn btn--sm", onclick: () => openCreateAppointment({ data: hojeYmdNegocio() }) }, icon("calendar"), "Nova marcação")));
   const ag = d.agenda || [];
   if (!ag.length) mount.append(h("div", { class: "card card--pad" }, emptyState("Sem marcações hoje.")));
   else {
@@ -727,17 +748,26 @@ function cockpitCard(ck) {
   }
 
   if (ck.kind === "in_progress") {
-    const total = (ck.decorrido_min || 0) + (ck.restante_min || 0) || 1;
-    const pct = Math.min(100, Math.round(((ck.decorrido_min || 0) / total) * 100));
+    // A barra mede o decorrido contra a DURAÇÃO prevista. Antes usava
+    // `decorrido + restante` como total — e como o `restante` chega a 0
+    // quando passa da hora, a barra ficava eternamente a 100%: mostrava
+    // "quase a acabar" tanto aos 5 minutos de atraso como às 3 horas.
+    const dur = ck.duracao_min || (ck.decorrido_min || 0) + (ck.restante_min || 0) || 1;
+    const pct = Math.min(100, Math.round(((ck.decorrido_min || 0) / dur) * 100));
+    const atraso = ck.atraso_min != null ? ck.atraso_min
+      : Math.max(0, (ck.decorrido_min || 0) - dur);
     card.append(
       h("span", { class: "badge k-badge", html: '<span class="dot dot--pulse"></span>' + (ck.atrasado ? "Em curso · a passar da hora" : "Em curso") }),
       h("h2", {}, m.cliente),
       h("div", { class: "k-svc" }, m.servico),
-      h("div", { class: "k-track" }, h("i", { style: `width:${pct}%` })),
+      h("div", { class: `k-track${ck.atrasado ? " k-track--over" : ""}` }, h("i", { style: `width:${pct}%` })),
       h("div", { class: "k-meta" },
         h("span", {}, `${ck.inicio} → ${ck.fim_previsto}`),
-        h("span", {}, "Decorrido ", h("b", {}, fmtMin(ck.decorrido_min))),
-        h("span", {}, ck.atrasado ? "Atrasado " : "Faltam ", h("b", {}, fmtMin(ck.restante_min)))),
+        h("span", {}, "Decorrido ", h("b", {}, fmtMin(ck.decorrido_min)), ` de ${fmtMin(dur)}`),
+        // "Atrasado 0 min" ao lado de "a passar da hora" era a contradição
+        // que ela via: agora mostra-se o atraso REAL.
+        h("span", {}, ck.atrasado ? "Atrasado " : "Faltam ",
+          h("b", {}, fmtMin(ck.atrasado ? atraso : ck.restante_min)))),
       cockpitCta(m, "in_progress"));
     return card;
   }
@@ -783,7 +813,10 @@ function attRow(a) {
     h("div", { class: "a-body" },
       h("div", { class: "a-title" }, a.titulo),
       a.detalhe ? h("div", { class: "a-desc" }, a.detalhe) : null));
-  if (a.appointment_id)
+  if (a.acao === "abrir_conversa" && a.telefone)
+    row.append(h("button", { class: "btn btn--sm",
+      onclick: () => { location.hash = "#/conversas/" + a.telefone; } }, "Abrir conversa"));
+  else if (a.appointment_id)
     row.append(h("button", { class: "btn btn--sm", onclick: () => openAppointment(a.appointment_id) }, "Abrir"));
   return row;
 }
@@ -793,7 +826,18 @@ const ATT_TYPE_LABELS = {
   automacao_falhou: (n) => `${n} notificações por enviar`,
   needs_human: (n) => `${n} cliente(s) pediram ajuda`,
   risco_no_show: (n) => `${n} cliente(s) em risco`,
+  avaria_sistema: (n) => `${n} avarias no sistema`,
+  automacoes_paradas: (n) => `${n} automações paradas`,
 };
+
+// Quantos nomes se mostram antes do "e mais N": com 53 nomes em texto
+// corrido eram duas páginas de scroll e a contagem, que é a informação que
+// interessa, desaparecia. No telemóvel cabe UM nome antes do "e mais N" —
+// com três, a linha era cortada com reticências mesmo antes do "e mais",
+// que é a parte que dá a dimensão do problema.
+const attNomesVisiveis = () =>
+  (window.matchMedia && window.matchMedia("(max-width: 560px)").matches) ? 1 : 3;
+
 function attAggregatedRow(tipo, items) {
   const sev = items[0].nivel === "agora" ? "sev-agora" : items[0].nivel === "hoje" ? "sev-hoje" : "sev-info";
   const labelFn = ATT_TYPE_LABELS[tipo];
@@ -804,11 +848,18 @@ function attAggregatedRow(tipo, items) {
     const dash = raw.indexOf(" — ");
     return dash >= 0 ? raw.slice(dash + 3).split(" · ")[0] : raw;
   });
+  const visiveis = attNomesVisiveis();
+  const restantes = names.length - visiveis;
+  const resumo = names.slice(0, visiveis).join(" · ")
+    + (restantes > 0 ? ` · e mais ${restantes}` : "");
   const row = h("div", { class: "att " + sev },
     h("div", { class: "a-body" },
       h("div", { class: "a-title" }, title),
-      h("div", { class: "a-desc" }, names.join(" · "))));
-  if (items[0].appointment_id)
+      h("div", { class: "a-desc" }, resumo)));
+  if (items[0].acao === "abrir_conversa")
+    row.append(h("button", { class: "btn btn--sm",
+      onclick: () => { location.hash = "#/conversas"; } }, "Ver conversas"));
+  else if (items[0].appointment_id)
     row.append(h("button", { class: "btn btn--sm", onclick: () => openAppointment(items[0].appointment_id) }, "Ver"));
   return row;
 }
@@ -830,7 +881,7 @@ function metric(val, label, accent) {
    /api/calendario?inicio=&fim= cobre a semana — sem endpoint novo.
    =================================================================== */
 let agendaVista = "dia";                                 // "dia" | "semana"
-let agendaDia = ymdOf(new Date());   // âncora (YYYY-MM-DD)
+let agendaDia = hojeYmdNegocio();   // âncora (YYYY-MM-DD)
 let agGrelha = { hora_inicio: 8, hora_fim: 19, intervalo_min: 30 };  // vem do servidor
 let agendaFiltro = "all";
 let agendaBusca = "";
@@ -883,6 +934,7 @@ function agLegenda() {
 
 const DAY_SHORT = ["seg", "ter", "qua", "qui", "sex", "sáb", "dom"];
 function ymdOf(d) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
+
 function dateOf(s) {
   if (s instanceof Date) return new Date(s);
   return new Date(String(s).trim() + "T00:00:00");
@@ -905,7 +957,7 @@ async function viewAgenda(mount) {
   const nav = h("div", { class: "ag-toolbar" },
     h("div", { class: "ag-nav" },
       h("button", { class: "btn btn--sm", "aria-label": "Anterior", onclick: () => shiftAgenda(-1) }, "‹"),
-      h("button", { class: "btn btn--sm", onclick: () => { agendaDia = ymdOf(new Date()); Router.reload(); } }, "Hoje"),
+      h("button", { class: "btn btn--sm", onclick: () => { agendaDia = hojeYmdNegocio(); Router.reload(); } }, "Hoje"),
       h("button", { class: "btn btn--sm", "aria-label": "Seguinte", onclick: () => shiftAgenda(1) }, "›")),
     h("div", { class: "seg", role: "tablist", "aria-label": "Vista da agenda" },
       h("button", { class: (isWeek ? "" : "is-active"), role: "tab", "aria-selected": String(!isWeek), onclick: () => setAgendaVista("dia") }, "Dia"),
@@ -1112,7 +1164,7 @@ async function reagendarDrag(id, data, hora, el, info = {}) {
 // por isso um clique numa marcação existente NUNCA chega a esta faixa.
 function makeFaixa(i, dia) {
   const min = agGrelha.hora_inicio * 60 + i * (agGrelha.intervalo_min || 30);
-  const hojeYmd = ymdOf(new Date());
+  const hojeYmd = hojeYmdNegocio();
   const passado = dia < hojeYmd;
   const el = h("div", { class: "ag-faixa" + (min % 60 === 0 ? " hora-cheia" : ""),
     onclick: () => openCreateAppointment({ data: dia, hora: faixaHora(i) }) });
@@ -1141,10 +1193,10 @@ function makeFaixa(i, dia) {
 /* ---- vista DIA (grelha horária de uma coluna — clique/drag como a semana) ---- */
 function renderDiaGrid(evs, anchor) {
   const bandas = agBands();
-  const hojeYmd = ymdOf(new Date());
+  const hojeYmd = hojeYmdNegocio();
   const eHoje = anchor === hojeYmd;
   const ePassado = anchor < hojeYmd;
-  const agoraMin = new Date().getHours() * 60 + new Date().getMinutes();
+  const agoraMin = minutosAgora();
   const dentro = (min) => min >= agGrelha.hora_inicio * 60 && min <= agGrelha.hora_fim * 60;
 
   const horas = h("div", { class: "ag-hcol" });
@@ -1159,7 +1211,7 @@ function renderDiaGrid(evs, anchor) {
   for (let i = 0; i < bandas; i++) body.append(makeFaixa(i, anchor));
   agDispor(evs).forEach((p) => body.append(agEventCard(p, eHoje)));
   if (eHoje && dentro(agoraMin)) {
-    const agoraTxt = String(new Date().getHours()).padStart(2, "0") + ":" + String(new Date().getMinutes()).padStart(2, "0");
+    const agoraTxt = horaAgora();
     body.append(h("div", { class: "ag-now", style: `top:${agTop(agoraMin).toFixed(1)}px`, "aria-hidden": "true" },
       h("span", {}, "Agora · " + agoraTxt)));
   }
@@ -1218,7 +1270,17 @@ function agEndMin(ev) {
   return agStartMin(ev) + (ev.duracao_minutos || 60);
 }
 const agTop = (min) => Math.max(0, min) / (agGrelha.intervalo_min || 30) * AG_FAIXA;
-const agH = (dur) => Math.max((dur / (agGrelha.intervalo_min || 30)) * AG_FAIXA, 44); // altura mínima p/ caber título+serviço+estado sem cortar
+// Altura mínima de um cartão. Era 44px "para caber título+serviço+estado",
+// mas uma banda de 30 min mede AG_FAIXA (34px no portátil típico): o
+// cartão ficava 10px MAIS ALTO do que a sua própria banda e o cartão
+// seguinte, desenhado por cima, tapava-lhe o serviço e a badge. O piso
+// passa a ser uma linha de texto (AG_EV_MIN) e é o CONTEÚDO que se adapta
+// à altura real (ver `compact`/`mini` em agEventCard) — um cartão nunca
+// invade a banda de baixo a não ser em marcações de 15 min, e aí só por
+// poucos px, abaixo da primeira linha (a hora e o nome ficam sempre à
+// vista).
+const AG_EV_MIN = 26;
+const agH = (dur) => Math.max((dur / (agGrelha.intervalo_min || 30)) * AG_FAIXA, AG_EV_MIN);
 
 // Reparte eventos sobrepostos do mesmo dia por colunas (regra do legado).
 function agDispor(evs) {
@@ -1257,6 +1319,9 @@ function agEventCard(p, todayCol) {
   // primeiro — hora e serviço nunca desaparecem. Prioridade do redesign:
   // 1 hora, 2 nome, 3 serviço, 4 estado (ver .ag-ev--compact em app.css).
   const compact = altura < 56;
+  // Mais curto ainda (bandas pequenas, ecrãs baixos, 15/30 min): só cabe
+  // UMA linha. Fica a hora + nome; o serviço vai no title/aria e no drawer.
+  const mini = altura < 40;
   // P4.1 — pedido de reagendamento pendente desta marcação, se houver (ver
   // bot.eventos_calendario). É um indício AUXILIAR: nunca muda a cor de
   // estado do cartão (--ev), só acrescenta um sinal violeta à parte.
@@ -1274,7 +1339,7 @@ function agEventCard(p, todayCol) {
   // reagendamento por data/hora, acessível por teclado e em mobile/tablet
   // onde o drag nativo não é fiável).
   const el = h("button", { class: `ag-ev st-${op} st-${estadoKey}` + (todayCol ? " on-today" : "")
-      + (compact ? " ag-ev--compact" : "") + (pendente ? " has-pending-reschedule" : ""),
+      + (compact ? " ag-ev--compact" : "") + (mini ? " ag-ev--mini" : "") + (pendente ? " has-pending-reschedule" : ""),
     style: `top:${top.toFixed(1)}px;height:${altura.toFixed(1)}px;left:${left.toFixed(2)}%;width:${larg.toFixed(2)}%`,
     // draggable é um atributo ENUMERADO (precisa do valor "true", nunca ""
     // — o helper h() genérico escreve "" para `true`, que o browser trata
@@ -1307,8 +1372,8 @@ function agEventCard(p, todayCol) {
 function renderSemana(eventos) {
   const seg = mondayOf(agendaDia);
   const bandas = agBands();
-  const hojeYmd = ymdOf(new Date());
-  const agoraMin = new Date().getHours() * 60 + new Date().getMinutes();
+  const hojeYmd = hojeYmdNegocio();
+  const agoraMin = minutosAgora();
   const dentro = (min) => min >= agGrelha.hora_inicio * 60 && min <= agGrelha.hora_fim * 60;
 
   const horas = h("div", { class: "ag-hcol" });
@@ -1330,7 +1395,7 @@ function renderSemana(eventos) {
     agDispor(doDia).forEach((p) => body.append(agEventCard(p, eHoje)));
     // Linha "Agora": só na coluna de hoje, e só quando hoje está na semana e dentro do horário.
     if (eHoje && dentro(agoraMin)) {
-      const agoraTxt = String(new Date().getHours()).padStart(2, "0") + ":" + String(new Date().getMinutes()).padStart(2, "0");
+      const agoraTxt = horaAgora();
       body.append(h("div", { class: "ag-now", style: `top:${agTop(agoraMin).toFixed(1)}px`, "aria-hidden": "true" },
         h("span", {}, "Agora · " + agoraTxt)));
     }
@@ -1369,7 +1434,8 @@ async function viewClientes(mount) {
     const t = h("table", { class: "tbl" },
       h("thead", {}, h("tr", {},
         h("th", {}, "Cliente"), h("th", {}, "Última visita"), h("th", {}, "Próxima"),
-        h("th", { class: "num" }, "Visitas"), h("th", { class: "num" }, "Gasto"))));
+        h("th", { class: "num" }, "Visitas"), h("th", { class: "num" }, "Facturado"),
+        h("th", { class: "num" }, "Recebido"))));
     const tb = h("tbody", {});
     list.forEach((c) => tb.append(h("tr", { onclick: () => openCliente(c.id) },
       h("td", {}, h("div", { style: "display:flex;gap:10px;align-items:center" },
@@ -1377,7 +1443,10 @@ async function viewClientes(mount) {
       h("td", {}, c.last_visit ? fmtDataPt(c.last_visit) : "—"),
       h("td", {}, c.next_visit ? fmtDataPt(c.next_visit) : "—"),
       h("td", { class: "num tnum" }, String(c.visits_count ?? 0)),
-      h("td", { class: "num tnum" }, chf(c.spend_cents)))));
+      h("td", { class: "num tnum" }, chf(c.billed_cents)),
+      // por receber sinalizado: é a leitura accionável da tabela
+      h("td", { class: "num tnum" + (c.billed_cents > c.paid_cents ? " pay-sum__due" : "") },
+        chf(c.paid_cents)))));
     t.append(tb); wrap.append(t);
     if (!list.length) wrap.append(emptyState("Nenhum cliente."));
   };
@@ -1411,7 +1480,7 @@ function clientTagsRow(c) {
 // Marcação ativa mais próxima (hoje ou futuro, não cancelada/faltou) — usada
 // para gating das ações rápidas e para pré-preencher o composer.
 function proximaMarcacaoDoCliente(historico) {
-  const hoje = ymdOf(new Date());
+  const hoje = hojeYmdNegocio();
   const ativas = (historico || []).filter((m) =>
     m.data_iso && m.data_iso >= hoje && m.op_status !== "done" &&
     !["cancelled", "no_show"].includes((m.estado || "").toLowerCase()));
@@ -1555,7 +1624,7 @@ function clientNotesSection(c, refresh) {
 // Nenhuma modal nova, nenhum endpoint novo.
 function reagendarClienteDrawer(cliente, ag) {
   const f = (label, node) => h("div", { class: "field" }, h("label", {}, label), node);
-  const iData = h("input", { class: "inp", type: "date", value: ag.data_iso || "", min: ymdOf(new Date()) });
+  const iData = h("input", { class: "inp", type: "date", value: ag.data_iso || "", min: hojeYmdNegocio() });
   const iHora = h("input", { class: "inp", type: "time", value: ag.hora_hhmm || "" });
   const voltar = () => openCliente(cliente.id);
 
@@ -1663,7 +1732,8 @@ async function openCliente(id, foco) {
       } }, c.marketing_opt_in ? "Revogar" : "Marcar como consentido")),
     h("div", { class: "metrics", style: "margin-top:14px" },
       metric(c.visits_count ?? 0, "Visitas"),
-      metric(chf(c.spend_cents), "Gasto total"),
+      metric(chf(c.billed_cents), "Facturado"),
+      metric(chf(c.paid_cents), "Recebido"),
       metric(c.last_visit ? fmtDataPt(c.last_visit) : "—", "Última visita"),
       metric(c.next_visit ? fmtDataPt(c.next_visit) : "—", "Próxima")),
 
@@ -1822,7 +1892,8 @@ let faturaFiltro = "all";
 async function viewFaturas(mount) {
   setTitle("Faturas");
   const filtros = h("div", { class: "tabs" });
-  [["all", "Todas"], ["draft", "Rascunho"], ["issued", "Emitidas"], ["paid", "Pagas"], ["overdue", "Vencidas"], ["cancelled", "Anuladas"]]
+  [["all", "Todas"], ["draft", "Rascunho"], ["issued", "Emitidas"], ["partial", "Parciais"],
+   ["paid", "Pagas"], ["overdue", "Vencidas"], ["cancelled", "Anuladas"]]
     .forEach(([k, l]) => filtros.append(h("button", { class: "tab " + (faturaFiltro === k ? "is-active" : ""), onclick: () => { faturaFiltro = k; Router.reload(); } }, l)));
   mount.append(filtros, skeletonCard());
   let list;
@@ -1832,22 +1903,90 @@ async function viewFaturas(mount) {
   if (!list.length) { mount.append(h("div", { class: "card card--pad" }, emptyState("Nenhuma fatura."))); return; }
   const wrap = h("div", { class: "tbl-wrap" },
     h("table", { class: "tbl" },
-      h("thead", {}, h("tr", {}, h("th", {}, "#"), h("th", {}, "Cliente"), h("th", {}, "Data"), h("th", { class: "num" }, "Total"), h("th", {}, "Estado"))),
+      h("thead", {}, h("tr", {}, h("th", {}, "#"), h("th", {}, "Cliente"), h("th", {}, "Data"),
+        h("th", { class: "num" }, "Total"), h("th", { class: "num" }, "Por receber"), h("th", {}, "Estado"))),
       h("tbody", {}, list.map((f) => h("tr", { onclick: () => openFatura(f.id) },
         h("td", { class: "tnum" }, f.invoice_number || "—"),
         h("td", {}, f.customer_name_snapshot || "—"),
         h("td", {}, fmtDataPt(f.issue_date || (f.created_at || "").slice(0, 10))),
         h("td", { class: "num tnum" }, chf(f.total_cents)),
+        // Só quem já deve dinheiro aparece aqui: um RASCUNHO ainda não se deve
+        // a ninguém, e uma anulada deixou de se dever. Coluna de zeros = ruído.
+        (() => {
+          const deve = (f.status === "issued" || f.status === "partial") && f.due_cents > 0;
+          return h("td", { class: "num tnum" + (deve ? " pay-sum__due" : "") },
+            deve ? chf(f.due_cents) : "—");
+        })(),
         h("td", {}, invoiceBadge(f.status, f.due_date)))))));
   mount.append(wrap);
 }
 function invoiceBadge(status, due) {
-  if (status === "issued" && due && due < ymdOf(new Date()))
+  if (status === "issued" && due && due < hojeYmdNegocio())
     return h("span", { class: "badge badge--danger" }, "Vencida");
-  const map = { draft: ["", "Rascunho"], issued: ["badge--info", "Emitida"], paid: ["badge--success", "Paga"], cancelled: ["", "Anulada"] };
+  if (status === "partial" && due && due < hojeYmdNegocio())
+    return h("span", { class: "badge badge--danger" }, "Vencida · parcial");
+  const map = { draft: ["", "Rascunho"], issued: ["badge--info", "Emitida"],
+                partial: ["badge--warning", "Pagamento parcial"],
+                paid: ["badge--success", "Paga"], cancelled: ["", "Anulada"] };
   const [c, l] = map[status] || ["", status];
   return h("span", { class: "badge " + c }, l);
 }
+const METODO_PAGAMENTO_LABEL = {
+  cash: "Numerário", twint: "TWINT", card: "Cartão",
+  transfer: "Transferência", other: "Outro",
+};
+
+/* Recebido / Por receber + lista de pagamentos + formulário de registo.
+   O valor sugerido é sempre o que FALTA — o caso normal é fechar a conta de
+   uma vez, e assim isso é um clique só. */
+function blocoPagamentos(f, recarregar) {
+  const recebido = f.paid_cents || 0;
+  const falta = f.due_cents != null ? f.due_cents : Math.max(0, (f.total_cents || 0) - recebido);
+  const pagamentos = f.payments || [];
+  const fechada = f.status === "cancelled" || f.status === "draft";
+
+  const resumo = h("div", { class: "pay-sum" },
+    h("div", { class: "pay-sum__cell" },
+      h("span", { class: "pay-sum__label" }, "Recebido"),
+      h("strong", { class: "tnum pay-sum__in" }, chf(recebido))),
+    h("div", { class: "pay-sum__cell" },
+      h("span", { class: "pay-sum__label" }, "Por receber"),
+      h("strong", { class: "tnum " + (falta > 0 ? "pay-sum__due" : "") }, chf(falta))));
+
+  const lista = h("div", { class: "pay-list" }, pagamentos.map((p) =>
+    h("div", { class: "pay-row" },
+      h("span", { class: "tnum pay-row__amt" }, chf(p.amount_cents)),
+      h("span", { class: "pay-row__meta" },
+        (METODO_PAGAMENTO_LABEL[p.method] || p.method) +
+        (p.paid_on ? " · " + fmtDataPt(p.paid_on) : "")),
+      h("button", { class: "icon-btn", title: "Remover pagamento",
+        "aria-label": "Remover pagamento de " + chf(p.amount_cents),
+        onclick: async () => {
+          try { await jdel(`/api/faturas/${f.id}/pagamentos/${p.id}`); toast("Pagamento removido."); recarregar(); }
+          catch (e) { toast(e.message, "err"); }
+        } }, icon("x")))));
+
+  if (fechada || falta <= 0) {
+    return h("div", { class: "pay-box" }, resumo, pagamentos.length ? lista : null);
+  }
+
+  const valor = h("input", { class: "inp tnum", type: "text", inputmode: "decimal",
+    value: (falta / 100).toFixed(2), "aria-label": "Valor recebido" });
+  const metodo = h("select", { class: "inp", "aria-label": "Método de pagamento" },
+    Object.entries(METODO_PAGAMENTO_LABEL).map(([id, nome]) => h("option", { value: id }, nome)));
+  const btn = h("button", { class: "btn btn--primary", onclick: async () => {
+    btn.disabled = true;
+    try {
+      await jpost(`/api/faturas/${f.id}/pagamentos`, { valor: valor.value, metodo: metodo.value });
+      toast("Pagamento registado.");
+      recarregar();
+    } catch (e) { toast(e.message, "err"); btn.disabled = false; }
+  } }, "Registar");
+
+  return h("div", { class: "pay-box" }, resumo, pagamentos.length ? lista : null,
+    h("div", { class: "pay-form" }, valor, metodo, btn));
+}
+
 async function openFatura(id) {
   Drawer.open(h("div", { class: "drawer-body" }, h("div", { class: "skel", style: "height:160px" })));
   let f;
@@ -1858,11 +1997,15 @@ async function openFatura(id) {
   if (f.status === "draft") {
     foot.append(h("button", { class: "btn btn--primary", onclick: () => run(() => jpost(`/api/faturas/${id}/emitir`)) }, "Emitir"));
     foot.append(h("button", { class: "btn btn--danger", onclick: () => run(() => jpost(`/api/faturas/${id}/anular`)) }, "Anular"));
-  } else if (f.status === "issued") {
+  } else if (f.status === "issued" || f.status === "partial") {
+    // "Marcar paga" fecha a conta de uma vez; o registo parcial vive no corpo
+    // do drawer, onde está o valor em falta.
     foot.append(h("button", { class: "btn btn--primary", onclick: () => run(() => jpost(`/api/faturas/${id}/pagar`)) }, "Marcar paga"));
-    foot.append(h("button", { class: "btn btn--danger", onclick: () => run(() => jpost(`/api/faturas/${id}/anular`)) }, "Anular"));
+    // Uma fatura com dinheiro recebido não se anula — remove-se o pagamento primeiro.
+    if (!(f.paid_cents > 0))
+      foot.append(h("button", { class: "btn btn--danger", onclick: () => run(() => jpost(`/api/faturas/${id}/anular`)) }, "Anular"));
   }
-  if (f.status === "issued" || f.status === "paid") {
+  if (f.status === "issued" || f.status === "partial" || f.status === "paid") {
     foot.append(h("button", { class: "btn",
       onclick: () => run(() => jpost(`/api/faturas/${id}/reenviar`)) }, icon("send"), "Reenviar PDF"));
   }
@@ -1888,7 +2031,9 @@ async function openFatura(id) {
         h("dt", {}, f.tax_rate_bps ? `IVA (${(f.tax_rate_bps / 100).toFixed(2)}%)` : "IVA"),
         h("dd", { class: "tnum" }, f.tax_rate_bps ? chf(f.tax_cents) : "—"),
         h("dt", { style: "font-weight:600;color:var(--text)" }, "Total"),
-        h("dd", { class: "tnum", style: "font-weight:700" }, chf(f.total_cents)))),
+        h("dd", { class: "tnum", style: "font-weight:700" }, chf(f.total_cents))),
+      f.status === "draft" ? null
+        : blocoPagamentos(f, () => { Drawer.close(); Router.reload(); openFatura(id); })),
     foot));
 }
 
@@ -2266,7 +2411,7 @@ async function cancelarCampanhaPrompt(c) {
 
 /* ---------- "Agendar" — data/hora, modal simples ---------- */
 function openAgendarCampanha(c) {
-  const iData = h("input", { class: "inp", type: "date", min: ymdOf(new Date()) });
+  const iData = h("input", { class: "inp", type: "date", min: hojeYmdNegocio() });
   const iHora = h("input", { class: "inp", type: "time", value: "09:00" });
   const btnCancelar = h("button", { class: "btn", onclick: () => Modal.close() }, "Cancelar");
   const btnAgendar = h("button", { class: "btn btn--primary" }, icon("clock"), "Agendar campanha");
@@ -2435,10 +2580,242 @@ function openCampanhaBuilder(existing) {
 }
 
 /* ===================================================================
+   CONVERSAS — o fio de mensagens de cada cliente.
+
+   O texto das mensagens passou a ser guardado (ver messaging/conversas.py
+   e migração 25); esta é a vista que o lê. É indexada por TELEFONE e não
+   por cliente: uma conversa existe desde a primeira mensagem, e a ficha
+   de cliente só nasce na primeira marcação — quem pede ajuda antes de
+   marcar, que é o caso que isto serve, não tem ficha nenhuma.
+
+   Nada aqui é invenção: lista de fios à esquerda, mensagens recebidas de
+   um lado e enviadas do outro, separador por dia, caixa de resposta em
+   baixo. A única peça que não existe em nenhuma outra vista é o aviso da
+   janela de 24h (convTextoJanela), SEMPRE visível antes de se escrever:
+   a resposta livre pelo WhatsApp só é permitida nas 24h seguintes à
+   última mensagem da cliente, e sem o prazo à vista escreve-se um texto
+   longo para levar um 409 no fim, sem se entender porquê.
+   =================================================================== */
+const _convDiaCurto = new Intl.DateTimeFormat("pt-PT", {
+  timeZone: TZ_NEGOCIO, day: "2-digit", month: "short" });
+const _convDiaLongo = new Intl.DateTimeFormat("pt-PT", {
+  timeZone: TZ_NEGOCIO, weekday: "long", day: "2-digit", month: "long" });
+
+// Tudo no relógio do NEGÓCIO (Europe/Zurich), como no resto do painel: a
+// hora que ela vê tem de ser a hora do salão, não a do browser.
+function convData(iso) { const d = new Date(iso); return isNaN(d) ? "" : _dataNegocio.format(d); }
+function convHora(iso) { const d = new Date(iso); return isNaN(d) ? "" : _horaNegocio.format(d); }
+
+function convQuando(iso) {
+  const dia = convData(iso);
+  if (!dia) return "";
+  if (dia === hojeYmdNegocio()) return convHora(iso);
+  return _convDiaCurto.format(new Date(iso)).replace(".", "");
+}
+
+function convDiaLabel(iso) {
+  const dia = convData(iso);
+  if (!dia) return "";
+  if (dia === hojeYmdNegocio()) return "Hoje";
+  if (dia === _dataNegocio.format(new Date(Date.now() - 864e5))) return "Ontem";
+  return _convDiaLongo.format(new Date(iso));
+}
+
+const convTelefoneLegivel = (t) => "+" + (t || "");
+
+function convTelefoneDoHash() {
+  const partes = (location.hash || "").replace(/^#\//, "").split("/");
+  return /^\d{8,15}$/.test(partes[1] || "") ? partes[1] : "";
+}
+
+async function viewConversas(mount) {
+  setTitle("Conversas");
+  const alvo = convTelefoneDoHash();
+  const painelLista = h("aside", { class: "conv-lista" });
+  const painelFio = h("section", { class: "conv-fio" });
+  mount.append(h("div", { class: "conv" + (alvo ? " has-fio" : "") }, painelLista, painelFio));
+
+  painelLista.append(h("div", { class: "skel", style: "height:64px;margin:12px" }));
+  let d;
+  try { d = await api("/api/conversas"); }
+  catch (e) { painelLista.innerHTML = ""; painelLista.append(emptyState(e.message)); return; }
+
+  const lista = d.conversas || [];
+  const pedidos = lista.filter((c) => c.pedido_humano).length;
+  $("#nav-humano").hidden = !pedidos;
+  $("#nav-humano").textContent = pedidos;
+
+  const procura = h("input", { class: "inp", placeholder: "Procurar por nome ou número…" });
+  const cab = h("div", { class: "conv-lista__cab" }, procura,
+    h("div", { class: "conv-lista__cont" },
+      lista.length ? `${lista.length} conversa(s)` + (pedidos ? ` · ${pedidos} a pedir ajuda` : "") : "Sem conversas"));
+  const fios = h("div", {});
+  painelLista.innerHTML = "";
+  painelLista.append(cab, fios);
+
+  const desenhar = (visiveis) => {
+    fios.innerHTML = "";
+    if (!visiveis.length) fios.append(emptyState(lista.length ? "Nenhuma conversa encontrada." : "Ainda não há conversas."));
+    visiveis.forEach((c) => fios.append(convItem(c, c.telefone === alvo)));
+  };
+  desenhar(lista);
+  procura.addEventListener("input", () => {
+    const q = procura.value.trim().toLowerCase();
+    desenhar(lista.filter((c) => ((c.nome || "") + " " + c.telefone).toLowerCase().includes(q)));
+  });
+
+  if (!alvo) {
+    painelFio.append(h("div", { class: "conv-vazio" }, icon("chat"),
+      h("div", {}, lista.length
+        ? "Escolhe uma conversa para ver o histórico e responder."
+        : "Quando uma cliente escrever ao bot, a conversa aparece aqui.")));
+    return;
+  }
+  await convAbrirFio(painelFio, alvo);
+}
+
+function convItem(c, ativa) {
+  const nome = c.nome || convTelefoneLegivel(c.telefone);
+  const resumo = (c.ultimo_texto || "").replace(/\s+/g, " ").slice(0, 160)
+    || "[" + (c.ultimo_tipo || "mensagem") + "]";
+  return h("a", {
+    class: "conv-item" + (ativa ? " is-ativa" : "") + (c.pedido_humano ? " is-humano" : ""),
+    href: "#/conversas/" + c.telefone },
+    h("span", { class: "avatar" }, initials(nome)),
+    h("div", { class: "conv-item__body" },
+      h("div", { class: "conv-item__top" },
+        h("span", { class: "conv-item__nome" }, nome),
+        h("span", { class: "conv-item__quando" }, convQuando(c.ultima_em))),
+      h("div", { class: "conv-item__last" },
+        c.ultima_direcao === "enviada" ? h("span", { class: "conv-item__eu" }, "Tu: ") : null,
+        resumo),
+      c.pedido_humano ? h("span", { class: "badge badge--danger" }, "Pediu para falar contigo") : null));
+}
+
+async function convAbrirFio(painel, telefone) {
+  painel.innerHTML = "";
+  painel.append(h("div", { class: "skel", style: "height:160px;margin:16px" }));
+  let d;
+  try { d = await api("/api/conversas/" + telefone); }
+  catch (e) { painel.innerHTML = ""; painel.append(emptyState(e.message)); return; }
+  const msgs = convMensagens(d.mensagens || []);
+  painel.innerHTML = "";
+  painel.append(convCabecaFio(d), msgs, convCaixaResposta(d));
+  // Um fio abre-se no fim, como em qualquer aplicação de mensagens.
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
+function convCabecaFio(d) {
+  const nome = d.nome || convTelefoneLegivel(d.telefone);
+  const acoes = h("div", { class: "conv-cab__acoes" });
+  if (d.customer_id)
+    acoes.append(h("button", { class: "btn btn--sm", onclick: () => openCliente(d.customer_id) },
+      icon("user-check"), "Ficha"));
+  return h("header", { class: "conv-cab" },
+    h("button", { class: "btn btn--subtle btn--sm conv-voltar", "aria-label": "Voltar às conversas",
+      onclick: () => { location.hash = "#/conversas"; } }, icon("arrow")),
+    h("span", { class: "avatar" }, initials(nome)),
+    h("div", { class: "conv-cab__quem" },
+      h("div", { class: "conv-cab__nome" }, nome),
+      h("div", { class: "conv-cab__tel" },
+        convTelefoneLegivel(d.telefone) + (d.idioma ? " · " + String(d.idioma).toUpperCase() : ""))),
+    acoes);
+}
+
+function convMensagens(msgs) {
+  const wrap = h("div", { class: "conv-msgs" });
+  let dia = "";
+  msgs.forEach((m) => {
+    const dm = convData(m.criado_em);
+    if (dm && dm !== dia) {
+      dia = dm;
+      wrap.append(h("div", { class: "conv-dia" }, h("span", {}, convDiaLabel(m.criado_em))));
+    }
+    wrap.append(convBolha(m));
+  });
+  if (!msgs.length) wrap.append(emptyState("Sem mensagens neste fio."));
+  return wrap;
+}
+
+function convBolha(m) {
+  const enviada = m.direcao === "enviada";
+  // `texto` é o que uma PESSOA lê — num toque num botão é o título que a
+  // cliente viu, não o `opt_1`. O id fica no title, para quem precisar de
+  // depurar o fluxo sem o mostrar a quem só quer ler a conversa.
+  const texto = m.texto || "[" + (m.tipo_rotulo || m.tipo || "mensagem") + "]";
+  const etiqueta = m.tipo && m.tipo !== "texto" ? (m.tipo_rotulo || m.tipo) : null;
+  return h("div", { class: "conv-msg " + (enviada ? "is-enviada" : "is-recebida") },
+    h("div", { class: "conv-bolha", title: m.id_interativo ? "ID: " + m.id_interativo : null },
+      h("div", { class: "conv-texto" }, texto),
+      h("div", { class: "conv-meta" },
+        etiqueta ? h("span", { class: "conv-tipo" }, etiqueta) : null,
+        h("span", {}, convHora(m.criado_em)))));
+}
+
+// O AVISO DA JANELA DE 24h. A Meta só permite texto livre nas 24h a
+// seguir à última mensagem da cliente; depois disso, só um template
+// aprovado. Dizer o PRAZO (e não um "sim/não") é o que torna isto
+// utilizável: ela decide se responde agora ou se tem de esperar que a
+// cliente escreva outra vez.
+function convTextoJanela(d) {
+  const j = d.janela || {};
+  if (j.aberta) {
+    const hora = convHora(j.expira_em);
+    if (j.minutos_restantes != null && j.minutos_restantes <= 60)
+      return `Podes responder durante ${j.minutos_restantes} min — a janela fecha às ${hora}.`;
+    const dia = convData(j.expira_em);
+    if (dia === hojeYmdNegocio()) return `Podes responder até às ${hora}.`;
+    if (dia === _dataNegocio.format(new Date(Date.now() + 864e5)))
+      return `Podes responder até amanhã às ${hora}.`;
+    return `Podes responder até ${convQuando(j.expira_em)} às ${hora}.`;
+  }
+  const fechou = "A janela de 24h fechou — só com um template aprovado pela Meta.";
+  if (d.demo) return fechou + " (Número de demonstração: o envio fica registado sem sair.)";
+  return fechou;
+}
+
+function convCaixaResposta(d) {
+  const aberta = !!(d.janela || {}).aberta;
+  const bloqueado = !aberta && !d.demo;
+  const texto = h("textarea", { class: "inp", rows: 2, maxlength: 1000,
+    placeholder: bloqueado ? "A janela de 24h está fechada." : "Escrever resposta…",
+    disabled: bloqueado });
+  const btn = h("button", { class: "btn btn--primary", disabled: bloqueado }, icon("send"), "Enviar");
+  const enviar = async () => {
+    const t = texto.value.trim();
+    if (!t) { toast("Escreva uma mensagem antes de enviar.", "err"); return; }
+    btn.disabled = true;
+    try {
+      const r = await jpost(`/api/conversas/${d.telefone}/mensagem`, { texto: t });
+      texto.value = "";
+      toast(r.demo ? "Número de demonstração — mensagem registada, sem envio real." : "Mensagem enviada.");
+      Router.reload();
+    } catch (e) {
+      // 409 = a janela fechou entretanto. Recarregar mostra logo o aviso
+      // no estado certo, em vez de deixar a caixa a convidar a tentar
+      // outra vez o que já não é possível.
+      toast(e.message, "err");
+      if (e.status === 409) Router.reload();
+      else btn.disabled = false;
+    }
+  };
+  btn.addEventListener("click", enviar);
+  texto.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); enviar(); }
+  });
+  return h("div", { class: "conv-resposta" },
+    h("div", { class: "conv-janela " + (aberta ? "is-aberta" : "is-fechada") },
+      icon(aberta ? "clock" : "alert"), h("span", {}, convTextoJanela(d))),
+    h("div", { class: "conv-resposta__linha" }, texto, btn),
+    h("div", { class: "conv-resposta__dica" },
+      "Sai do número do bot — o teu número pessoal nunca é mostrado à cliente."));
+}
+
+/* ===================================================================
    ROUTER
    =================================================================== */
 const ROUTES = {
-  hoje: viewHoje, agenda: viewAgenda, clientes: viewClientes,
+  hoje: viewHoje, agenda: viewAgenda, clientes: viewClientes, conversas: viewConversas,
   servicos: viewServicos, horarios: viewHorarios, faturas: viewFaturas,
   campanhas: viewCampanhas, resultados: viewResultados, definicoes: viewDefinicoes,
 };
@@ -2452,11 +2829,15 @@ const Router = {
     view.classList.toggle("view-narrow", ["definicoes"].includes(name));
     // Agenda precisa de (quase) toda a largura — as outras vistas ficam
     // no teto de leitura confortável (980px) de .view. Ver .view-wide.
-    view.classList.toggle("view-wide", ["agenda"].includes(name));
+    view.classList.toggle("view-wide", ["agenda", "conversas"].includes(name));
     // Só a Agenda é um "workspace" de altura fixa ao viewport (zero scroll
     // da página, ver .main.is-agenda) — Clientes/Faturas/Definições… mantêm
     // o scroll normal da página, exatamente como antes.
     $(".main").classList.toggle("is-agenda", ["agenda"].includes(name));
+    // Conversas é o outro "workspace" de altura fixa ao viewport: o scroll
+    // é dentro da lista e dentro do fio, nunca da página — a caixa de
+    // resposta tem de ficar sempre à vista (ver .main.is-conversas).
+    $(".main").classList.toggle("is-conversas", name === "conversas");
     if (!["agenda"].includes(name)) _agendaRelayout = null;
     $$(".nav-item").forEach((a) => a.classList.toggle("is-active", a.getAttribute("href") === "#/" + name));
     (ROUTES[name] || viewHoje)(view).catch((e) => { view.innerHTML = ""; view.append(emptyState(e.message)); });

@@ -33,7 +33,7 @@ import hashlib
 import logging
 from functools import wraps
 from datetime import date, timedelta, datetime
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, jsonify, Response, redirect
 
 import config
 import db as bd
@@ -42,7 +42,9 @@ import estados
 import tempo
 from parsing import data_iso_de_texto, hora_hhmm_de_texto, duracao_para_minutos
 from messaging import whatsapp as _wa
+from messaging import conversas
 from core import events as eventos
+from core import seguranca
 from notifications import business as notif_negocio
 from notifications import followup as notif_followup
 from notifications import postservice as notif_postservice
@@ -50,6 +52,7 @@ from notifications import reminders as notif_reminders
 from notifications import reschedule as notif_reschedule
 from notifications import jobs as notif_jobs
 from campaigns import engine as campaigns
+from crm import consent
 from scheduling import business_hours as bh_mod
 from scheduling import availability as av_mod
 
@@ -1221,17 +1224,10 @@ def registar_interacao_cliente(telefone, tenant_id=1):
 
 
 def dentro_da_janela_24h(telefone, tenant_id=1):
-    with obter_bd() as conn:
-        linha = conn.execute(
-            "SELECT ultima_mensagem_em FROM interacoes_cliente WHERE tenant_id = ? AND telefone = ?",
-            (tenant_id, telefone)
-        ).fetchone()
-    if not linha or not linha[0]:
-        return False
-    ultima_dt = tempo.parse_iso(linha[0])
-    if ultima_dt is None:
-        return False
-    return (tempo.agora_utc() - ultima_dt) < timedelta(hours=24)
+    """Sim/não. O cálculo (e o PRAZO, que o painel precisa de mostrar antes
+    de ela escrever) vive em messaging/conversas.py:estado_janela_24h —
+    aqui fica só o nome, que tem dezenas de call sites e mocks nos testes."""
+    return conversas.estado_janela_24h(telefone, tenant_id)["aberta"]
 
 
 # ---------------------------------------------------------------------------
@@ -1437,12 +1433,31 @@ def formatar_telefone(numero):
     return f"+{n}"
 
 
-def wa_me_link(telefone):
-    """Ligação segura wa.me para abrir diretamente uma conversa de WhatsApp
-    com este número — usada como ALTERNATIVA ao envio pelo próprio bot
-    (nunca o método principal), tanto no botão "Contactar cliente" do painel
-    como na resposta ao botão "💬 Contactar cliente" da notificação interna."""
-    return f"https://wa.me/{telefone.lstrip('+')}"
+# Substitui o antigo `wa_me_link`, que foi REMOVIDO de propósito: o bot corre
+# num número comprado só para isto e o WhatsApp pessoal da Daniela tem de
+# continuar privado. Uma ligação wa.me fazia-a responder do número dela e
+# entregava-o à cliente para sempre — bastava uma guardar o contacto para o
+# número separado deixar de servir para nada. Toda a resposta a uma cliente
+# passa pelo painel, que envia pelo número do bot.
+def link_conversa(telefone):
+    """Ligação para a conversa desta cliente no painel, quando se sabe o
+    endereço público do serviço. Sem PUBLIC_BASE_URL (dev) fica só a
+    indicação de onde ir — nunca um link para lado nenhum."""
+    numero = str(telefone or "").lstrip("+")
+    base = (config.PUBLIC_BASE_URL or "").rstrip("/")
+    if not base or not numero:
+        return None
+    return f"{base}/app#/conversas/{numero}"
+
+
+def _instrucao_responder(telefone=None):
+    """A frase que fecha qualquer aviso interno: onde responder. Um toque no
+    ombro, não um canal de resposta — ela está a trabalhar, com as mãos na
+    cara de alguém, e o que precisa é de saber que há algo à espera."""
+    link = link_conversa(telefone)
+    if link:
+        return f"↩️ Responde no painel (sai do número do bot):\n{link}"
+    return "↩️ Responde no painel, em *Conversas* — a mensagem sai do número do bot."
 
 
 def preco_formatado(valor, idioma="pt"):
@@ -1742,6 +1757,24 @@ def passo_resumo(de, idioma, sessao):
         {"id": ID_CANCELAR, "titulo": t("botao_cancelar", idioma)},
     ], idioma, rodape=t("rodape_padrao", idioma), com_voltar=True,
         titulo_seccao=t("resumo_seccao", idioma), botao_lista=t("menu_botao", idioma))
+
+
+def _perguntar_consentimento_marketing(telefone, idioma):
+    """Pergunta de consentimento de marketing, UMA vez, no fim da primeira
+    marcação (lógica e textos em crm/consent.py).
+
+    É um EXTRA: a confirmação da marcação já foi enviada antes desta linha e
+    a sessão é reiniciada a seguir — a cliente pode ignorar a pergunta e
+    nada se parte. Por isso também nunca deixa rebentar: uma falha aqui não
+    pode transformar uma marcação bem-sucedida num erro do webhook."""
+    try:
+        if not consent.deve_perguntar(telefone):
+            return
+        consent.registar_pergunta(telefone)
+        enviar_botoes(telefone, consent.texto("pergunta", idioma),
+                      consent.botoes(idioma), idioma)
+    except Exception:                        # noqa: BLE001
+        log.exception("falhou a pergunta de consentimento de marketing")
 
 
 def mensagem_confirmacao_final(sessao, idioma):
@@ -2309,10 +2342,17 @@ def processar_acao_equipa_marcacao(de, id_botao):
     desconhecida).
 
     "Contactar cliente" e "Reagendar" NUNCA alteram o estado da marcação:
-    devolvem só a ligação wa.me para a equipa combinar com o cliente
-    ("Reagendar" é um atalho seguro enquanto o reagendamento avançado não
-    existir — a marcação original continua confirmada). "Cancelar marcação" e
-    "Marcar concluído" pedem sempre confirmação antes de mudar o estado."""
+    encaminham para a conversa no PAINEL ("Reagendar" é um atalho seguro
+    enquanto o reagendamento avançado não existir — a marcação original
+    continua confirmada). "Cancelar marcação" e "Marcar concluído" pedem
+    sempre confirmação antes de mudar o estado.
+
+    Nenhuma destas respostas leva uma ligação wa.me: o bot corre num número
+    COMPRADO só para isto e o WhatsApp pessoal da Daniela é privado. Um
+    `wa.me` fazia-a responder do número dela e bastava uma cliente guardar o
+    contacto para ela passar a receber trabalho no telefone pessoal, ao
+    sábado à noite, para sempre. A resposta é sempre pelo painel, que envia
+    pelo número do bot (ver /api/conversas/<telefone>/mensagem)."""
     if not id_botao.startswith(PREFIXOS_ACAO_EQUIPA):
         return False
     if not numero_e_da_equipa(de):
@@ -2347,14 +2387,16 @@ def processar_acao_equipa_marcacao(de, id_botao):
               f"{ag.get('data') or '-'} {ag.get('hora') or ''}".strip())
 
     if acao == "contactar":
-        _responder_equipa(f"💬 Contacto direto com o cliente da marcação {resumo}\n\n{wa_me_link(ag['telefone'])}")
+        _responder_equipa(f"💬 Contacto com a cliente da marcação {resumo}\n\n"
+                          f"👤 {ag.get('nome') or 'sem nome'} · {formatar_telefone(ag['telefone'])}\n\n"
+                          f"{_instrucao_responder(ag['telefone'])}")
         return True
 
     if acao == "reagendar":
         # Deliberadamente NÃO muda o estado: a marcação original continua
         # confirmada até a equipa combinar a nova data com o cliente.
         _responder_equipa(f"📅 Reagendamento da marcação {resumo}\n\nA marcação continua *confirmada*. "
-                          f"Combine a nova data diretamente com o cliente:\n{wa_me_link(ag['telefone'])}")
+                          f"Combina a nova data com a cliente.\n\n{_instrucao_responder(ag['telefone'])}")
         return True
 
     if acao == "cancelar":
@@ -2541,14 +2583,42 @@ def mostrar_mais_acoes(de, idioma, sessao):
                  botao=t("botao_mais_acoes", idioma))
 
 
+# Nada disto é "a pergunta da cliente": são os comandos permanentes e os ids
+# dos botões que pedem a equipa. Sem isto, o aviso à Daniela citava «humano»
+# — que não diz nada a ninguém (ver conversas.ultima_pergunta).
+_IGNORAR_NA_PERGUNTA = set(COMANDOS_TEXTO) | {ACAO_HUMANO, "mp_humano"}
+
+
 def falar_com_equipa(de, idioma, sessao):
+    """Cliente escreveu HUMANO (ou tocou em "Falar com a equipa").
+
+    Duas coisas acontecem, por esta ordem, e a primeira é a que conta:
+
+      1. O pedido fica MARCADO. Entra no Attention Center do painel
+         (operations/engine.py:attention_items) com o que a cliente escreveu,
+         e dali abre-se a conversa. Isto é persistente: sobrevive ao aviso
+         por WhatsApp não chegar, ou a ela não o ver.
+      2. Vai um aviso por WhatsApp ao número dela. Mantém-se porque ela está
+         a trabalhar, com as mãos na cara de alguém, não com o painel aberto
+         — tem de ser avisada onde está. Mas é só um TOQUE: quem pediu, o que
+         perguntou, e onde responder. Sem ligação wa.me (ver link_conversa):
+         a resposta sai sempre do número do bot, nunca do número pessoal dela.
+    """
     enviar_texto(de, t("humano_cliente", idioma))
+    # O que ela perguntou. Já está gravado (o webhook registou a mensagem
+    # antes de chegar aqui) e fica guardado NO PEDIDO — assim o aviso por
+    # WhatsApp e o cartão do painel citam exactamente a mesma frase.
+    # `_IGNORAR_NA_PERGUNTA`: o próprio "humano" não é a pergunta.
+    pergunta = conversas.ultima_pergunta(de, _TENANT, ignorar=_IGNORAR_NA_PERGUNTA)
+    conversas.marcar_pedido_humano(de, pergunta, _TENANT)
     if PROVIDER_WHATSAPP:
         nome = sessao.get("nome") or "sem nome"
-        # Ligação wa.me em vez de um comando de texto — abre diretamente a
-        # conversa com o número certo (ver wa_me_link).
-        enviar_texto(PROVIDER_WHATSAPP, f"💬 *Pedido de contacto direto*\n\n👤 {nome}\n"
-                                         f"📱 {formatar_telefone(de)}\n\n{wa_me_link(de)}")
+        linhas = [f"💬 *{nome} pediu para falar contigo*", "",
+                  f"📱 {formatar_telefone(de)}"]
+        if pergunta:
+            linhas += ["", f"«{pergunta[:300]}»"]
+        linhas += ["", _instrucao_responder(de)]
+        enviar_texto(PROVIDER_WHATSAPP, "\n".join(linhas))
 
 
 def mensagem_ajuda(idioma):
@@ -2589,9 +2659,16 @@ def requer_autenticacao(func):
     def wrapper(*args, **kwargs):
         if not DASHBOARD_USER or not DASHBOARD_PASSWORD:
             return Response("Painel não configurado.", 503)
+        # Sem limite, uma password fraca é atacável à velocidade da rede — e
+        # atrás deste Basic estão os dados de clientes reais.
+        ip = seguranca.ip_do_pedido(request)
+        if seguranca.excedeu_tentativas(ip):
+            return Response("Demasiadas tentativas. Tenta daqui a um minuto.", 429,
+                            {"Retry-After": str(seguranca.JANELA_SEG)})
         auth = request.authorization
         if (not auth or not hmac.compare_digest(auth.username or "", DASHBOARD_USER)
                 or not hmac.compare_digest(auth.password or "", DASHBOARD_PASSWORD)):
+            seguranca.registar_falha(ip)
             # O valor de um header HTTP tem de ser ASCII — realm fixo e simples.
             return Response(
                 "Autenticacao necessaria.", 401,
@@ -3332,11 +3409,18 @@ def api_cliente(customer_id):
         if "tags" in d and isinstance(d["tags"], list):
             campos.append("tags = ?"); vals.append(json.dumps(d["tags"], ensure_ascii=False))
         if "marketing_opt_in" in d:
-            # P5 — consentimento CANÓNICO de marketing (ver migração 20):
-            # não existe hoje nenhuma recolha automática, por isso este
-            # toggle manual no Client Manager é o único caminho para tornar
-            # um cliente elegível a uma campanha (ver campaigns/engine.py).
-            campos.append("marketing_opt_in = ?"); vals.append(1 if d["marketing_opt_in"] else 0)
+            # P5 — consentimento CANÓNICO de marketing (ver migração 20). O bot
+            # passou a perguntar à cliente (crm/consent.py, migração 24); este
+            # toggle continua a existir para o caso presencial ("disse-me aqui
+            # no salão que sim"), e por isso grava a MESMA prova: resposta,
+            # data e origem 'painel'. Sem isto haveria de novo opt-ins sem
+            # proveniência nenhuma.
+            aceitou_no_painel = 1 if d["marketing_opt_in"] else 0
+            campos.append("marketing_opt_in = ?"); vals.append(aceitou_no_painel)
+            campos.append("marketing_consent_response = ?")
+            vals.append("sim" if aceitou_no_painel else "nao")
+            campos.append("marketing_consent_at = ?"); vals.append(tempo.iso_utc())
+            campos.append("marketing_consent_source = ?"); vals.append("painel")
         if campos:
             campos.append("updated_at = ?"); vals.append(tempo.iso_utc()); vals.append(customer_id)
             with obter_bd() as c:
@@ -3390,7 +3474,22 @@ def api_cliente_mensagem(customer_id):
     cust = bd.obter_customer(customer_id)
     if not cust or cust["tenant_id"] != _TENANT:
         return jsonify(erro="Cliente não encontrado."), 404
+    return _enviar_mensagem_livre(cust["phone"], customer_id)
 
+
+def _enviar_mensagem_livre(telefone, customer_id=None):
+    """Envio de UMA mensagem de texto livre a uma cliente, pelo número do BOT.
+
+    Extraído de api_cliente_mensagem para a vista Conversas poder responder
+    sem duplicar nem a validação da janela de 24h nem o registo do evento —
+    duas implementações do mesmo envio seriam duas maneiras diferentes de
+    falhar. Quem chama garante que o telefone vem de uma fonte de confiança
+    (o registo do cliente, ou um fio de conversa que já existe), NUNCA do
+    corpo do pedido.
+
+    Clientes DEMO nunca chegam à Meta (bloqueado em
+    messaging/whatsapp.py:enviar) — a mensagem é registada na mesma, para o
+    fluxo ser testável em QA."""
     d = request.get_json(silent=True) or {}
     texto = (d.get("texto") or "").strip()
     if not texto:
@@ -3398,22 +3497,99 @@ def api_cliente_mensagem(customer_id):
     if len(texto) > _MENSAGEM_MAX_CHARS:
         return jsonify(erro=f"Mensagem demasiado longa (máx. {_MENSAGEM_MAX_CHARS} caracteres)."), 400
 
-    telefone = cust["phone"]
     demo = telefone.startswith(DEMO_TELEFONE_PREFIXO)
+    janela = conversas.estado_janela_24h(telefone, _TENANT)
 
-    if not demo and not dentro_da_janela_24h(telefone):
+    if not demo and not janela["aberta"]:
+        # O painel já mostra o prazo ANTES de ela escrever (ver
+        # /api/conversas) — este 409 é a última rede, não a primeira notícia.
         return jsonify(
             erro="Fora da janela de 24h de atendimento do WhatsApp — não é possível enviar uma "
                  "mensagem livre agora. É necessário um template aprovado pela Meta.",
+            janela=janela,
         ), 409
 
     enviar_texto(telefone, texto)
 
-    with obter_bd() as conn:
-        bd.registar_evento(conn, "message.manual_sent", "customer", customer_id,
-                            {"texto": texto[:200]})
+    # Responder FECHA o pedido de HUMANO: o cartão do Attention Center
+    # desaparece sozinho, sem ela ter de o dispensar à mão (mesmo princípio
+    # das avarias em core/health.py).
+    conversas.fechar_pedido_humano(telefone, _TENANT)
 
-    return jsonify(ok=True, demo=demo), 200
+    if customer_id:
+        with obter_bd() as conn:
+            bd.registar_evento(conn, "message.manual_sent", "customer", customer_id,
+                                {"texto": texto[:200]})
+
+    return jsonify(ok=True, demo=demo, janela=conversas.estado_janela_24h(telefone, _TENANT)), 200
+
+
+# --- Conversas ----------------------------------------------------------
+# A vista Conversas é indexada por TELEFONE e não por cliente: uma conversa
+# existe a partir da primeira mensagem, e uma ficha de cliente só nasce na
+# primeira marcação (db.obter_ou_criar_customer). Quem escreve HUMANO antes
+# de marcar — exactamente o caso que isto serve — não tem ficha nenhuma.
+_TELEFONE_RE = re.compile(r"^\d{8,15}$")
+
+
+@app.route("/api/conversas", methods=["GET"])
+@requer_autenticacao
+def api_conversas():
+    return jsonify(conversas=conversas.listar_conversas(_TENANT)), 200
+
+
+def _conversa_ou_404(telefone):
+    """Valida o telefone e garante que o fio EXISTE. É esta verificação que
+    permite aceitar um telefone vindo do URL: só se responde a quem já
+    escreveu, nunca a um número arbitrário."""
+    if not _TELEFONE_RE.match(str(telefone or "")):
+        return None
+    mensagens = conversas.listar_mensagens(telefone, _TENANT)
+    return mensagens or None
+
+
+@app.route("/api/conversas/<telefone>", methods=["GET"])
+@requer_autenticacao
+def api_conversa(telefone):
+    mensagens = _conversa_ou_404(telefone)
+    if mensagens is None:
+        return jsonify(erro="Conversa não encontrada."), 404
+    cust = None
+    with obter_bd() as c:
+        linha = c.execute("SELECT id FROM customers WHERE tenant_id = ? AND phone = ?",
+                          (_TENANT, telefone)).fetchone()
+    if linha:
+        cust = bd.obter_customer(linha[0])
+    sessao = carregar_sessao(telefone, _TENANT)
+    return jsonify(
+        telefone=telefone,
+        nome=(cust or {}).get("name") or sessao.get("nome") or "",
+        customer_id=(cust or {}).get("id"),
+        idioma=sessao.get("idioma"),
+        # Números DEMO nunca chegam à Meta (messaging/whatsapp.py:enviar) e
+        # por isso podem receber uma resposta livre com a janela fechada. É o
+        # painel que precisa de saber disto para não desativar a caixa de
+        # resposta em QA — a regra do prefixo vive num sítio só, aqui.
+        demo=telefone.startswith(DEMO_TELEFONE_PREFIXO),
+        # O PRAZO, não só o sim/não: é isto que impede que ela escreva uma
+        # resposta longa e leve com um 409 sem perceber porquê.
+        janela=conversas.estado_janela_24h(telefone, _TENANT),
+        pedido_humano=conversas.pedidos_humanos_abertos(_TENANT).get(telefone),
+        mensagens=mensagens,
+    ), 200
+
+
+@app.route("/api/conversas/<telefone>/mensagem", methods=["POST"])
+@requer_autenticacao
+def api_conversa_mensagem(telefone):
+    """Responder de dentro da conversa. O telefone vem do URL (e não do
+    corpo) e só é aceite se já existir um fio com ele — ver _conversa_ou_404."""
+    if _conversa_ou_404(telefone) is None:
+        return jsonify(erro="Conversa não encontrada."), 404
+    with obter_bd() as c:
+        linha = c.execute("SELECT id FROM customers WHERE tenant_id = ? AND phone = ?",
+                          (_TENANT, telefone)).fetchone()
+    return _enviar_mensagem_livre(telefone, linha[0] if linha else None)
 
 
 # --- Campanhas WhatsApp (P5) -------------------------------------------------
@@ -3521,7 +3697,8 @@ def api_campanha_cancelar(campaign_id):
 
 # --- Faturação --------------------------------------------------------------
 _FATURA_ERRO_HTTP = {"PrecoEmFalta": 409, "TransicaoInvalida": 409,
-                     "FaturaNaoEncontrada": 404, "ErroFaturacao": 400}
+                     "FaturaNaoEncontrada": 404, "PagamentoInvalido": 400,
+                     "ErroFaturacao": 400}
 
 
 def _faturas_engine():
@@ -3596,6 +3773,61 @@ def api_fatura_accao(invoice_id, accao):
     return jsonify(erro="Ação inválida (emitir / pagar / anular / reenviar)."), 400
 
 
+@app.route("/api/faturas/<int:invoice_id>/pagamentos", methods=["GET", "POST"])
+@requer_autenticacao
+def api_fatura_pagamentos(invoice_id):
+    """Pagamentos de uma fatura. POST regista uma entrada de dinheiro — o
+    estado da fatura (emitida/parcial/paga) passa a ser consequência disto,
+    nunca algo que se escolha à mão."""
+    bi = _faturas_engine()
+    if request.method == "GET":
+        try:
+            return jsonify(pagamentos=bi.pagamentos_da_fatura(invoice_id, _TENANT)), 200
+        except bi.ErroFaturacao as e:
+            return _resp_erro_fatura(e)
+
+    dados = request.get_json(silent=True) or {}
+    valor = dados.get("amount_cents")
+    if valor is None and dados.get("valor") is not None:
+        # conveniência: aceita "valor" em francos (ex.: 35.50) vindo do painel
+        try:
+            valor = int(round(float(str(dados["valor"]).replace(",", ".")) * 100))
+        except (TypeError, ValueError):
+            return jsonify(erro="Valor inválido."), 400
+    try:
+        inv = bi.registar_pagamento(
+            invoice_id, valor, dados.get("metodo") or dados.get("method") or bi.PAGAMENTO_CASH,
+            paid_on=dados.get("paid_on") or dados.get("data"),
+            notas=dados.get("notas"), tenant_id=_TENANT)
+    except bi.ErroFaturacao as e:
+        return _resp_erro_fatura(e)
+    return jsonify(inv), 201
+
+
+@app.route("/api/faturas/<int:invoice_id>/pagamentos/<int:payment_id>", methods=["DELETE"])
+@requer_autenticacao
+def api_fatura_pagamento_remover(invoice_id, payment_id):
+    """Apaga um pagamento mal registado. A fatura recua sozinha de paga para
+    parcial, ou de parcial para emitida."""
+    bi = _faturas_engine()
+    try:
+        return jsonify(bi.remover_pagamento(payment_id, _TENANT)), 200
+    except bi.ErroFaturacao as e:
+        return _resp_erro_fatura(e)
+
+
+@app.route("/api/metodos-pagamento", methods=["GET"])
+@requer_autenticacao
+def api_metodos_pagamento():
+    """Lista fechada de métodos, com o rótulo já em português — para o painel
+    não ter de a repetir e as duas listas nunca divergirem."""
+    bi = _faturas_engine()
+    rotulos = {bi.PAGAMENTO_CASH: "Numerário", bi.PAGAMENTO_TWINT: "TWINT",
+               bi.PAGAMENTO_CARTAO: "Cartão", bi.PAGAMENTO_TRANSFERENCIA: "Transferência",
+               bi.PAGAMENTO_OUTRO: "Outro"}
+    return jsonify(metodos=[{"id": m, "nome": rotulos[m]} for m in bi.METODOS_PAGAMENTO]), 200
+
+
 def api_fatura_reenviar(invoice_id):
     """Reenvio manual do PDF (botão no painel) — mesmo envio do pós-atendimento
     automático, mas sem esperar pelo job nem pela idempotência de "primeira
@@ -3604,8 +3836,8 @@ def api_fatura_reenviar(invoice_id):
     inv = bi.obter_fatura(invoice_id, _TENANT)
     if not inv:
         return jsonify(erro="Fatura não encontrada."), 404
-    if inv["status"] not in (bi.STATUS_EMITIDA, bi.STATUS_PAGA):
-        return jsonify(erro="Só se reenvia o PDF de uma fatura emitida ou paga."), 409
+    if inv["status"] not in (bi.STATUS_EMITIDA, bi.STATUS_PARCIAL, bi.STATUS_PAGA):
+        return jsonify(erro="Só se reenvia o PDF de uma fatura emitida, parcial ou paga."), 409
     if not inv.get("customer_id"):
         return jsonify(erro="Fatura sem cliente associado."), 409
     cust = bd.obter_customer(inv["customer_id"])
@@ -3668,6 +3900,12 @@ def api_automacoes_correr():
     notifications/postservice.py)."""
     resumo = notif_jobs.process_due_jobs(_TENANT)
     disparar_automacoes()
+    # Pulso só DEPOIS de correr tudo: o que interessa registar é a última
+    # execução com SUCESSO. Se o cron do Render deixar de chamar esta rota
+    # (serviço a dormir, credenciais mudadas), o silêncio acumula e o painel
+    # avisa — o `raise_for_status()` do cron só rebenta num log que ninguém lê.
+    from core import health
+    health.pulso(health.CHAVE_AUTOMACOES, _TENANT)
     return jsonify(ok=True, **resumo), 200
 
 
@@ -4268,7 +4506,22 @@ def _semear_dados_demo():
     _demo_seed_rebooking(ids_ag)
     _demo_seed_pdfs_enviados(rng, ids_fat)
     _neutralizar_eventos_demo(ids_ag, ids_cust, ids_fat)
+    # Conversas (ver messaging/conversas.py:seed_demo): três fios em três
+    # estados — histórico longo com pedido de ajuda aberto, janela de 24h
+    # fechada, e um fio que acabou de começar.
+    _demo_seed_conversas(ids_cust)
     return ids_ag, ids_cust, ids_fat, faturas_contagem
+
+
+def _demo_seed_conversas(ids_cust):
+    if not ids_cust:
+        return {}
+    with obter_bd() as conn:
+        marcas = ", ".join("?" for _ in ids_cust)
+        telefones = [r[0] for r in conn.execute(
+            f"SELECT phone FROM customers WHERE id IN ({marcas}) ORDER BY id",
+            sorted(ids_cust)).fetchall()]
+    return conversas.seed_demo(_TENANT, telefones)
 
 
 @app.route("/api/dev/seed-dashboard", methods=["POST", "DELETE"])
@@ -4344,6 +4597,14 @@ def api_dev_seed_dashboard():
             cur = conn.execute("DELETE FROM customers WHERE phone LIKE ?",
                               (f"{DEMO_TELEFONE_PREFIXO}%",))
             apagados_cust = cur.rowcount
+            # Conversas demo (migração 25) e o que as datava: sem isto os
+            # fios ficavam na vista Conversas depois de o resto sair.
+            conn.execute("DELETE FROM mensagens_conversa WHERE telefone LIKE ?",
+                         (f"{DEMO_TELEFONE_PREFIXO}%",))
+            conn.execute("DELETE FROM interacoes_cliente WHERE telefone LIKE ?",
+                         (f"{DEMO_TELEFONE_PREFIXO}%",))
+            conn.execute("DELETE FROM sessoes WHERE telefone LIKE ?",
+                         (f"{DEMO_TELEFONE_PREFIXO}%",))
         return jsonify(ok=True, deleted_appointments=apagados_ag,
                        deleted_customers=apagados_cust, deleted_invoices=apagadas_fat), 200
 
@@ -4370,7 +4631,17 @@ def api_dev_seed_dashboard():
 @app.route("/painel/hoje", methods=["GET"])
 @requer_autenticacao
 def painel_hoje():
-    return PAINEL_HOJE_HTML.replace("{{BUSINESS_NAME}}", _escapar_html(BUSINESS_NAME))
+    """UI ANTIGA — desligada. O painel vivo é /app (blueprint dashboard/).
+
+    Continuava servida e divergia do /app: dados iguais, ecrãs diferentes,
+    e a Daniela sem saber qual era o bom. A autenticação fica ANTES do
+    redirect de propósito — quem não tem credenciais leva 401, não é
+    encaminhado para uma página que também lhas vai pedir.
+
+    O HTML antigo (PAINEL_HOJE_HTML, abaixo) fica por agora: apagá-lo são
+    ~300 linhas de diff em bot.py e não é o que está a bloquear o
+    lançamento. Está morto e pode sair na próxima limpeza do monólito."""
+    return redirect("/app", code=302)
 
 
 PAINEL_HOJE_HTML = r"""<!doctype html>
@@ -4669,9 +4940,10 @@ setInterval(carregar, 60000);
 @app.route("/dashboard", methods=["GET"])
 @requer_autenticacao
 def dashboard():
-    """HTML do painel com a identidade do negócio já substituída — o nome vem
-    sempre de BUSINESS_NAME (ambiente), nunca escrito à mão."""
-    return DASHBOARD_HTML.replace("{{BUSINESS_NAME}}", _escapar_html(BUSINESS_NAME))
+    """UI ANTIGA — desligada, tal como /painel. Esta era a pior das duas:
+    ignorava o modo claro e aparecia SEMPRE escura, mesmo com o painel novo
+    em claro ao lado. Ver painel_hoje() para o resto do raciocínio."""
+    return redirect("/app", code=302)
 
 
 # String RAW (r"""), para o Python não tentar interpretar sequências de escape
@@ -6709,6 +6981,15 @@ def sessao_preservando_perfil(sessao):
         nova["nome"] = sessao["nome"]
     if sessao.get("idioma"):
         nova["idioma"] = sessao["idioma"]
+    # Um pedido de HUMANO em aberto também SOBREVIVE ao reinício: os quatro
+    # caminhos que chamam falar_com_equipa fazem reiniciar_sessao logo a
+    # seguir, e sem isto a marca era apagada no mesmo request em que foi
+    # criada — o pedido nunca chegava ao painel. Só se fecha quando a
+    # Daniela responde (conversas.fechar_pedido_humano).
+    if sessao.get(conversas.CHAVE_PEDIDO):
+        for chave in conversas.CHAVES_PEDIDO:
+            if sessao.get(chave):
+                nova[chave] = sessao[chave]
     return nova
 
 
@@ -6802,7 +7083,9 @@ def _drenar_eventos_apos_escrita(resposta):
             disparar_automacoes()
     except Exception:                        # noqa: BLE001
         log.exception("_drenar_eventos_apos_escrita")
-    return resposta
+    # Headers de segurança em TODAS as respostas (ver core/seguranca.py — a
+    # CSP é a do painel real, com o Google Fonts como único terceiro).
+    return seguranca.aplicar_headers(resposta)
 
 
 @app.teardown_request
@@ -6849,6 +7132,14 @@ def receber_mensagem():
         if wamid and bd.reclamar_mensagem(wamid) == "duplicada":
             request.environ["_webhook_wamid"] = None    # não confirmar de novo
             return jsonify(status="repetida"), 200
+
+        # REGISTO DA CONVERSA (messaging/conversas.py) — aqui, depois da
+        # idempotência (um retry da Meta não grava duas vezes) e ANTES de
+        # qualquer tratamento: a partir daqui há vários caminhos que devolvem
+        # cedo (seletor de idioma, comando de texto, sessão retomada) e em
+        # todos eles o que a cliente escreveu tem de ficar guardado. Nunca
+        # levanta — ver conversas._gravar.
+        conversas.registar_recebida(msg, _TENANT)
 
         # --- Ações INTERNAS da equipa ---------------------------------------
         # Processadas antes de qualquer carregamento/tratamento de sessão,
@@ -6999,6 +7290,17 @@ def receber_mensagem():
                 sessao["lembrete_cancelar_ag_id"] = id_ag
                 guardar_sessao(de, sessao)
                 id_botao = f"cancelar_confirmar_{id_ag}"    # ecrã de confirmação já existente
+
+            # --- Resposta ao pedido de consentimento de marketing (crm/
+            # consent.py) ---------------------------------------------------
+            # Fica ANTES de tudo o resto e devolve já: é uma pergunta que
+            # vive fora do fluxo de marcação e não deve mexer na sessão.
+            if id_botao in (consent.BOTAO_SIM, consent.BOTAO_NAO):
+                aceitou = id_botao == consent.BOTAO_SIM
+                consent.registar_resposta(de, aceitou)
+                enviar_texto(de, consent.texto(
+                    "obrigado_sim" if aceitou else "obrigado_nao", idioma))
+                return jsonify(status="ok"), 200
 
             # --- Botões do pedido de reagendamento do PAINEL (P4.1 — ver
             # notifications/reschedule.py) -----------------------------------
@@ -7247,6 +7549,7 @@ def receber_mensagem():
                 # A notificação privada ao negócio é o evento booking.created
                 # (ver _notificar_criacao_marcacao), drenado no after_request.
                 # NÃO se envia aqui, para a marcação gerar exatamente UMA.
+                _perguntar_consentimento_marketing(de, idioma)
                 reiniciar_sessao(de)
                 return jsonify(status="ok"), 200
 

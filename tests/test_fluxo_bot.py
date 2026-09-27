@@ -9,10 +9,14 @@ import pytest
 
 import bot
 import db
-from conftest import data_pt
+from conftest import data_pt, dias_abertos
 
 CLIENTE = "41791234567"
-DIA_TXT = data_pt("2026-09-14")
+# Datas RELATIVAS: as que aqui estavam (14/15-09-2026) passaram e a suite
+# começou a falhar com HorarioNoPassado sem nada ter mudado no código.
+DIA_ISO, DIA2_ISO = dias_abertos(2)
+DIA_TXT = data_pt(DIA_ISO)
+DIA2_TXT = data_pt(DIA2_ISO)
 
 
 @pytest.fixture()
@@ -64,7 +68,7 @@ def test_marcacao_completa_cria_agendamento(cliente_http, base_dados, enviados):
     assert len(ags) == 1
     a = ags[0]
     assert a["servico_id"] == "limpeza_pele"
-    assert a["data_iso"] == "2026-09-14"
+    assert a["data_iso"] == DIA_ISO
     assert a["hora_hhmm"] == "09:00"
     assert a["duracao_min"] == 60
     assert bot.chave_estado(a["estado"]) == "confirmed"
@@ -78,12 +82,12 @@ def test_p0_reagendamento_cliente_nao_perde_a_marcacao_se_desistir(cliente_http,
 
     # cliente inicia reagendamento e ESCOLHE dia... e depois desiste (MENU)
     _post(cliente_http, _botao(f"reagendar_{idag}", "r1"))
-    _post(cliente_http, _lista("opt_1", data_pt("2026-09-15"), "r2"))
+    _post(cliente_http, _lista("opt_1", DIA2_TXT, "r2"))
     _post(cliente_http, _texto("MENU", "r3"))
 
     ag = bot.obter_agendamento(idag)
     assert bot.chave_estado(ag["estado"]) == "confirmed"     # continua ativa!
-    assert ag["data_iso"] == "2026-09-14"                    # data inalterada
+    assert ag["data_iso"] == DIA_ISO                    # data inalterada
     assert ag["hora_hhmm"] == "09:00"
     # e não foi criado nenhum registo novo
     assert len([a for a in bot.listar_agendamentos() if a["telefone"] == CLIENTE]) == 1
@@ -94,7 +98,7 @@ def test_p0_reagendamento_cliente_move_a_mesma_marcacao(cliente_http, base_dados
     idag = [a for a in bot.listar_agendamentos() if a["telefone"] == CLIENTE][0]["id"]
 
     _post(cliente_http, _botao(f"reagendar_{idag}", "r1"))
-    _post(cliente_http, _lista("opt_1", data_pt("2026-09-15"), "r2"))
+    _post(cliente_http, _lista("opt_1", DIA2_TXT, "r2"))
     _post(cliente_http, _lista("opt_2", "🕐 13:00", "r3"))
     _post(cliente_http, _botao("confirmar", "r4"))
 
@@ -102,12 +106,12 @@ def test_p0_reagendamento_cliente_move_a_mesma_marcacao(cliente_http, base_dados
     assert len(ags) == 1                                    # MESMO registo
     a = ags[0]
     assert a["id"] == idag
-    assert a["data_iso"] == "2026-09-15" and a["hora_hhmm"] == "13:00"
+    assert a["data_iso"] == DIA2_ISO and a["hora_hhmm"] == "13:00"
     assert bot.chave_estado(a["estado"]) == "confirmed"
     assert len(bot.historico_agendamento(idag)) == 1
     # horário antigo (14-09 09:00) voltou a ficar livre
     ocup = bot.ocupacoes()
-    assert not bot.conflitos_no_intervalo(ocup, "2026-09-14", "09:00", "Limpeza de pele", "1h")
+    assert not bot.conflitos_no_intervalo(ocup, DIA_ISO, "09:00", "Limpeza de pele", "1h")
 
 
 def test_idempotencia_wamid_nao_duplica(cliente_http, base_dados, enviados):

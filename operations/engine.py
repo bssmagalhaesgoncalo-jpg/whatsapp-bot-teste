@@ -89,6 +89,12 @@ def cartao_operacional(tenant_id: int = 1, agora: datetime | None = None) -> dic
             "fim_previsto": fim.strftime("%H:%M"),
             "decorrido_min": decorrido,
             "restante_min": restante,
+            # A duração prevista e o atraso REAL. Sem eles o painel dizia
+            # "Decorrido 10h31 · Atrasado 0 min" ao mesmo tempo que "a passar
+            # da hora": o `restante_min` vinha limitado a 0 e era ele que
+            # aparecia como atraso. O atraso é o que passou da duração.
+            "duracao_min": dur,
+            "atraso_min": max(0, decorrido - dur),
             "atrasado": agora > fim,
         }
 
@@ -305,15 +311,38 @@ def attention_items(tenant_id: int = 1, agora: datetime | None = None) -> list[d
                       "detalhe": "A Meta pode estar em baixo — as marcações estão OK.",
                       "acao": "re_tentar"})
 
-    # cliente pediu humano (bot pausado)
-    with db.ligacao() as c:
-        humanos = c.execute(
-            "SELECT telefone, dados FROM sessoes WHERE tenant_id = ? "
-            "AND dados LIKE '%\"needs_human\"%'", (tenant_id,)).fetchall()
-    for (tel, _dados) in humanos:
+    # avarias do sistema (core/health.py) — o bot mudo porque a Meta recusa
+    # os envios, ou o cron das automações que deixou de correr. É o único
+    # sítio onde ela vê isto: o log do Render ninguém lê.
+    from core import health
+    for avaria in health.avarias_abertas(tenant_id):
+        itens.append({"nivel": "agora", "tipo": "avaria_sistema",
+                      "titulo": avaria["titulo"],
+                      "detalhe": avaria["detalhe"] or "",
+                      "acao": "ver_avaria", "chave": avaria["chave"]})
+
+    parado_ha = health.minutos_sem_pulso(health.CHAVE_AUTOMACOES, tenant_id, agora=agora)
+    if parado_ha is not None and parado_ha > health.SILENCIO_AUTOMACOES_MIN:
+        itens.append({"nivel": "agora", "tipo": "automacoes_paradas",
+                      "titulo": f"As automações não correm há {catalogo.duracao_label(parado_ha)}",
+                      "detalhe": "Os lembretes de 24h e as mensagens pós-atendimento "
+                                 "não estão a sair. Verificar o cron no Render.",
+                      "acao": "ver_avaria", "chave": health.CHAVE_AUTOMACOES})
+
+    # cliente pediu HUMANO — com O QUE ELA ESCREVEU, não só o número.
+    # "Alguém precisa de ti" sem a pergunta não serve para nada: nas
+    # primeiras semanas o bot vai falhar a perceber coisas e o HUMANO vai ser
+    # muito usado. O texto vem do registo de conversas (migração 25) e é o
+    # MESMO que a vista Conversas mostra. `acao: abrir_conversa` + telefone
+    # é o que o painel usa para abrir o fio directamente.
+    from messaging import conversas
+    for tel, pedido in conversas.pedidos_humanos_abertos(tenant_id).items():
+        nome = pedido.get("nome") or "Cliente"
         itens.append({"nivel": "agora", "tipo": "needs_human",
-                      "titulo": "Cliente pediu para falar com a equipa",
-                      "detalhe": tel, "acao": "abrir_conversa", "telefone": tel})
+                      "titulo": f"{nome} pediu para falar contigo",
+                      "detalhe": pedido.get("texto") or tel,
+                      "acao": "abrir_conversa", "telefone": tel,
+                      "pedido_em": pedido.get("pedido_em")})
 
     # marcações de hoje sem confirmação e a < 6h
     for m in _marcacoes_de_hoje(tenant_id, hoje):

@@ -76,7 +76,7 @@ _ENV_VARS_DA_APP = (
     "DASHBOARD_USER", "DASHBOARD_PASSWORD",
     "DATABASE_URL", "SESSOES_DB", "MEDIA_DIR", "PUBLIC_BASE_URL",
     "RESERVA_TEMPORARIA_MINUTOS", "BOOKING_REQUIRES_APPROVAL", "ENABLE_DEMO_SEED",
-    "ESTIMATED_MINUTES_SAVED_PER_AUTOMATION",
+    "ESTIMATED_MINUTES_SAVED_PER_AUTOMATION", "CONVERSAS_RETENCAO_MESES",
 )
 # Nenhuma destas fica "herdada" do shell — cada uma é apagada primeiro,
 # nunca só complementada (ver docstring: setdefault era precisamente o bug).
@@ -126,6 +126,18 @@ def _bloquear_rede_externa(monkeypatch):
     monkeypatch.setattr(requests.sessions.Session, "request", _bloqueado)
 
 
+@pytest.fixture(autouse=True)
+def _limpar_limite_de_tentativas():
+    """O contador de tentativas falhadas (core/seguranca.py) é estado de
+    PROCESSO: sem isto, os 401 propositados de um teste contavam para o
+    seguinte e a suite começava a apanhar 429 a meio, sem relação nenhuma
+    com o que estava a ser testado."""
+    from core import seguranca
+    seguranca.limpar_tudo()
+    yield
+    seguranca.limpar_tudo()
+
+
 @pytest.fixture()
 def base_dados(tmp_path, monkeypatch):
     """BD limpa e migrada para este teste."""
@@ -159,6 +171,19 @@ def marcar(telefone, servico_id, data_texto, hora_texto, nome="Cliente Teste"):
         "data": data_texto, "hora": hora_texto,
     }
     return bot.guardar_agendamento(telefone, sessao)
+
+
+def dias_abertos(quantos=2, a_partir_de_amanha=True):
+    """Próximos dias em que o salão ABRE, em ISO.
+
+    Existe porque havia datas de 2026 escritas à mão nos testes: passaram,
+    e a suite começou a falhar com HorarioNoPassado sem nada ter mudado no
+    código. Uma data de teste tem de ser sempre relativa a hoje."""
+    from datetime import timedelta
+    from scheduling import business_hours as bh
+    import tempo
+    inicio = tempo.hoje_zurique() + (timedelta(days=1) if a_partir_de_amanha else timedelta())
+    return bh.proximos_dias_abertos(quantos, a_partir_de=inicio)
 
 
 def data_pt(iso):

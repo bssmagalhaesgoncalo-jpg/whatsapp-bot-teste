@@ -489,6 +489,9 @@ button, a, [role="button"], .tl-row, .tab {
 .cockpit .k-svc { color: var(--text-2); font-size: 14.5px; font-weight: 500; }
 .cockpit .k-track { height: 4px; border-radius: 999px; background: var(--surface-3); margin: 18px 0 10px; overflow: hidden; }
 .cockpit .k-track > i { display: block; height: 100%; background: var(--k-color); border-radius: 999px; transition: width .8s cubic-bezier(.4,0,.2,1); }
+/* A passar da hora: a barra cheia passa a vermelha. Cheia e da cor normal
+   lia-se como "está a correr bem", exatamente quando não está. */
+.cockpit .k-track--over > i { background: var(--danger); }
 .cockpit .k-meta { display: flex; flex-wrap: wrap; gap: 4px 24px; color: var(--text-2); font-size: 13px; }
 .cockpit .k-meta b { color: var(--text); font-weight: 600; }
 .cockpit .k-cta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
@@ -534,7 +537,14 @@ button, a, [role="button"], .tl-row, .tab {
 .att.sev-pending-reschedule:hover { background: color-mix(in srgb, var(--st-progress) 9%, var(--surface)); }
 .att .a-body { flex: 1; min-width: 0; }
 .att .a-title { font-weight: 600; font-size: 13.5px; }
-.att .a-desc { color: var(--text-3); font-size: 12px; }
+/* Uma linha só, cortada com reticências. O botão "Ver" tem o seu espaço
+   reservado (flex-shrink:0): com 53 nomes em texto corrido, o texto passava
+   por baixo dele e os dois ficavam sobrepostos. */
+.att .a-desc {
+  color: var(--text-3); font-size: 12px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.att > .btn { flex-shrink: 0; }
 
 /* ---------- agenda timeline ---------- */
 .timeline { display: flex; flex-direction: column; }
@@ -769,6 +779,17 @@ button, a, [role="button"], .tl-row, .tab {
    — hora e nome (a informação mais importante) nunca ficam cortados nem
    sobrepostos por causa dela. Ver a func. agH()/agEventCard() no app.js. */
 .ag-ev--compact .badge, .ag-ev--compact .ag-ev-pending { display: none; }
+/* Cartão de uma linha só (< 40px — tipicamente 15/30 min em ecrãs baixos):
+   fica a hora e o nome, nada mais. Antes o cartão era esticado até 44px
+   para "caber tudo" e passava por cima da banda seguinte, cujo cartão o
+   tapava — o texto que se queria ver era precisamente o que desaparecia.
+   Ver AG_EV_MIN/agEventCard em app.js. */
+.ag-ev--mini {
+  padding: 3px 6px 3px 7px;
+  justify-content: center;
+}
+.ag-ev--mini .ag-ev-s { display: none; }
+.ag-ev--mini .ag-ev-t { font-size: 11.5px; }
 
 /* cor de estado = --ev, usada na barra lateral + tint do fundo acima.
    Ordem propositada: operacional (chegou/em curso/concluída) por cima do
@@ -822,7 +843,20 @@ button, a, [role="button"], .tl-row, .tab {
   .ag-toolbar { gap: 8px; }
   .ag-filterbar { flex-direction: column; align-items: stretch; }
   .ag-search { margin: 0; flex: none; max-width: 100%; }
-  .ag-legend { padding: 12px 14px; gap: 10px 20px; }
+  /* Os chips passam a mudar de linha em vez de scrollar: a barra de scroll
+     estava escondida (scrollbar-width:none, para não ficar feia em
+     desktop) e no telemóvel isso deixava "Não compareceu" cortado ao meio
+     sem nenhum sinal de que havia mais filtros à direita. Duas linhas
+     ocupam menos do que um filtro que ninguém descobre. */
+  .ag-filtros { flex-wrap: wrap; overflow-x: visible; gap: 6px 6px; }
+  /* Legenda: seis estados com descrição enchiam o ecrã todo e empurravam a
+     agenda para baixo da dobra. No telemóvel fica só o NOME do estado (a
+     descrição continua no desktop) — nunca a cor sozinha. */
+  .ag-legend { padding: 10px 12px; gap: 8px 16px; }
+  .ag-legend-desc { display: none; }
+  .ag-legend-item { max-width: none; align-items: center; }
+  .ag-legend-dot { margin-top: 0; }
+  .ag-legend-title { font-size: 11.5px; font-weight: 600; }
   .ag-week-scroll { margin: 0 -14px; padding: 0 14px 6px; } /* respiro até à margem do .view */
 }
 
@@ -1099,4 +1133,176 @@ input.inp:focus, select.inp:focus, textarea.inp:focus {
     animation-iteration-count: 1 !important;
     transition-duration: .001ms !important;
   }
+}
+
+/* ===================================================================
+   PAGAMENTOS PARCIAIS — "Recebido / Por receber" no drawer da fatura.
+   Os dois números vivem lado a lado de propósito: a pergunta que ela faz
+   ao abrir uma fatura é sempre "quanto falta?", nunca "quanto entrou?".
+   =================================================================== */
+.pay-box { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 14px; }
+
+.pay-sum { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.pay-sum__cell {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 10px 12px; border-radius: var(--r-md); background: var(--surface-2);
+}
+.pay-sum__label { font-size: 12px; color: var(--text-dim); }
+.pay-sum__cell strong { font-size: 18px; }
+.pay-sum__in { color: var(--success); }
+.pay-sum__due { color: var(--warning); }
+
+.pay-list { margin-top: 10px; display: flex; flex-direction: column; }
+.pay-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 0; border-bottom: 1px solid var(--line);
+}
+.pay-row:last-child { border-bottom: 0; }
+.pay-row__amt { font-weight: 600; min-width: 92px; }
+.pay-row__meta { flex: 1; color: var(--text-dim); font-size: 13px; }
+
+.pay-form { margin-top: 12px; display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; }
+.pay-form .inp { min-width: 0; }
+
+@media (max-width: 560px) {
+  /* No telemóvel o formulário empilha: três campos lado a lado a 390 px
+     deixam o valor ilegível e o select cortado. */
+  .pay-form { grid-template-columns: 1fr; }
+  .pay-form .btn { width: 100%; justify-content: center; }
+}
+
+/* ===================================================================
+   CONVERSAS — lista de fios à esquerda, fio aberto à direita.
+
+   Nada aqui é original de propósito: é o desenho que qualquer pessoa já
+   conhece de uma aplicação de mensagens (recebidas à esquerda, enviadas à
+   direita, separador por dia, caixa de resposta em baixo). O único
+   elemento que não existe nas outras vistas é a faixa `.conv-janela`:
+   fica SEMPRE visível por cima da caixa de resposta, porque o prazo da
+   janela de 24h da Meta tem de ser lido ANTES de se escrever, não depois
+   de um erro de envio.
+
+   A vista ocupa o viewport (ver .main.is-conversas) e o scroll é DENTRO
+   de cada painel — um fio com 200 mensagens não pode empurrar a caixa de
+   resposta para fora do ecrã.
+   =================================================================== */
+.main.is-conversas { height: 100vh; min-height: 0; overflow: hidden; }
+
+.conv {
+  display: grid; grid-template-columns: minmax(260px, 340px) 1fr;
+  gap: var(--space-4);
+  flex: 1 1 auto; min-height: 0; min-width: 0;
+}
+.conv-lista, .conv-fio {
+  border: 1px solid var(--border); border-radius: var(--radius-lg);
+  background: var(--surface);
+  display: flex; flex-direction: column; min-height: 0; overflow: hidden;
+}
+.conv-lista { overflow-y: auto; }
+
+.conv-lista__cab {
+  position: sticky; top: 0; z-index: 2;
+  padding: var(--space-4); background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: var(--space-3);
+}
+.conv-lista__cont { font-size: var(--fs-sm); color: var(--text-3); }
+
+.conv-item {
+  display: flex; gap: 10px; align-items: flex-start;
+  padding: 12px var(--space-4);
+  border-bottom: 1px solid var(--border);
+  color: inherit; text-decoration: none;
+}
+.conv-item:hover { background: var(--surface-2); }
+.conv-item.is-ativa { background: var(--brand-weak); }
+.conv-item__body { min-width: 0; flex: 1; }
+.conv-item__top { display: flex; align-items: baseline; gap: 8px; }
+.conv-item__nome {
+  font-weight: var(--fw-semibold); font-size: var(--fs-base);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.conv-item__quando { margin-left: auto; font-size: var(--fs-2xs); color: var(--text-3); white-space: nowrap; }
+/* A última mensagem numa linha só: truncar aqui (e não no JS) mantém a
+   reticência sempre no limite real da coluna, em qualquer largura. */
+.conv-item__last {
+  font-size: var(--fs-sm); color: var(--text-2); margin-top: 2px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.conv-item__eu { color: var(--text-3); }
+.conv-item.is-humano { box-shadow: inset 3px 0 0 var(--danger); }
+.conv-item .badge { margin-top: 6px; }
+
+.conv-cab {
+  display: flex; align-items: center; gap: 10px;
+  padding: var(--space-4); border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.conv-cab__quem { min-width: 0; }
+.conv-cab__nome { font-weight: var(--fw-semibold); }
+.conv-cab__tel { font-size: var(--fs-2xs); color: var(--text-3); }
+.conv-cab__acoes { margin-left: auto; display: flex; gap: var(--space-2); }
+/* O ícone é a seta de avançar (#i-arrow) espelhada — não vale a pena um
+   segundo símbolo no shell.html só para apontar ao contrário. */
+.conv-voltar { display: none; }
+.conv-voltar > .ico { transform: scaleX(-1); }
+
+.conv-msgs {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto;
+  padding: var(--space-5) var(--space-4);
+  display: flex; flex-direction: column; gap: 8px;
+  background: var(--bg);
+}
+.conv-dia { text-align: center; margin: 10px 0 4px; }
+.conv-dia span {
+  font-size: var(--fs-2xs); color: var(--text-3);
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 999px; padding: 3px 10px;
+}
+.conv-msg { display: flex; }
+.conv-msg.is-enviada { justify-content: flex-end; }
+.conv-bolha {
+  max-width: min(78%, 520px);
+  padding: 8px 12px; border-radius: var(--radius-md);
+  background: var(--surface); border: 1px solid var(--border);
+  box-shadow: var(--shadow-xs);
+}
+.conv-msg.is-enviada .conv-bolha {
+  background: var(--brand-weak); border-color: transparent;
+}
+.conv-texto { font-size: var(--fs-base); line-height: var(--lh-base); white-space: pre-wrap; word-break: break-word; }
+.conv-meta {
+  display: flex; align-items: center; gap: 6px; justify-content: flex-end;
+  margin-top: 3px; font-size: var(--fs-2xs); color: var(--text-3);
+}
+.conv-tipo {
+  border: 1px solid var(--border); border-radius: 999px; padding: 0 6px;
+  text-transform: lowercase;
+}
+
+.conv-resposta { flex: 0 0 auto; border-top: 1px solid var(--border); padding: var(--space-4); }
+.conv-janela {
+  display: flex; align-items: center; gap: 8px;
+  font-size: var(--fs-sm); margin-bottom: 10px;
+}
+.conv-janela > .ico { width: 15px; height: 15px; flex: none; }
+.conv-janela.is-aberta { color: var(--text-2); }
+.conv-janela.is-fechada { color: var(--warning); }
+.conv-resposta__linha { display: flex; gap: 8px; align-items: flex-end; }
+.conv-resposta textarea { resize: vertical; min-height: 44px; }
+.conv-resposta__dica { font-size: var(--fs-2xs); color: var(--text-3); margin-top: 6px; }
+.conv-vazio {
+  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; color: var(--text-3); font-size: var(--fs-sm); text-align: center; padding: var(--space-6);
+}
+.conv-vazio > .ico { width: 30px; height: 30px; opacity: .4; }
+
+@media (max-width: 940px) {
+  /* Um ecrã, um painel: a 390 px duas colunas davam 190 px cada, onde
+     nem o nome da cliente nem o texto da mensagem cabem. A lista abre o
+     fio e o fio volta atrás (.conv-voltar). */
+  .conv { grid-template-columns: 1fr; }
+  .conv-voltar { display: inline-flex; }
+  .conv.has-fio .conv-lista { display: none; }
+  .conv:not(.has-fio) .conv-fio { display: none; }
 }

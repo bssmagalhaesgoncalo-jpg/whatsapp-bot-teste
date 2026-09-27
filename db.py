@@ -826,6 +826,186 @@ def _m20_campanhas(conn):
                  "ON campaign_recipients (campaign_id, status)")
 
 
+def _m21_pagamentos(conn):
+    """PAGAMENTOS PARCIAIS. Até aqui uma fatura era paga ou não era — o que
+    obriga a mentir quando a cliente deixa um sinal e paga o resto depois.
+
+    - payments: cada entrada de dinheiro, com o seu método. Vários por fatura.
+    - invoices.paid_cents: soma dos pagamentos, mantida pelo motor (billing).
+      É DERIVADO — a verdade são as linhas de `payments`; esta coluna existe
+      só para listar e ordenar sem um JOIN em cada query.
+    - estado 'partial': entre 'issued' e 'paid'. Uma fatura com pagamentos
+      chega a 'paid' sozinha quando paid_cents >= total_cents.
+
+    Métodos: os que se usam mesmo na Suíça. `other` para o que fugir à lista.
+    Backfill: faturas já marcadas 'paid' ganham um pagamento pelo total, com o
+    payment_method que já tinham — nenhum histórico se perde nem se inventa.
+    """
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS payments ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "tenant_id INTEGER NOT NULL DEFAULT 1, "
+        "invoice_id INTEGER NOT NULL, "
+        "amount_cents INTEGER NOT NULL, "
+        "method TEXT NOT NULL DEFAULT 'cash', "
+        "paid_on TEXT, "                       # data local (YYYY-MM-DD) do pagamento
+        "notes TEXT, "
+        "created_at TEXT NOT NULL)"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS ix_payments_invoice "
+                 "ON payments (invoice_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS ix_payments_tenant_data "
+                 "ON payments (tenant_id, paid_on)")
+
+    _add_coluna_se_falta(conn, "invoices", "paid_cents", "INTEGER NOT NULL DEFAULT 0")
+
+    # Backfill: o que já estava 'paid' passa a ter um pagamento real por trás.
+    from tempo import iso_utc as _agora
+    agora = _agora()
+    pagas = conn.execute(
+        "SELECT id, tenant_id, total_cents, COALESCE(payment_method, 'cash'), paid_at "
+        "FROM invoices WHERE status = 'paid'").fetchall()
+    for inv_id, tid, total, metodo, paid_at in pagas:
+        ja = conn.execute("SELECT 1 FROM payments WHERE invoice_id = ?", (inv_id,)).fetchone()
+        if ja:
+            continue
+        conn.execute(
+            "INSERT INTO payments (tenant_id, invoice_id, amount_cents, method, paid_on, "
+            "notes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (tid or 1, inv_id, total or 0, metodo, (paid_at or agora)[:10], None, agora))
+        conn.execute("UPDATE invoices SET paid_cents = ? WHERE id = ?", (total or 0, inv_id))
+
+
+def _m22_dinheiro_do_cliente_vem_das_faturas(conn):
+    """O contador de dinheiro do cliente deixa de vir do preço da MARCAÇÃO e
+    passa a vir das FATURAS.
+
+    O `spend_cents` antigo somava `agendamentos.preco_cents` das marcações
+    concluídas e ignorava a faturação por completo: uma cliente com uma fatura
+    de CHF 50 PAGA aparecia no painel com CHF 0,00. Havia duas fontes de
+    verdade para dinheiro e divergiam.
+
+    Agora há duas colunas, ambas derivadas de `invoices`:
+      • billed_cents — facturado (emitidas, parciais e pagas; anuladas não)
+      • paid_cents   — recebido de facto
+    `spend_cents` fica na tabela por compatibilidade e passa a espelhar
+    `paid_cents` (é a leitura que mais se aproxima do que significava).
+    O recálculo real de todos os clientes é feito por db.recalcular_customer.
+    """
+    _add_coluna_se_falta(conn, "customers", "billed_cents", "INTEGER NOT NULL DEFAULT 0")
+    _add_coluna_se_falta(conn, "customers", "paid_cents", "INTEGER NOT NULL DEFAULT 0")
+    for (cid,) in conn.execute("SELECT id FROM customers").fetchall():
+        recalcular_customer(cid, conn=conn)
+
+
+def _m23_saude_do_sistema(conn):
+    """Estado de saúde do sistema — o que falha SEM ninguém dar por isso.
+
+    Duas coisas que hoje só existem no log (que ninguém lê) e deixam o bot
+    mudo em silêncio:
+      • uma avaria — a Meta a recusar os envios (token expirado, número
+        suspenso, limite atingido). O link do bot continua no Instagram a
+        mandar clientes para um bot que já não responde.
+      • um pulso — a última vez que o cron das automações correu. Se parar,
+        os lembretes de 24h deixam de sair e nada avisa.
+
+    Uma linha por `chave`, atualizada no sítio (UNIQUE tenant+chave): o
+    painel quer o estado ATUAL, não o histórico — e assim o `avisado_em`
+    serve de anti-inundação, à maneira do `dedupe_key` dos eventos.
+    """
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS system_health ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "tenant_id INTEGER NOT NULL DEFAULT 1, "
+        "chave TEXT NOT NULL, "
+        "tipo TEXT NOT NULL, "                      # 'avaria' | 'pulso'
+        "titulo TEXT, "
+        "detalhe TEXT, "
+        "ocorrencias INTEGER NOT NULL DEFAULT 0, "
+        "primeiro_em TEXT, "
+        "ultimo_em TEXT NOT NULL, "
+        "avisado_em TEXT, "                         # último aviso enviado à Daniela
+        "resolvido_em TEXT, "
+        "UNIQUE (tenant_id, chave))"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS ix_system_health_abertas "
+                 "ON system_health (tenant_id, tipo) WHERE resolvido_em IS NULL")
+
+
+def _m24_consentimento_de_marketing(conn):
+    """Prova de consentimento — quem disse o quê, quando e onde.
+
+    Até aqui `marketing_opt_in` só se ligava à mão no painel: ninguém tinha
+    perguntado nada à cliente. Isso tornava as campanhas de reativação
+    inutilizáveis (a Daniela a marcar caixas por pessoas que nunca disseram
+    que sim, contra a política da Meta e frágil face à protecção de dados
+    suíça). Agora o bot pergunta, e o que fica gravado é a RESPOSTA:
+
+      • marketing_consent_response — 'sim' | 'nao'. Um "não" é uma resposta,
+        não a ausência de um "sim": é o que impede o bot de voltar a
+        perguntar a quem já recusou.
+      • marketing_consent_at / _source — data e origem da resposta (é isto
+        que se mostra se alguém perguntar de onde veio o consentimento).
+      • marketing_consent_asked_at — quando se perguntou. Marcado ANTES do
+        envio: se a pergunta se perder pelo caminho, não se insiste.
+
+    `marketing_opt_in` continua a ser a coluna CANÓNICA que as campanhas
+    lêem (campaigns/engine.py) — um "sim" liga-a, um "não" deixa-a a 0.
+    """
+    _add_coluna_se_falta(conn, "customers", "marketing_consent_asked_at", "TEXT")
+    _add_coluna_se_falta(conn, "customers", "marketing_consent_at", "TEXT")
+    _add_coluna_se_falta(conn, "customers", "marketing_consent_response", "TEXT")
+    _add_coluna_se_falta(conn, "customers", "marketing_consent_source", "TEXT")
+    # Quem já tem opt-in ligado à mão (seed DEMO, marcação manual da Daniela)
+    # fica com a origem registada — senão ficava um "sim" sem proveniência.
+    conn.execute(
+        "UPDATE customers SET marketing_consent_response = 'sim', "
+        "marketing_consent_at = COALESCE(marketing_consent_at, updated_at), "
+        "marketing_consent_source = COALESCE(marketing_consent_source, 'painel') "
+        "WHERE marketing_opt_in = 1 AND marketing_consent_response IS NULL")
+
+
+def _m25_registo_de_conversas(conn):
+    """O TEXTO das mensagens — até aqui perdia-se todo.
+
+    `mensagens_processadas` guarda o `wamid` e a hora (idempotência do
+    webhook) e `interacoes_cliente` guarda a hora da última mensagem (janela
+    de 24h da Meta). Nenhuma das duas guarda o que foi DITO: o painel
+    conseguia dizer que a Sofia pediu ajuda, não o que ela perguntou. Nas
+    primeiras semanas o bot vai falhar a perceber coisas e o HUMANO vai ser
+    usado muito — "alguém precisa de ti" sem a pergunta não serve para nada.
+
+    Uma linha por mensagem, nas DUAS direções (o webhook de entrada e o
+    ponto único de saída em messaging/whatsapp.py). Ver messaging/conversas.py.
+
+    `texto` é o que uma PESSOA lê: num toque num botão guarda-se o TÍTULO que
+    a cliente viu ("Limpeza de pele"), não o `opt_1` — esse fica em
+    `id_interativo`, à parte, para quem estiver a depurar o fluxo.
+    """
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS mensagens_conversa ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "tenant_id INTEGER NOT NULL DEFAULT 1, "
+        "telefone TEXT NOT NULL, "
+        "customer_id INTEGER, "                     # pode não existir ficha ainda
+        "direcao TEXT NOT NULL, "                   # 'recebida' | 'enviada'
+        "tipo TEXT NOT NULL, "                      # texto|botao|lista|template|imagem|…
+        "texto TEXT, "                              # o que uma pessoa lê
+        "id_interativo TEXT, "                      # 'opt_1', 'servico_limpeza_pele'
+        "wamid TEXT, "
+        "criado_em TEXT NOT NULL)"
+    )
+    # O fio de uma conversa é sempre (tenant, telefone) por ordem de tempo —
+    # é esta a leitura da vista Conversas e do último-texto da lista.
+    conn.execute("CREATE INDEX IF NOT EXISTS ix_mensagens_conversa_fio "
+                 "ON mensagens_conversa (tenant_id, telefone, criado_em)")
+    # A limpeza dos 12 meses varre por data sem filtrar telefone (ver
+    # messaging/conversas.limpar_antigas) — sem este índice seria um
+    # full scan de uma tabela que só cresce.
+    conn.execute("CREATE INDEX IF NOT EXISTS ix_mensagens_conversa_idade "
+                 "ON mensagens_conversa (criado_em)")
+
+
 MIGRACOES = [
     (1, "baseline", _m1_baseline),
     (2, "colunas_legadas", _m2_colunas_legadas),
@@ -847,6 +1027,11 @@ MIGRACOES = [
     (18, "pos_atendimento", _m18_pos_atendimento),
     (19, "reschedule_requests", _m19_reschedule_requests),
     (20, "campanhas", _m20_campanhas),
+    (21, "pagamentos", _m21_pagamentos),
+    (22, "dinheiro_do_cliente_vem_das_faturas", _m22_dinheiro_do_cliente_vem_das_faturas),
+    (23, "saude_do_sistema", _m23_saude_do_sistema),
+    (24, "consentimento_de_marketing", _m24_consentimento_de_marketing),
+    (25, "registo_de_conversas", _m25_registo_de_conversas),
 ]
 
 
@@ -1003,7 +1188,13 @@ def atualizar_servico(servico_id: str, dados: dict):
 _CAMPOS_CUSTOMER = ("id", "tenant_id", "phone", "name", "locale", "first_seen", "last_visit",
                     "next_visit", "visits_count", "spend_cents", "no_show_count",
                     "cancel_count", "tags", "vip", "blocked", "notes_internal",
-                    "created_at", "updated_at", "marketing_opt_in")
+                    "created_at", "updated_at", "marketing_opt_in",
+                    # prova de consentimento de marketing (migração 24)
+                    "marketing_consent_asked_at", "marketing_consent_at",
+                    "marketing_consent_response", "marketing_consent_source",
+                    # dinheiro derivado das faturas (migração 22). spend_cents
+                    # acima fica por compatibilidade e espelha paid_cents.
+                    "billed_cents", "paid_cents")
 
 
 def _linha_customer(row) -> dict:
@@ -1077,9 +1268,15 @@ def listar_customers(tenant_id: int = 1) -> list[dict]:
 
 
 def recalcular_customer(customer_id: int, conn=None):
-    """Recalcula contadores (visitas/gasto/no-shows/cancelamentos/últimas
-    datas) a partir das marcações. Barato e sempre correto — chamado após
-    qualquer mudança de estado de uma marcação do cliente."""
+    """Recalcula os contadores do cliente. Barato e sempre correto — chamado
+    após qualquer mudança de estado de uma marcação ou de uma fatura.
+
+    DINHEIRO: vem das FATURAS, não do preço da marcação (ver migração 22).
+      • billed_cents — facturado: faturas emitidas, parciais e pagas
+      • paid_cents   — recebido: soma real dos pagamentos
+    Faturas em rascunho e anuladas não contam para nenhum dos dois.
+    VISITAS e datas continuam a vir das marcações — são factos da agenda,
+    não da faturação."""
     def _run(c):
         import estados as _est
         from tempo import hoje_zurique
@@ -1087,17 +1284,15 @@ def recalcular_customer(customer_id: int, conn=None):
         # continua a ser "futura" mesmo já sendo amanhã em UTC.
         hoje = hoje_zurique().isoformat()
         rows = c.execute(
-            "SELECT estado, data_iso, preco_cents, preco FROM agendamentos WHERE customer_id = ?",
+            "SELECT estado, data_iso FROM agendamentos WHERE customer_id = ?",
             (customer_id,)).fetchall()
-        visits = spend = no_show = cancel = 0
+        visits = no_show = cancel = 0
         last_visit = next_visit = None
-        for estado, data_iso, pc, preco in rows:
+        for estado, data_iso in rows:
             e = _est.normalizar(estado)
-            cents = pc if pc is not None else (int(round(float(preco) * 100)) if preco else 0)
             if e == _est.COMPLETED:
-                # visita REALIZADA + gasto efetivo (até existirem pagamentos)
+                # visita REALIZADA — o dinheiro dela vem da fatura, mais abaixo
                 visits += 1
-                spend += cents or 0
                 if data_iso and (last_visit is None or data_iso > last_visit):
                     last_visit = data_iso
             elif e in (_est.CONFIRMED, _est.PENDING):
@@ -1109,10 +1304,32 @@ def recalcular_customer(customer_id: int, conn=None):
                 no_show += 1
             elif e == _est.CANCELLED:
                 cancel += 1
-        c.execute(
-            "UPDATE customers SET visits_count = ?, spend_cents = ?, no_show_count = ?, "
-            "cancel_count = ?, last_visit = ?, next_visit = ?, updated_at = ? WHERE id = ?",
-            (visits, spend, no_show, cancel, last_visit, next_visit, iso_utc(), customer_id))
+        # --- DINHEIRO: das faturas ------------------------------------
+        # A tabela invoices pode ainda não existir (migrações antigas a correr
+        # de raiz) — nesse caso os contadores ficam a zero e a migração 22
+        # recalcula-os quando chegar a sua vez.
+        billed = paid = 0
+        if _tabela_existe(c, "invoices"):
+            tem_paid_cents = _coluna_existe(c, "invoices", "paid_cents")
+            col_paid = "COALESCE(paid_cents, 0)" if tem_paid_cents else (
+                "CASE WHEN status = 'paid' THEN total_cents ELSE 0 END")
+            r = c.execute(
+                "SELECT COALESCE(SUM(CASE WHEN status IN ('issued','partial','paid') "
+                "                         THEN total_cents ELSE 0 END), 0), "
+                f"       COALESCE(SUM({col_paid}), 0) "
+                "FROM invoices WHERE customer_id = ? AND status <> 'cancelled'",
+                (customer_id,)).fetchone()
+            billed, paid = int(r[0] or 0), int(r[1] or 0)
+
+        campos = ("visits_count = ?, spend_cents = ?, no_show_count = ?, "
+                  "cancel_count = ?, last_visit = ?, next_visit = ?, updated_at = ?")
+        valores = [visits, paid, no_show, cancel, last_visit, next_visit, iso_utc()]
+        # As colunas novas só existem depois da migração 22.
+        if _coluna_existe(c, "customers", "billed_cents"):
+            campos += ", billed_cents = ?, paid_cents = ?"
+            valores += [billed, paid]
+        valores.append(customer_id)
+        c.execute(f"UPDATE customers SET {campos} WHERE id = ?", valores)
 
     if conn is not None:
         return _run(conn)

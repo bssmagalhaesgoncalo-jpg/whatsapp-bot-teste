@@ -17,7 +17,14 @@ Regras não-negociáveis
   (PrecoEmFalta). Esse preço é gravado na marcação e no snapshot; o preço
   GLOBAL do serviço nunca é tocado aqui.
 
-Estados: draft -> issued -> paid ; draft|issued -> cancelled (paid não).
+Estados: draft -> issued -> partial -> paid ; draft|issued -> cancelled
+(uma fatura com dinheiro recebido não se anula).
+
+PAGAMENTOS: cada entrada de dinheiro é uma linha em `payments`, com o seu
+método. Uma fatura pode ter vários (sinal + resto). `invoices.paid_cents`
+é a soma, mantida por este módulo; a verdade são as linhas. O estado da
+fatura segue o dinheiro sozinho: 0 -> issued, parcial -> partial,
+total -> paid.
 """
 
 from __future__ import annotations
@@ -29,6 +36,7 @@ import tempo
 
 STATUS_RASCUNHO = "draft"
 STATUS_EMITIDA = "issued"
+STATUS_PARCIAL = "partial"
 STATUS_PAGA = "paid"
 STATUS_ANULADA = "cancelled"
 
@@ -41,6 +49,8 @@ _CAMPOS_INVOICE = (
     "notes", "created_at", "issued_at", "paid_at", "cancelled_at",
     # P0 — pós-atendimento automático (ver notifications/postservice.py)
     "payment_method", "pdf_token", "pdf_sent_at", "pdf_last_sent_at",
+    # pagamentos parciais (migração 21) — soma de `payments`
+    "paid_cents",
 )
 _SQL_INVOICE = ", ".join(_CAMPOS_INVOICE)
 
@@ -68,6 +78,10 @@ class PrecoEmFalta(ErroFaturacao):
 
 class TransicaoInvalida(ErroFaturacao):
     """Mudança de estado não permitida (ex.: anular uma fatura paga)."""
+
+
+class PagamentoInvalido(ErroFaturacao):
+    """Valor <= 0, método desconhecido, ou dinheiro a mais do que o total."""
 
 
 class FaturaNaoEncontrada(ErroFaturacao):
@@ -157,6 +171,12 @@ def _linhas_de(c, invoice_id: int) -> list[dict]:
 def _montar(c, row) -> dict:
     inv = _linha_invoice(row)
     inv["lines"] = _linhas_de(c, inv["id"])
+    # Pagamentos: o painel precisa sempre de "recebido" e "por receber" juntos
+    # — calcular isto no cliente seria pedir para os dois divergirem.
+    recebido, pagamentos = _resumo_pagamentos(c, inv["id"])
+    inv["paid_cents"] = recebido
+    inv["due_cents"] = max(0, int(inv.get("total_cents") or 0) - recebido)
+    inv["payments"] = pagamentos
     return inv
 
 
@@ -271,7 +291,10 @@ def listar_faturas(tenant_id: int = 1, status: str | None = None,
     args = [tenant_id]
     if status and status != "all":
         if status == "overdue":
-            q += (" AND status = 'issued' AND due_date IS NOT NULL AND due_date < ?")
+            # Uma fatura com um sinal pago e o resto por receber também está
+            # vencida — o que conta é faltar dinheiro depois do prazo.
+            q += (" AND status IN ('issued', 'partial') "
+                  "AND due_date IS NOT NULL AND due_date < ?")
             args.append(tempo.hoje_zurique().isoformat())
         else:
             q += " AND status = ?"
@@ -280,7 +303,15 @@ def listar_faturas(tenant_id: int = 1, status: str | None = None,
     args.append(int(limite))
     with db.ligacao() as c:
         rows = c.execute(q, args).fetchall()
-        return [_linha_invoice(r) for r in rows]
+        # A lista mostra "por receber" — sem as linhas de pagamento (que só o
+        # drawer precisa), para não fazer um SELECT por fatura.
+        faturas = []
+        for r in rows:
+            inv = _linha_invoice(r)
+            recebido = int(inv.get("paid_cents") or 0)
+            inv["due_cents"] = max(0, int(inv.get("total_cents") or 0) - recebido)
+            faturas.append(inv)
+        return faturas
 
 
 # ---------------------------------------------------------------------------
@@ -329,6 +360,14 @@ def atualizar_rascunho(invoice_id: int, patch: dict, tenant_id: int = 1) -> dict
 # Transições de estado
 # ---------------------------------------------------------------------------
 def emitir_fatura(invoice_id: int, tenant_id: int = 1) -> dict:
+    """Emite e recalcula o cliente — emitir é o momento em que o valor passa a
+    contar como FACTURADO na ficha dela (ver db.recalcular_customer)."""
+    fatura = _emitir_fatura(invoice_id, tenant_id)
+    _recalcular_cliente_da_fatura(fatura)
+    return fatura
+
+
+def _emitir_fatura(invoice_id: int, tenant_id: int = 1) -> dict:
     """draft -> issued. Atribui o número (série anual sem buracos), congela
     datas e totais. Serializado por BEGIN IMMEDIATE."""
     with db.ligacao() as c:
@@ -366,30 +405,180 @@ def emitir_fatura(invoice_id: int, tenant_id: int = 1) -> dict:
 
 
 PAGAMENTO_CASH = "cash"
+PAGAMENTO_TWINT = "twint"
+PAGAMENTO_CARTAO = "card"
+PAGAMENTO_TRANSFERENCIA = "transfer"
+PAGAMENTO_OUTRO = "other"
+
+# Os meios que se usam mesmo num salão na Suíça. `other` é a válvula de escape
+# para o que fugir à lista — melhor do que deixar escrever texto livre e ficar
+# com "twint", "Twint" e "TWINT " como três métodos diferentes no relatório.
+METODOS_PAGAMENTO = (PAGAMENTO_CASH, PAGAMENTO_TWINT, PAGAMENTO_CARTAO,
+                     PAGAMENTO_TRANSFERENCIA, PAGAMENTO_OUTRO)
 
 
-def marcar_paga(invoice_id: int, tenant_id: int = 1, metodo: str = PAGAMENTO_CASH) -> dict:
-    """issued -> paid. `metodo` é só informativo (P0: sempre "cash" — é o
-    único que a Daniela usa; ver §23 do patch — TWINT/Stripe/QR-Bill ficam de
-    fora). Idempotente: chamar outra vez numa fatura já paga não muda o
-    método nem gera um segundo evento."""
+def _resumo_pagamentos(c, invoice_id: int) -> tuple[int, list[dict]]:
+    """(total recebido, linhas de pagamento) desta fatura, mais recente primeiro."""
+    rows = c.execute(
+        "SELECT id, amount_cents, method, paid_on, notes, created_at "
+        "FROM payments WHERE invoice_id = ? ORDER BY COALESCE(paid_on, created_at) DESC, id DESC",
+        (invoice_id,)).fetchall()
+    pagamentos = [{"id": r[0], "amount_cents": r[1], "method": r[2],
+                   "paid_on": r[3], "notes": r[4], "created_at": r[5]} for r in rows]
+    return sum(p["amount_cents"] for p in pagamentos), pagamentos
+
+
+def _sincronizar_estado_pagamento(c, invoice_id: int, tenant_id: int) -> dict:
+    """Põe `paid_cents` e o ESTADO da fatura de acordo com os pagamentos que
+    ela tem. Chamada depois de cada registo ou remoção.
+
+    issued|partial|paid movem-se sozinhos conforme o dinheiro; `draft` e
+    `cancelled` nunca são tocados aqui (uma fatura em rascunho não recebe
+    dinheiro, e uma anulada já não é deste mundo). Só regista o evento
+    `invoice.paid` na transição para paga — nunca em cada pagamento parcial.
+    """
+    recebido, _ = _resumo_pagamentos(c, invoice_id)
+    row = c.execute("SELECT status, total_cents, paid_at FROM invoices WHERE id = ?",
+                    (invoice_id,)).fetchone()
+    estado_antes, total, paid_at = row[0], int(row[1] or 0), row[2]
+
+    if estado_antes in (STATUS_RASCUNHO, STATUS_ANULADA):
+        c.execute("UPDATE invoices SET paid_cents = ? WHERE id = ?", (recebido, invoice_id))
+        return {"status": estado_antes, "paid_cents": recebido}
+
+    if recebido <= 0:
+        novo_estado, novo_paid_at = STATUS_EMITIDA, None
+    elif recebido < total:
+        novo_estado, novo_paid_at = STATUS_PARCIAL, None
+    else:
+        novo_estado = STATUS_PAGA
+        novo_paid_at = paid_at or tempo.iso_utc()
+
+    # O método "principal" mostrado na fatura é o do maior pagamento — com um
+    # só pagamento (o caso normal) é exatamente o que ela escolheu.
+    metodo = c.execute(
+        "SELECT method FROM payments WHERE invoice_id = ? "
+        "ORDER BY amount_cents DESC, id ASC LIMIT 1", (invoice_id,)).fetchone()
+
+    c.execute("UPDATE invoices SET paid_cents = ?, status = ?, paid_at = ?, "
+              "payment_method = COALESCE(?, payment_method) WHERE id = ?",
+              (recebido, novo_estado, novo_paid_at, metodo[0] if metodo else None, invoice_id))
+
+    if novo_estado == STATUS_PAGA and estado_antes != STATUS_PAGA:
+        db.registar_evento(c, "invoice.paid", "invoice", invoice_id,
+                           {"payment_method": metodo[0] if metodo else None,
+                            "paid_cents": recebido},
+                           dedupe_key=f"invoice.paid:{invoice_id}", tenant_id=tenant_id)
+    return {"status": novo_estado, "paid_cents": recebido}
+
+
+def registar_pagamento(invoice_id: int, amount_cents: int, metodo: str = PAGAMENTO_CASH,
+                       paid_on: str | None = None, notas: str | None = None,
+                       tenant_id: int = 1) -> dict:
+    """Regista uma entrada de dinheiro numa fatura emitida.
+
+    Recusa: valor <= 0, método fora da lista, fatura em rascunho ou anulada, e
+    dinheiro a mais do que falta (um troco não é um pagamento — se o valor
+    estiver errado, remove-se e regista-se outra vez).
+    """
+    try:
+        amount_cents = int(amount_cents)
+    except (TypeError, ValueError):
+        raise PagamentoInvalido("O valor do pagamento tem de ser um número inteiro de cêntimos.")
+    if amount_cents <= 0:
+        raise PagamentoInvalido("O valor do pagamento tem de ser maior do que zero.")
+    metodo = (metodo or PAGAMENTO_CASH).strip().lower()
+    if metodo not in METODOS_PAGAMENTO:
+        raise PagamentoInvalido(f"Método de pagamento desconhecido: {metodo}")
+
     with db.ligacao() as c:
         c.execute("BEGIN IMMEDIATE")
-        row = c.execute("SELECT status FROM invoices WHERE id = ? AND tenant_id = ?",
+        row = c.execute("SELECT status, total_cents FROM invoices WHERE id = ? AND tenant_id = ?",
                         (invoice_id, tenant_id)).fetchone()
         if not row:
             raise FaturaNaoEncontrada("Fatura não encontrada.")
-        if row[0] == STATUS_PAGA:
-            pass
-        elif row[0] != STATUS_EMITIDA:
-            raise TransicaoInvalida("Só uma fatura emitida pode ser marcada como paga.")
-        else:
-            c.execute("UPDATE invoices SET status = 'paid', paid_at = ?, payment_method = ? WHERE id = ?",
-                      (tempo.iso_utc(), metodo, invoice_id))
-            db.registar_evento(c, "invoice.paid", "invoice", invoice_id, {"payment_method": metodo},
-                               dedupe_key=f"invoice.paid:{invoice_id}", tenant_id=tenant_id)
+        estado, total = row[0], int(row[1] or 0)
+        if estado == STATUS_RASCUNHO:
+            raise TransicaoInvalida("Emite a fatura antes de registar pagamentos.")
+        if estado == STATUS_ANULADA:
+            raise TransicaoInvalida("Uma fatura anulada não recebe pagamentos.")
+
+        recebido, _ = _resumo_pagamentos(c, invoice_id)
+        se_falta = total - recebido
+        if amount_cents > se_falta:
+            raise PagamentoInvalido(
+                f"São mais {amount_cents - se_falta} cêntimos do que falta receber.")
+
+        c.execute(
+            "INSERT INTO payments (tenant_id, invoice_id, amount_cents, method, paid_on, "
+            "notes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (tenant_id, invoice_id, amount_cents, metodo,
+             paid_on or tempo.hoje_zurique().isoformat(), (notas or "").strip() or None,
+             tempo.iso_utc()))
+        _sincronizar_estado_pagamento(c, invoice_id, tenant_id)
         r = c.execute(f"SELECT {_SQL_INVOICE} FROM invoices WHERE id = ?", (invoice_id,)).fetchone()
-        return _montar(c, r)
+        fatura = _montar(c, r)
+    _recalcular_cliente_da_fatura(fatura)
+    return fatura
+
+
+def remover_pagamento(payment_id: int, tenant_id: int = 1) -> dict:
+    """Apaga um pagamento mal registado e devolve a fatura já reavaliada —
+    uma fatura que estava paga volta sozinha a parcial ou a emitida."""
+    with db.ligacao() as c:
+        c.execute("BEGIN IMMEDIATE")
+        row = c.execute("SELECT invoice_id FROM payments WHERE id = ? AND tenant_id = ?",
+                        (payment_id, tenant_id)).fetchone()
+        if not row:
+            raise FaturaNaoEncontrada("Pagamento não encontrado.")
+        invoice_id = row[0]
+        c.execute("DELETE FROM payments WHERE id = ?", (payment_id,))
+        _sincronizar_estado_pagamento(c, invoice_id, tenant_id)
+        r = c.execute(f"SELECT {_SQL_INVOICE} FROM invoices WHERE id = ?", (invoice_id,)).fetchone()
+        fatura = _montar(c, r)
+    _recalcular_cliente_da_fatura(fatura)
+    return fatura
+
+
+def pagamentos_da_fatura(invoice_id: int, tenant_id: int = 1) -> list[dict]:
+    with db.ligacao() as c:
+        if not c.execute("SELECT 1 FROM invoices WHERE id = ? AND tenant_id = ?",
+                         (invoice_id, tenant_id)).fetchone():
+            raise FaturaNaoEncontrada("Fatura não encontrada.")
+        return _resumo_pagamentos(c, invoice_id)[1]
+
+
+def _recalcular_cliente_da_fatura(fatura: dict):
+    """O dinheiro do cliente vem das faturas (ver db.recalcular_customer), por
+    isso qualquer mexida no dinheiro obriga a recalcular. Fora da transação:
+    falhar aqui nunca desfaz um pagamento já gravado."""
+    cid = (fatura or {}).get("customer_id")
+    if not cid:
+        return
+    try:
+        db.recalcular_customer(cid)
+    except Exception:                        # noqa: BLE001
+        pass
+
+
+def marcar_paga(invoice_id: int, tenant_id: int = 1, metodo: str = PAGAMENTO_CASH) -> dict:
+    """Atalho para o caso normal: a cliente pagou tudo de uma vez. Regista um
+    pagamento pelo valor em falta e a fatura passa a paga.
+
+    Idempotente: numa fatura já paga não falta nada, por isso não faz nada.
+    """
+    with db.ligacao() as c:
+        row = c.execute("SELECT status, total_cents, COALESCE(paid_cents, 0) "
+                        "FROM invoices WHERE id = ? AND tenant_id = ?",
+                        (invoice_id, tenant_id)).fetchone()
+        if not row:
+            raise FaturaNaoEncontrada("Fatura não encontrada.")
+        estado, total, recebido = row[0], int(row[1] or 0), int(row[2] or 0)
+    if estado == STATUS_PAGA:
+        return obter_fatura(invoice_id, tenant_id)
+    if estado not in (STATUS_EMITIDA, STATUS_PARCIAL):
+        raise TransicaoInvalida("Só uma fatura emitida pode ser marcada como paga.")
+    return registar_pagamento(invoice_id, total - recebido, metodo, tenant_id=tenant_id)
 
 
 def obter_fatura_por_agendamento(appointment_id: int, tenant_id: int = 1) -> dict | None:
@@ -449,6 +638,13 @@ def marcar_pdf_enviado(invoice_id: int, tenant_id: int = 1, reenvio: bool = Fals
 
 
 def anular_fatura(invoice_id: int, tenant_id: int = 1) -> dict:
+    """Anula e recalcula o cliente — o valor deixa de contar como facturado."""
+    fatura = _anular_fatura(invoice_id, tenant_id)
+    _recalcular_cliente_da_fatura(fatura)
+    return fatura
+
+
+def _anular_fatura(invoice_id: int, tenant_id: int = 1) -> dict:
     """draft|issued -> cancelled. Uma fatura PAGA não se anula (precisa de nota
     de crédito — fora do âmbito desta versão)."""
     with db.ligacao() as c:
@@ -461,6 +657,11 @@ def anular_fatura(invoice_id: int, tenant_id: int = 1) -> dict:
             pass
         elif row[0] == STATUS_PAGA:
             raise TransicaoInvalida("Uma fatura paga não pode ser anulada.")
+        elif row[0] == STATUS_PARCIAL:
+            # Há dinheiro dela em cima da mesa: remove-se o pagamento primeiro,
+            # para nunca ficar um recebimento pendurado numa fatura anulada.
+            raise TransicaoInvalida(
+                "Esta fatura já tem pagamentos. Remove-os antes de a anular.")
         else:
             c.execute("UPDATE invoices SET status = 'cancelled', cancelled_at = ? WHERE id = ?",
                       (tempo.iso_utc(), invoice_id))

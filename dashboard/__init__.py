@@ -19,6 +19,7 @@ import pathlib
 from flask import Blueprint, Response, render_template, request
 
 import config
+from core import seguranca
 
 bp = Blueprint("dashboard", __name__)
 
@@ -40,9 +41,16 @@ def _exige_auth():
     user, pw = config.DASHBOARD_USER, config.DASHBOARD_PASSWORD
     if not user or not pw:
         return Response("Painel não configurado.", 503)
+    # O MESMO limite de tentativas das rotas de bot.py: esta é a porta da
+    # frente do painel e não podia ficar de fora (ver core/seguranca.py).
+    ip = seguranca.ip_do_pedido(request)
+    if seguranca.excedeu_tentativas(ip):
+        return Response("Demasiadas tentativas. Tenta daqui a um minuto.", 429,
+                        {"Retry-After": str(seguranca.JANELA_SEG)})
     auth = request.authorization
     if (not auth or not hmac.compare_digest(auth.username or "", user)
             or not hmac.compare_digest(auth.password or "", pw)):
+        seguranca.registar_falha(ip)
         return Response("Autenticacao necessaria.", 401,
                         {"WWW-Authenticate": 'Basic realm="Painel", charset="UTF-8"'})
     return None

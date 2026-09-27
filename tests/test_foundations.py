@@ -266,11 +266,55 @@ def test_recalcular_customer_so_completed_conta(base_dados):
     db.recalcular_customer(cid)
     cust = db.obter_customer(cid)
     assert cust["visits_count"] == 2
-    assert cust["spend_cents"] == 12000            # 5000 + 7000, sem os 9000 futuros
+    # DINHEIRO: já não vem do preço da marcação — vem das faturas (migração 22).
+    # Sem faturas emitidas, o cliente não tem dinheiro nenhum associado, mesmo
+    # com duas visitas realizadas. Ver test_dinheiro_do_cliente_vem_das_faturas.
+    assert cust["billed_cents"] == 0
+    assert cust["paid_cents"] == 0
+    assert cust["spend_cents"] == 0                # espelha paid_cents
     assert cust["last_visit"] == "2026-02-15"
     assert cust["next_visit"] == "2099-12-31"      # confirmed futura
     assert cust["no_show_count"] == 1
     assert cust["cancel_count"] == 1
+
+
+def test_dinheiro_do_cliente_vem_das_faturas(base_dados):
+    """O contador de dinheiro do cliente segue as FATURAS, não o preço da
+    marcação. Este é o bug que punha CHF 0,00 na ficha de quem já tinha pago:
+    a marcação não tinha preço gravado e a fatura era ignorada."""
+    from billing import engine as bi
+    cid = _novo_customer("41790040003", "Faturada")
+
+    def _fatura(total_cents, status, seq):
+        with db.ligacao() as c:
+            c.execute(
+                "INSERT INTO invoices (tenant_id, customer_id, status, total_cents, "
+                "subtotal_cents, created_at, issued_at, invoice_number, year, seq, issue_date) "
+                "VALUES (1, ?, ?, ?, ?, ?, ?, ?, 2026, ?, ?)",
+                (cid, status, total_cents, total_cents, bot.tempo.iso_utc(),
+                 bot.tempo.iso_utc(), f"2026-{seq:04d}", seq,
+                 bot.tempo.hoje_zurique().isoformat()))
+            return c.execute("SELECT id FROM invoices WHERE seq = ?", (seq,)).fetchone()[0]
+
+    emitida = _fatura(5000, "issued", 8001)       # facturado, ainda por receber
+    _fatura(2000, "draft", 8002)                  # rascunho -> não conta
+    _fatura(3000, "cancelled", 8003)              # anulada  -> não conta
+
+    db.recalcular_customer(cid)
+    cust = db.obter_customer(cid)
+    assert cust["billed_cents"] == 5000
+    assert cust["paid_cents"] == 0
+
+    bi.registar_pagamento(emitida, 2000, bi.PAGAMENTO_TWINT)     # sinal
+    cust = db.obter_customer(cid)
+    assert cust["billed_cents"] == 5000
+    assert cust["paid_cents"] == 2000
+    assert cust["spend_cents"] == 2000
+
+    bi.marcar_paga(emitida)                                      # resto
+    cust = db.obter_customer(cid)
+    assert cust["paid_cents"] == 5000
+    assert bi.obter_fatura(emitida)["status"] == bi.STATUS_PAGA
 
 
 def test_next_visit_usa_data_local_nao_utc(base_dados, monkeypatch):

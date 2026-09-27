@@ -119,6 +119,14 @@ ESTIMATED_MINUTES_SAVED_PER_AUTOMATION = int(
 # cliente demo, mesmo por engano.
 DEMO_PHONE_PREFIX = "4179998"
 
+# Meses que o TEXTO das conversas com clientes fica guardado (ver
+# messaging/conversas.py e migração 25). Isto é conteúdo de conversas de
+# pessoas reais numa base de dados na Suíça: guardar para sempre por
+# omissão não é defensável, e a limpeza é trivial agora e horrível daqui a
+# um ano com 50 mil linhas lá dentro. Configurável por ambiente porque o
+# prazo é uma decisão do negócio, não do código. 0 desliga a limpeza.
+CONVERSAS_RETENCAO_MESES = int(_limpo("CONVERSAS_RETENCAO_MESES") or "12")
+
 
 def graph_url() -> str | None:
     if not PHONE_NUMBER_ID:

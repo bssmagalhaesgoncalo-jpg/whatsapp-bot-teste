@@ -18,3 +18,23 @@ restart-claude.sh
 .playwright-cli/
 # QA / screenshots temporários
 .qa/
+
+# Playwright MCP (mesma razão do .playwright-cli acima)
+.playwright-cli/
+.playwright-mcp/
+
+# Capturas de QA — provam o trabalho na sessão, não pertencem ao repositório
+capturas-conversas/
+test-results/
+geo-*.png
+
+# Ferramentas de análise: a saída é regenerável, o cache é pesado
+graphify-out/
+skill-observations/
+.serena/cache/
+.serena/project.local.yml
+Claude outputs/
+
+# Exportações temporárias
+*_audit-export.tar.gz
+_audit-export.tar.gz

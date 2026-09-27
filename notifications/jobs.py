@@ -156,6 +156,14 @@ def process_due_jobs(tenant_id: int = 1, limite: int = 50, agora: str | None = N
     duas vezes. Devolve um resumo (nunca levanta — um job que falhe fica
     registado, não derruba os outros)."""
     agora = agora or tempo.iso_utc()
+    # MANUTENÇÃO: retenção do registo de conversas (messaging/conversas.py).
+    # Aqui e não num cron novo — este é o único executor periódico que
+    # existe, e uma limpeza que depende de alguém se lembrar de a agendar
+    # não acontece. Auto-acelerada para uma vez por dia (o executor corre de
+    # 5 em 5 minutos) e nunca levanta.
+    from messaging import conversas
+    conversas.limpar_antigas_se_devido(tenant_id)
+
     resumo = {"processados": 0, "concluidos": 0, "falharam": 0, "cancelados": 0}
     with db.ligacao() as c:
         pendentes = c.execute(

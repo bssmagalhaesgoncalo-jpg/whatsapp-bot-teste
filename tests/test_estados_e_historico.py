@@ -3,9 +3,12 @@
 import bot
 import db
 import estados
-from conftest import marcar, data_pt
+from conftest import marcar, data_pt, dias_abertos
 
-DIA_TXT = data_pt("2026-09-10")
+# Datas RELATIVAS: com datas fixas, a suite passava a falhar sozinha no dia
+# em que elas ficavam para trás (era o caso destas — 09/2026).
+DIA_ISO, DIA2_ISO = dias_abertos(2)
+DIA_TXT = data_pt(DIA_ISO)
 
 
 def test_estados_canonicos_normalizam_legado():
@@ -18,7 +21,7 @@ def test_estados_canonicos_normalizam_legado():
 
 def test_13_completed_mantem_registo_e_historico(base_dados):
     idag = marcar("41790000201", "limpeza_pele", DIA_TXT, "🕘 09:00")
-    ag2, _ = bot.reagendar_agendamento(idag, "2026-09-11", "10:30", origem="painel",
+    ag2, _ = bot.reagendar_agendamento(idag, DIA2_ISO, "10:30", origem="painel",
                                        avisar_cliente=False)
     bot.atualizar_estado_agendamento(idag, estados.COMPLETED)
     ag = bot.obter_agendamento(idag)
@@ -59,9 +62,16 @@ def test_api_estado_rejeita_estado_invalido(cliente_http, base_dados):
     assert r.status_code == 409          # já não está ativa
 
 
+def _dia_passado():
+    """Um dia que já passou de certeza, seja qual for o dia de hoje."""
+    from datetime import timedelta
+    import tempo
+    return (tempo.hoje_zurique() - timedelta(days=28)).isoformat()
+
+
 def test_api_estado_no_passado_nao_precisa_confirmacao(cliente_http, base_dados):
     import base64
-    idag = marcar("41790000204", "limpeza_pele", data_pt("2026-08-20"), "🕘 09:00")
+    idag = marcar("41790000204", "limpeza_pele", data_pt(_dia_passado()), "🕘 09:00")
     h = {"Authorization": "Basic " + base64.b64encode(b"painel:painel-pw").decode()}
     r = cliente_http.post(f"/api/agendamentos/{idag}/estado", json={"estado": "completed"}, headers=h)
     assert r.status_code == 200
