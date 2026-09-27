@@ -356,6 +356,31 @@ function renderAppointment(ag) {
   montarRegistos(ag.id, registosSlot);
 }
 
+/* ---------- confirmação no design system (substitui window.confirm) ------
+   Promise<boolean>: true = confirmou. Mesmo estilo das outras modais
+   (painel .modal, título, texto, ações à direita), com suporte a uma lista
+   de detalhes (ex.: marcações afetadas por um bloqueio). ---------- */
+function confirmarModal({ titulo = "Confirmar", mensagem = "", detalhes = null,
+                          okLabel = "Confirmar", perigo = false } = {}) {
+  return new Promise((resolve) => {
+    let done = false;
+    const settle = (v) => { if (!done) { done = true; resolve(v); } };
+    const fechar = (v) => { settle(v); Modal.close(); };
+    const btnNao = h("button", { class: "btn", onclick: () => fechar(false) }, "Cancelar");
+    const btnSim = h("button", { class: "btn " + (perigo ? "btn--danger" : "btn--primary"),
+                                 onclick: () => fechar(true) }, okLabel);
+    const titleId = "conf-title-" + Date.now();
+    Modal.open(h("div", { class: "modal" },
+      h("button", { class: "icon-btn modal-close", onclick: () => fechar(false), "aria-label": "Fechar" }, icon("x")),
+      h("h3", { id: titleId, style: "margin:0 0 8px" }, titulo),
+      mensagem ? h("p", { style: "margin:0 0 6px;color:var(--text-2);font-size:13.5px" }, mensagem) : null,
+      detalhes && detalhes.length ? h("div", { class: "conf-lista" },
+        detalhes.map((d) => h("div", { class: "conf-lista-item" }, d))) : null,
+      h("div", { style: "display:flex;gap:10px;justify-content:flex-end;margin-top:16px" }, btnNao, btnSim)),
+      { labelledby: titleId, onClose: () => settle(false) });
+  });
+}
+
 /* ---------- registos do atendimento: notas + fotos antes/depois ---------- */
 const mediaAtendimento = (nome) => `/media/atendimentos/${encodeURIComponent(nome)}`;
 
@@ -381,7 +406,7 @@ function renderRegistos(agId, slot, reg) {
         h("button", { class: "reg-foto-x", "aria-label": "Apagar foto",
           onclick: async (ev) => {
             ev.stopPropagation();
-            if (!confirm("Apagar esta foto? Não há volta atrás.")) return;
+            if (!await confirmarModal({ titulo: "Apagar foto", mensagem: "Apagar esta foto? Não há volta atrás.", okLabel: "Apagar", perigo: true })) return;
             try { await jdel(`/api/fotos/${f.id}`); recarregar(); }
             catch (e) { toast(e.message, "err"); }
           } }, "×"))));
@@ -409,7 +434,7 @@ function renderRegistos(agId, slot, reg) {
       fmtDataHoraPt(n.criado_em) + (n.atualizado_em ? " · editada" : ""),
       h("button", { class: "reg-nota-x", "aria-label": "Apagar nota",
         onclick: async () => {
-          if (!confirm("Apagar esta nota?")) return;
+          if (!await confirmarModal({ titulo: "Apagar nota", mensagem: "Apagar esta nota?", okLabel: "Apagar", perigo: true })) return;
           try { await jdel(`/api/notas/${n.id}`); recarregar(); }
           catch (e) { toast(e.message, "err"); }
         } }, "Apagar"))));
@@ -1326,7 +1351,10 @@ function agBlocosDoDia(chave) {
       title: `Bloqueado ${b.start_hhmm}–${b.end_hhmm}` + (b.reason ? ` · ${b.reason}` : "") + " — clique para remover",
       onclick: async (ev) => {
         ev.stopPropagation();
-        if (!confirm(`Remover o bloqueio ${b.start_hhmm}–${b.end_hhmm}` + (b.reason ? ` (${b.reason})` : "") + "?")) return;
+        if (!await confirmarModal({
+          titulo: "Remover bloqueio",
+          mensagem: `Remover o bloqueio ${b.start_hhmm}–${b.end_hhmm}` + (b.reason ? ` (${b.reason})` : "") + "? O horário volta a ficar disponível para marcações.",
+          okLabel: "Remover", perigo: true })) return;
         try { await jdel(`/api/horarios/bloqueios/${b.id}`); toast("Bloqueio removido."); Router.reload(); }
         catch (e) { toast(e.message, "err"); }
       },
@@ -1351,10 +1379,15 @@ function openBloquearHorario(diaDefault) {
       if (r.precisa_confirmacao) {
         // Marcações dentro do bloqueio: informar SEMPRE, nunca cancelar
         // sozinho — a mesma regra das exceções de dia inteiro (Fase W).
-        const lista = (r.afetadas || []).map((a) => `• ${a.hora} ${a.cliente} (${a.servico})`).join("\n");
-        if (!confirm(`Há ${r.afetadas.length} marcação(ões) dentro deste horário:\n\n${lista}\n\nBloquear na mesma? As marcações NÃO são canceladas — trata delas depois (reagendar ou cancelar uma a uma).`)) {
-          btnOk.disabled = false; return;
-        }
+        // A modal de bloqueio fecha-se antes de abrir a de confirmação
+        // (só há um Modal.root) — por isso guarda-se o corpo e recomeça-se.
+        Modal.close();
+        const ok = await confirmarModal({
+          titulo: `${r.afetadas.length} marcação(ões) dentro deste horário`,
+          mensagem: "Bloquear na mesma? As marcações NÃO são canceladas — trata delas depois, reagendando ou cancelando uma a uma.",
+          detalhes: (r.afetadas || []).map((a) => `${a.hora} · ${a.cliente} (${a.servico})`),
+          okLabel: "Bloquear na mesma" });
+        if (!ok) return;
         r = await jpost("/api/horarios/bloqueios", { ...corpo, confirmar: true });
       }
       Modal.close(); toast("Horário bloqueado."); Router.reload();
