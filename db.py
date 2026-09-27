@@ -1047,6 +1047,29 @@ def _m26_fotos_e_notas_do_atendimento(conn):
                  "ON service_photos (appointment_id, tipo, ordem)")
 
 
+def _m27_bloqueios_de_horario(conn):
+    """Bloqueios a meio do dia — "formação 14h–16h", "almoço só hoje" (a
+    ideia vem dos PMS de hotelaria: reservas bloqueadas no plano de quartos).
+
+    As exceções (migração 12) cobrem o DIA inteiro (fechado, ou abre/fecha
+    diferente); isto cobre um INTERVALO dentro de um dia aberto. A
+    subtração acontece num único ponto — business_hours.janelas_do_dia —
+    por isso o motor de disponibilidade, o bot e o painel respeitam os
+    bloqueios sem mais nenhuma alteração."""
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS time_blocks ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "tenant_id INTEGER NOT NULL DEFAULT 1, "
+        "date TEXT NOT NULL, "                     # YYYY-MM-DD
+        "start_hhmm TEXT NOT NULL, "
+        "end_hhmm TEXT NOT NULL, "
+        "reason TEXT, "
+        "created_at TEXT NOT NULL)"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS ix_time_blocks_dia "
+                 "ON time_blocks (tenant_id, date)")
+
+
 MIGRACOES = [
     (1, "baseline", _m1_baseline),
     (2, "colunas_legadas", _m2_colunas_legadas),
@@ -1074,6 +1097,7 @@ MIGRACOES = [
     (24, "consentimento_de_marketing", _m24_consentimento_de_marketing),
     (25, "registo_de_conversas", _m25_registo_de_conversas),
     (26, "fotos_e_notas_do_atendimento", _m26_fotos_e_notas_do_atendimento),
+    (27, "bloqueios_de_horario", _m27_bloqueios_de_horario),
 ]
 
 

@@ -963,6 +963,7 @@ function metric(val, label, accent) {
    =================================================================== */
 let agendaVista = "dia";                                 // "dia" | "semana"
 let agendaDia = hojeYmdNegocio();   // âncora (YYYY-MM-DD)
+let agBloqueios = [];               // bloqueios de horário do intervalo carregado
 let agGrelha = { hora_inicio: 8, hora_fim: 19, intervalo_min: 30 };  // vem do servidor
 let agendaFiltro = "all";
 let agendaBusca = "";
@@ -1045,6 +1046,7 @@ async function viewAgenda(mount) {
       h("button", { class: (isWeek ? "is-active" : ""), role: "tab", "aria-selected": String(isWeek), onclick: () => setAgendaVista("semana") }, "Semana")),
     h("strong", { class: "ag-range tnum" }, agRangeLabel()),
     h("span", { class: "nav-spacer" }),
+    h("button", { class: "btn btn--sm", onclick: () => openBloquearHorario(agendaDia) }, icon("clock"), "Bloquear"),
     h("button", { class: "btn btn--sm btn--primary", onclick: () => openCreateAppointment({ data: agendaDia }) }, icon("calendar"), "Nova marcação"));
 
   const chipsWrap = h("div", { class: "ag-filtros" });
@@ -1069,6 +1071,7 @@ async function viewAgenda(mount) {
   catch (e) { toast(e.message, "err"); return; }
   mount.lastChild.remove();
   if (d.grelha) agGrelha = { hora_inicio: d.grelha.hora_inicio ?? 8, hora_fim: d.grelha.hora_fim ?? 19, intervalo_min: d.grelha.intervalo_min ?? 30 };
+  agBloqueios = d.bloqueios || [];
 
   const listMount = h("div", { class: "ag-list" });
   mount.append(listMount);
@@ -1290,6 +1293,7 @@ function renderDiaGrid(evs, anchor) {
   // fica no estilo base (neutro), já claramente distinto do passado.
   const body = h("div", { class: "ag-col" + (eHoje ? " is-today" : ePassado ? " is-past" : ""), "data-dia": anchor });
   for (let i = 0; i < bandas; i++) body.append(makeFaixa(i, anchor));
+  agBlocosDoDia(anchor).forEach((n) => body.append(n));
   agDispor(evs).forEach((p) => body.append(agEventCard(p, eHoje)));
   if (eHoje && dentro(agoraMin)) {
     const agoraTxt = horaAgora();
@@ -1300,6 +1304,75 @@ function renderDiaGrid(evs, anchor) {
   const grid = h("div", { class: "ag-grid ag-grid--dia" }, bodyRow);
   if (!evs.length) grid.append(h("div", { class: "empty", style: "padding:14px" }, "Nada agendado neste dia."));
   return h("div", { class: "ag-week-scroll" }, grid);
+}
+
+/* ---- bloqueios de horário na grelha (migração 27) ----
+   Blocos cinzentos às riscas por baixo dos cartões: mostram o "fechado"
+   sem competir visualmente com as marcações. Clique = apagar (com
+   confirmação). A DISPONIBILIDADE em si é tratada no servidor
+   (business_hours.janelas_do_dia) — isto é só a representação. */
+function agBlocosDoDia(chave) {
+  const minGrelha = agGrelha.hora_inicio * 60;
+  const maxGrelha = agGrelha.hora_fim * 60;
+  const mins = (hhmm) => { const [a, b] = String(hhmm || "").split(":").map(Number); return a * 60 + (b || 0); };
+  return (agBloqueios || []).filter((b) => b.date === chave).map((b) => {
+    const ini = Math.max(mins(b.start_hhmm), minGrelha);
+    const fim = Math.min(mins(b.end_hhmm), maxGrelha);
+    if (!(fim > ini)) return null;
+    const top = agTop(ini - minGrelha);
+    const alt = agH(fim - ini);
+    return h("div", {
+      class: "ag-block", style: `top:${top.toFixed(1)}px;height:${alt.toFixed(1)}px`,
+      title: `Bloqueado ${b.start_hhmm}–${b.end_hhmm}` + (b.reason ? ` · ${b.reason}` : "") + " — clique para remover",
+      onclick: async (ev) => {
+        ev.stopPropagation();
+        if (!confirm(`Remover o bloqueio ${b.start_hhmm}–${b.end_hhmm}` + (b.reason ? ` (${b.reason})` : "") + "?")) return;
+        try { await jdel(`/api/horarios/bloqueios/${b.id}`); toast("Bloqueio removido."); Router.reload(); }
+        catch (e) { toast(e.message, "err"); }
+      },
+    }, h("span", { class: "ag-block-lbl" }, "🔒 " + (b.reason || "Bloqueado"),
+         h("span", { class: "tnum", style: "font-weight:500" }, ` ${b.start_hhmm}–${b.end_hhmm}`)));
+  }).filter(Boolean);
+}
+
+function openBloquearHorario(diaDefault) {
+  const inpData = h("input", { class: "inp", type: "date", value: diaDefault || hojeYmdNegocio() });
+  const inpIni = h("input", { class: "inp", type: "time", value: "12:00" });
+  const inpFim = h("input", { class: "inp", type: "time", value: "13:00" });
+  const inpMotivo = h("input", { class: "inp", type: "text", placeholder: "Motivo (formação, almoço, pessoal…)" });
+  const btnCancelar = h("button", { class: "btn", onclick: () => Modal.close() }, "Cancelar");
+  const btnOk = h("button", { class: "btn btn--primary" }, icon("clock"), "Bloquear");
+  btnOk.addEventListener("click", async () => {
+    if (btnOk.disabled) return;
+    const corpo = { data: inpData.value, inicio: inpIni.value, fim: inpFim.value, motivo: inpMotivo.value.trim() };
+    btnOk.disabled = true;
+    try {
+      let r = await jpost("/api/horarios/bloqueios", corpo);
+      if (r.precisa_confirmacao) {
+        // Marcações dentro do bloqueio: informar SEMPRE, nunca cancelar
+        // sozinho — a mesma regra das exceções de dia inteiro (Fase W).
+        const lista = (r.afetadas || []).map((a) => `• ${a.hora} ${a.cliente} (${a.servico})`).join("\n");
+        if (!confirm(`Há ${r.afetadas.length} marcação(ões) dentro deste horário:\n\n${lista}\n\nBloquear na mesma? As marcações NÃO são canceladas — trata delas depois (reagendar ou cancelar uma a uma).`)) {
+          btnOk.disabled = false; return;
+        }
+        r = await jpost("/api/horarios/bloqueios", { ...corpo, confirmar: true });
+      }
+      Modal.close(); toast("Horário bloqueado."); Router.reload();
+    } catch (e) { btnOk.disabled = false; toast(e.message, "err"); }
+  });
+  Modal.open(h("div", { class: "modal" },
+    h("button", { class: "icon-btn modal-close", onclick: () => Modal.close(), "aria-label": "Fechar" }, icon("x")),
+    h("h3", { id: "blk-title", style: "margin:0 0 6px" }, "Bloquear horário"),
+    h("p", { style: "margin:0 0 14px;color:var(--text-3);font-size:13px" },
+      "O intervalo fica indisponível para novas marcações — no painel e no bot do WhatsApp."),
+    h("div", { style: "display:grid;gap:10px" },
+      h("label", {}, h("div", { class: "eyebrow", style: "margin-bottom:4px" }, "Dia"), inpData),
+      h("div", { style: "display:flex;gap:10px" },
+        h("label", { style: "flex:1" }, h("div", { class: "eyebrow", style: "margin-bottom:4px" }, "Das"), inpIni),
+        h("label", { style: "flex:1" }, h("div", { class: "eyebrow", style: "margin-bottom:4px" }, "Até"), inpFim)),
+      h("label", {}, h("div", { class: "eyebrow", style: "margin-bottom:4px" }, "Motivo"), inpMotivo)),
+    h("div", { style: "display:flex;gap:10px;justify-content:flex-end;margin-top:16px" },
+      btnCancelar, btnOk)), { labelledby: "blk-title" });
 }
 
 /* ---- vista SEMANA (grelha horária com 7 dias) ---- */
@@ -1473,6 +1546,7 @@ function renderSemana(eventos) {
     // futuro fica no estilo base (neutro), já claramente distinto do passado.
     const body = h("div", { class: "ag-col" + (eHoje ? " is-today" : ePassado ? " is-past" : ""), "data-dia": chave });
     for (let i = 0; i < bandas; i++) body.append(makeFaixa(i, chave));
+    agBlocosDoDia(chave).forEach((n) => body.append(n));
     agDispor(doDia).forEach((p) => body.append(agEventCard(p, eHoje)));
     // Linha "Agora": só na coluna de hoje, e só quando hoje está na semana e dentro do horário.
     if (eHoje && dentro(agoraMin)) {

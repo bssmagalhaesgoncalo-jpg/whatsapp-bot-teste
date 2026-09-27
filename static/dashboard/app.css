@@ -1365,3 +1365,19 @@ input.inp:focus, select.inp:focus, textarea.inp:focus {
 }
 .tl-fotos-mais { font-size: 11px; color: var(--text-3); }
 .tl-nota { margin-top: 4px; }
+
+/* ---------- bloqueios de horário na agenda (migração 27) ---------- */
+.ag-block {
+  position: absolute; left: 2px; right: 2px; z-index: 1;  /* por baixo dos cartões */
+  border-radius: 8px; cursor: pointer;
+  background: repeating-linear-gradient(135deg,
+    color-mix(in srgb, var(--text-3) 12%, transparent) 0 8px,
+    color-mix(in srgb, var(--text-3) 5%, transparent) 8px 16px);
+  border: 1px dashed color-mix(in srgb, var(--text-3) 45%, transparent);
+  display: flex; align-items: flex-start; padding: 4px 8px; overflow: hidden;
+}
+.ag-block:hover { border-style: solid; }
+.ag-block-lbl {
+  font-size: 11px; font-weight: 650; color: var(--text-2);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}

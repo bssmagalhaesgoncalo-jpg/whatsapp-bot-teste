@@ -2904,9 +2904,11 @@ def api_calendario():
 
     inicio, fim = data_pedida("inicio"), data_pedida("fim")
     eventos, invalidos = eventos_calendario(inicio, fim)
+    hoje_iso = tempo.hoje_zurique().isoformat()
     return jsonify(
         eventos=eventos,
         invalidos=invalidos,
+        bloqueios=bh_mod.listar_bloqueios(_TENANT, inicio or hoje_iso, fim or hoje_iso),
         inicio=inicio,
         fim=fim,
         grelha={"hora_inicio": CALENDARIO_HORA_INICIO, "hora_fim": CALENDARIO_HORA_FIM,
@@ -3457,6 +3459,56 @@ def api_excecao_criar():
 @requer_autenticacao
 def api_excecao_remover(excecao_id):
     bh_mod.remover_excecao(_TENANT, excecao_id)
+    return jsonify(ok=True), 200
+
+
+# --- Bloqueios a meio do dia (migração 27) -------------------------------
+# A ideia vem dos PMS de hotelaria ("reservas bloqueadas" no plano de
+# quartos): "formação 14h–16h", "almoço só hoje". A mesma regra da Fase W
+# das exceções: marcações já dentro do bloqueio INFORMAM, nunca se cancelam
+# sozinhas — a Daniela decide o que fazer com cada uma.
+@app.route("/api/horarios/bloqueios", methods=["POST"])
+@requer_autenticacao
+def api_bloqueio_criar():
+    d = request.get_json(silent=True) or {}
+    data_iso = str(d.get("data") or "").strip()
+    inicio = str(d.get("inicio") or "").strip()
+    fim = str(d.get("fim") or "").strip()
+    afetadas = []
+    try:
+        ini_min = int(inicio[:2]) * 60 + int(inicio[3:5])
+        fim_min = int(fim[:2]) * 60 + int(fim[3:5])
+    except (ValueError, IndexError):
+        ini_min = fim_min = None
+    if ini_min is not None:
+        with obter_bd() as conn:
+            for (aid, nome, servico, hora, hhmm, dur) in conn.execute(
+                    "SELECT id, nome, servico, hora, hora_hhmm, duracao_min FROM agendamentos "
+                    "WHERE tenant_id = ? AND data_iso = ? AND LOWER(estado) IN ("
+                    + estados.sql_lista(*estados.ATIVOS) + ")",
+                    (_TENANT, data_iso)).fetchall():
+                try:
+                    m_ini = int(hhmm[:2]) * 60 + int(hhmm[3:5])
+                except (ValueError, TypeError, IndexError):
+                    continue
+                m_fim = m_ini + (dur or 0)
+                if m_ini < fim_min and m_fim > ini_min:
+                    afetadas.append({"id": aid, "cliente": nome, "servico": servico, "hora": hora or hhmm})
+    if afetadas and not d.get("confirmar"):
+        return jsonify(precisa_confirmacao=True, afetadas=afetadas), 200
+    try:
+        bloqueio = bh_mod.adicionar_bloqueio(_TENANT, data_iso, inicio, fim,
+                                             reason=d.get("motivo"))
+    except ValueError as e:
+        return jsonify(erro=str(e)), 400
+    return jsonify(ok=True, bloqueio=bloqueio, afetadas=afetadas), 201
+
+
+@app.route("/api/horarios/bloqueios/<int:bloqueio_id>", methods=["DELETE"])
+@requer_autenticacao
+def api_bloqueio_remover(bloqueio_id):
+    if not bh_mod.remover_bloqueio(_TENANT, bloqueio_id):
+        return jsonify(erro="Bloqueio não encontrado."), 404
     return jsonify(ok=True), 200
 
 

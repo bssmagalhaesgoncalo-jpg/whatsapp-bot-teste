@@ -109,3 +109,16 @@ novos; suite: 529 passed):
   apagar, notas) e antes/depois lado a lado na timeline da ficha do cliente.
 - Render: precisa do disco persistente para MEDIA_DIR (plano Starter) —
   em Free as fotos morrem em cada deploy.
+
+## Sessão 27-09-2026 (3) — bloqueios de horário (roubo do PMS reconline)
+
+- Migração 27: `time_blocks` — bloquear um intervalo dentro de um dia aberto
+  (formação, almoço só hoje). Subtração num único ponto
+  (business_hours.janelas_do_dia) → bot, disponibilidade e seed herdam.
+- API: POST/DELETE /api/horarios/bloqueios; marcações já dentro do bloqueio
+  avisam (precisa_confirmacao) e NUNCA se cancelam sozinhas (regra Fase W).
+- UI: botão "Bloquear" na toolbar da Agenda; blocos cinzentos às riscas nas
+  vistas Dia e Semana, clique remove. Suite: 536 passed.
+- Restantes "roubos" identificados do manual do PMS (por fazer, por valor):
+  sinais/depósitos abatidos na fatura; aniversários → campanha automática;
+  fundir fichas de cliente duplicadas; cartão de devedores com lembrete.

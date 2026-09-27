@@ -58,7 +58,8 @@ def janelas_do_dia(data_iso: str, tenant_id: int = 1, staff_id=None) -> list[tup
             if exc[0]:
                 return []
             o, cl = _hhmm_para_min(exc[1]), _hhmm_para_min(exc[2])
-            return [(o, cl)] if o is not None and cl is not None and cl > o else []
+            base = [(o, cl)] if o is not None and cl is not None and cl > o else []
+            return _subtrair_bloqueios(base, data_iso, tenant_id)
         row = c.execute(
             "SELECT opens, closes, break_start, break_end FROM business_hours "
             "WHERE tenant_id = ? AND weekday = ? AND (staff_id IS ? OR staff_id IS NULL) "
@@ -70,9 +71,81 @@ def janelas_do_dia(data_iso: str, tenant_id: int = 1, staff_id=None) -> list[tup
     if o is None or cl is None or cl <= o:
         return []
     bs, be = _hhmm_para_min(row[2]), _hhmm_para_min(row[3])
-    if bs is not None and be is not None and o < bs < be < cl:
-        return [(o, bs), (be, cl)]
-    return [(o, cl)]
+    base = [(o, bs), (be, cl)] if (bs is not None and be is not None and o < bs < be < cl) \
+        else [(o, cl)]
+    return _subtrair_bloqueios(base, data_iso, tenant_id)
+
+
+# ---------------------------------------------------------------------------
+# Bloqueios a meio do dia (migração 27) — "formação 14h–16h", "almoço só
+# hoje". Subtraídos AQUI, no único ponto que define as janelas abertas: o
+# motor de disponibilidade, o bot e o seed respeitam-nos automaticamente.
+# ---------------------------------------------------------------------------
+def _subtrair_bloqueios(janelas: list[tuple[int, int]], data_iso: str,
+                        tenant_id: int) -> list[tuple[int, int]]:
+    if not janelas:
+        return janelas
+    bloqueios = [( _hhmm_para_min(b["start_hhmm"]), _hhmm_para_min(b["end_hhmm"]))
+                 for b in listar_bloqueios(tenant_id, data_iso, data_iso)]
+    for (bi, bf) in bloqueios:
+        if bi is None or bf is None or bf <= bi:
+            continue
+        novas = []
+        for (o, cl) in janelas:
+            if bf <= o or bi >= cl:          # não toca nesta janela
+                novas.append((o, cl))
+                continue
+            if bi > o:
+                novas.append((o, bi))        # sobra antes do bloqueio
+            if bf < cl:
+                novas.append((bf, cl))       # sobra depois do bloqueio
+        janelas = novas
+    return janelas
+
+
+def listar_bloqueios(tenant_id: int = 1, de: str | None = None,
+                     ate: str | None = None) -> list[dict]:
+    sql = ("SELECT id, date, start_hhmm, end_hhmm, reason FROM time_blocks "
+           "WHERE tenant_id = ?")
+    args: list = [tenant_id]
+    if de:
+        sql += " AND date >= ?"; args.append(de)
+    if ate:
+        sql += " AND date <= ?"; args.append(ate)
+    sql += " ORDER BY date, start_hhmm"
+    with db.ligacao() as c:
+        rows = c.execute(sql, args).fetchall()
+    return [dict(zip(("id", "date", "start_hhmm", "end_hhmm", "reason"), r)) for r in rows]
+
+
+def adicionar_bloqueio(tenant_id: int, data_iso: str, inicio: str, fim: str,
+                       reason: str | None = None) -> dict:
+    """Valida e grava um bloqueio. Levanta ValueError com mensagem própria
+    para o painel quando os dados não servem."""
+    try:
+        date.fromisoformat(data_iso)
+    except (ValueError, TypeError):
+        raise ValueError("Data inválida.")
+    i, f = _hhmm_para_min(inicio), _hhmm_para_min(fim)
+    if i is None or f is None:
+        raise ValueError("Horas inválidas — usa o formato HH:MM.")
+    if f <= i:
+        raise ValueError("A hora de fim tem de ser depois da hora de início.")
+    reason = (reason or "").strip() or None
+    with db.ligacao() as c:
+        cur = c.execute(
+            "INSERT INTO time_blocks (tenant_id, date, start_hhmm, end_hhmm, reason, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (tenant_id, data_iso, inicio, fim, reason, tempo.iso_utc()))
+        return {"id": cur.lastrowid, "date": data_iso, "start_hhmm": inicio,
+                "end_hhmm": fim, "reason": reason}
+
+
+def remover_bloqueio(tenant_id: int, bloqueio_id: int) -> bool:
+    with db.ligacao() as c:
+        cur = c.execute("DELETE FROM time_blocks WHERE tenant_id = ? AND id = ?",
+                        (tenant_id, bloqueio_id))
+        return cur.rowcount > 0
 
 
 def dia_aberto(data_iso: str, tenant_id: int = 1, staff_id=None) -> bool:
